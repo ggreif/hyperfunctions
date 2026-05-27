@@ -1,0 +1,52 @@
+cabal-version:      3.0
+name:               constructor
+version:            0.0.0
+synopsis:           Nested-data constructor language with universe-level inference
+description:        A tiny finally-tagless language whose programs are nested
+                    `data` declarations indexed by a universe ladder *0, *1, …
+                    Designed as a substrate for experimenting with
+                    hyperfunction-based unification.
+license:            BSD-3-Clause
+author:             Gabor Greif
+maintainer:         ggreif@gmail.com
+build-type:         Simple
+
+common opts
+  default-language: GHC2024
+  ghc-options:      -Wall -Wcompat -Widentities -Wincomplete-record-updates
+                    -Wincomplete-uni-patterns -Wpartial-fields -Wredundant-constraints
+
+library
+  import:          opts
+  hs-source-dirs:  src
+  exposed-modules:
+    Constructor.Sort
+    Constructor.Level
+    Constructor.Syntax
+    Constructor.AST
+    Constructor.Parser
+  build-depends:
+    , base        >= 4.18 && < 5
+    , text        >= 2.0  && < 2.2
+    , megaparsec  >= 9.5  && < 9.8
+
+executable constructor
+  import:         opts
+  hs-source-dirs: app
+  main-is:        Main.hs
+  build-depends:
+    , base
+    , constructor
+    , megaparsec
+    , text
+
+test-suite constructor-test
+  import:         opts
+  type:           exitcode-stdio-1.0
+  hs-source-dirs: test
+  main-is:        Spec.hs
+  build-depends:
+    , base
+    , constructor
+    , megaparsec
+    , text
