@@ -8,9 +8,16 @@ import Constructor.AST (Tree (..))
 import Constructor.Parser (parseProgram)
 import Constructor.Sort (Sort (..))
 import qualified LevelInferSpec
+import Data.Functor.Const (Const (..))
 import Data.Text (Text)
 import System.Exit (exitFailure, exitSuccess)
 import Text.Megaparsec (errorBundlePretty)
+
+-- Convenience alias for the raw tree at @Const ()@ annotations.
+type RT (s :: Sort) = Tree (Const ()) s
+
+u :: Const () s
+u = Const ()
 
 main :: IO ()
 main = do
@@ -26,9 +33,9 @@ main = do
       putStrLn ((if ok then "OK   " else "FAIL ") <> name)
       pure ok
 
-    run :: (String, Text, Tree 'SProg) -> IO Bool
+    run :: (String, Text, RT 'SProg) -> IO Bool
     run (name, src, expected) =
-      case parseProgram @Tree name src of
+      case parseProgram @Tree @(Const ()) name src of
         Left e -> do
           putStrLn ("FAIL " <> name)
           putStr   (errorBundlePretty e)
@@ -43,46 +50,46 @@ main = do
               putStrLn ("got:      " <> show got)
               pure False
 
-cases :: [(String, Text, Tree 'SProg)]
+cases :: [(String, Text, RT 'SProg)]
 cases =
   [ ( "empty program"
     , ""
-    , Prog []
+    , Prog u []
     )
   , ( "single nullary data"
     , "data Bool : *0 { True : Bool; False : Bool }"
-    , Prog
-        [ DataDecl "Bool" (Star 0)
-            [ CtorDecl "True"  (Var "Bool")
-            , CtorDecl "False" (Var "Bool")
+    , Prog u
+        [ DataDecl u "Bool" (Star u 0)
+            [ CtorDecl u "True"  (Var u "Bool")
+            , CtorDecl u "False" (Var u "Bool")
             ]
         ]
     )
   , ( "Nat with arrow"
     , "data Nat : *0 { Z : Nat; S : Nat -> Nat }"
-    , Prog
-        [ DataDecl "Nat" (Star 0)
-            [ CtorDecl "Z" (Var "Nat")
-            , CtorDecl "S" (Arr (Var "Nat") (Var "Nat"))
+    , Prog u
+        [ DataDecl u "Nat" (Star u 0)
+            [ CtorDecl u "Z" (Var u "Nat")
+            , CtorDecl u "S" (Arr u (Var u "Nat") (Var u "Nat"))
             ]
         ]
     )
   , ( "nested data"
     , "data Type : *1 { Constr : Type; data Ty2 : Type { Foo : Ty2 } }"
-    , Prog
-        [ DataDecl "Type" (Star 1)
-            [ CtorDecl "Constr" (Var "Type")
-            , DataDecl "Ty2" (Var "Type")
-                [ CtorDecl "Foo" (Var "Ty2")
+    , Prog u
+        [ DataDecl u "Type" (Star u 1)
+            [ CtorDecl u "Constr" (Var u "Type")
+            , DataDecl u "Ty2" (Var u "Type")
+                [ CtorDecl u "Foo" (Var u "Ty2")
                 ]
             ]
         ]
     )
   , ( "right-assoc arrow"
     , "data X : *0 { F : X -> X -> X }"
-    , Prog
-        [ DataDecl "X" (Star 0)
-            [ CtorDecl "F" (Arr (Var "X") (Arr (Var "X") (Var "X")))
+    , Prog u
+        [ DataDecl u "X" (Star u 0)
+            [ CtorDecl u "F" (Arr u (Var u "X") (Arr u (Var u "X") (Var u "X")))
             ]
         ]
     )

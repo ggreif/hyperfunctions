@@ -4,6 +4,7 @@ module Main (main) where
 
 import Constructor.AST (Tree)
 import Constructor.Parser (parseProgram)
+import Data.Functor.Const (Const)
 import qualified Data.Text.IO as TIO
 import System.Environment (getArgs)
 import System.Exit (exitFailure)
@@ -16,6 +17,6 @@ main = do
     [path] -> TIO.readFile path
     []     -> TIO.getContents
     _      -> putStrLn "usage: constructor [FILE]" >> exitFailure
-  case parseProgram @Tree "<input>" src of
+  case parseProgram @Tree @(Const ()) "<input>" src of
     Left e  -> putStr (errorBundlePretty e) >> exitFailure
     Right t -> print t

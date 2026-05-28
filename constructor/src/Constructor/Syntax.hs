@@ -1,44 +1,47 @@
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE KindSignatures #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
 
 module Constructor.Syntax
   ( Lang (..)
+  , HasAnn (..)
   , Name
   ) where
 
 import Constructor.Sort (Sort (..))
+import Data.Functor.Const (Const (..))
 import Data.Kind (Type)
 import Data.Text (Text)
 
 -- | Identifiers (declared names, variable references).
 type Name = Text
 
--- | Finally-tagless algebra for the constructor language.
---
---   A single carrier @r :: Sort -> Type@ ranges over all three syntactic
---   sorts: programs, declarations, and expressions.  Each method emits a
---   piece of grammar at the appropriate sort.
-class Lang (r :: Sort -> Type) where
-  -- | A program is a sequence of top-level declarations.
-  prog     :: [r 'SDecl] -> r 'SProg
+-- | Finally-tagless algebra for the constructor language, HKT'd in the
+--   annotation kind @a :: Sort -> Type@ (Trees-that-Grow style).  Each
+--   method takes a per-sort annotation slot; instances are usually
+--   polymorphic in @a@ and just thread it through.  See 'HasAnn' for
+--   the convention by which producers (e.g. the parser) obtain
+--   annotation values without committing to a particular phase.
+class Lang (r :: (Sort -> Type) -> Sort -> Type) where
+  prog     :: a 'SProg -> [r a 'SDecl] -> r a 'SProg
+  dataDecl :: a 'SDecl -> Name -> r a 'SExpr -> [r a 'SDecl] -> r a 'SDecl
+  ctorDecl :: a 'SDecl -> Name -> r a 'SExpr -> r a 'SDecl
+  var      :: a 'SExpr -> Name -> r a 'SExpr
+  star     :: a 'SExpr -> Word -> r a 'SExpr
+  arr      :: a 'SExpr -> r a 'SExpr -> r a 'SExpr -> r a 'SExpr
 
-  -- | @data X : E { … }@ — declares a new data type @X@ whose universe is @E@
-  --   and whose body is a list of inner declarations (constructors or
-  --   nested data).
-  dataDecl :: Name -> r 'SExpr -> [r 'SDecl] -> r 'SDecl
+-- | Annotation provider in an applicative monad @m@.  The parser is
+--   written generically against 'HasAnn', so it can produce trees at
+--   any annotation regime without further refactoring.
+class Applicative m => HasAnn (a :: Sort -> Type) (m :: Type -> Type) where
+  freshExprAnn :: m (a 'SExpr)
+  freshDeclAnn :: m (a 'SDecl)
+  freshProgAnn :: m (a 'SProg)
 
-  -- | A constructor declaration @c : T@ inside a @data@ block.  @T@ is the
-  --   constructor's type — a chain of (homogeneous) arrows ending in the
-  --   enclosing data's name.
-  ctorDecl :: Name -> r 'SExpr -> r 'SDecl
-
-  -- | Reference a declared name.
-  var      :: Name -> r 'SExpr
-
-  -- | The universe @*n@.  The 'Word' is the surface decimal @n@; the
-  --   tower-level it occupies is @n + 2@ (see "Constructor.Level").
-  star     :: Word -> r 'SExpr
-
-  -- | Function arrow.  v0 enforces homogeneity: both sides must end up
-  --   at the same level after inference.
-  arr      :: r 'SExpr -> r 'SExpr -> r 'SExpr
+-- | Trivial annotations: every slot is @Const ()@.  Works for any
+--   applicative monad — the raw-parsing default.
+instance Applicative m => HasAnn (Const ()) m where
+  freshExprAnn = pure (Const ())
+  freshDeclAnn = pure (Const ())
+  freshProgAnn = pure (Const ())

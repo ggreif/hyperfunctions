@@ -6,13 +6,15 @@ module LevelInferSpec (tests) where
 import Constructor.Level (Lv (..), starLevel)
 import Constructor.LevelInfer (LevelMap, Lvl, LvErr (..), inferProgram)
 import Constructor.Parser (parseProgram)
+import Data.Functor.Const (Const (..))
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import Text.Megaparsec (errorBundlePretty)
 
--- | Run the parser at the 'Lvl' carrier, then read the inferred levels.
+-- | Run the parser at the 'Lvl' carrier (with trivial @Const ()@
+--   annotations), then read the inferred levels.
 infer :: Text -> Either String LevelMap
-infer src = case parseProgram @Lvl "<test>" src of
+infer src = case parseProgram @Lvl @(Const ()) "<test>" src of
   Left e  -> Left (errorBundlePretty e)
   Right p -> case inferProgram p of
     Left err -> Left (show err)
