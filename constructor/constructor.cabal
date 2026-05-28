@@ -22,11 +22,14 @@ library
   exposed-modules:
     Constructor.Sort
     Constructor.Level
+    Constructor.Sheet
+    Constructor.LevelInfer
     Constructor.Syntax
     Constructor.AST
     Constructor.Parser
   build-depends:
     , base        >= 4.18 && < 5
+    , containers  >= 0.6  && < 0.9
     , text        >= 2.0  && < 2.2
     , megaparsec  >= 9.5  && < 9.8
 
@@ -45,8 +48,11 @@ test-suite constructor-test
   type:           exitcode-stdio-1.0
   hs-source-dirs: test
   main-is:        Spec.hs
+  other-modules:
+    LevelInferSpec
   build-depends:
     , base
     , constructor
+    , containers
     , megaparsec
     , text

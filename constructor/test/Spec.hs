@@ -7,15 +7,25 @@ module Main (main) where
 import Constructor.AST (Tree (..))
 import Constructor.Parser (parseProgram)
 import Constructor.Sort (Sort (..))
+import qualified LevelInferSpec
 import Data.Text (Text)
 import System.Exit (exitFailure, exitSuccess)
 import Text.Megaparsec (errorBundlePretty)
 
 main :: IO ()
 main = do
-  results <- mapM run cases
-  if and results then exitSuccess else exitFailure
+  putStrLn "parsing:"
+  parseOK <- mapM run cases
+  putStrLn ""
+  putStrLn "level inference:"
+  inferOK <- mapM runInfer LevelInferSpec.tests
+  if and (parseOK ++ inferOK) then exitSuccess else exitFailure
   where
+    runInfer (name, go) = do
+      ok <- go
+      putStrLn ((if ok then "OK   " else "FAIL ") <> name)
+      pure ok
+
     run :: (String, Text, Tree 'SProg) -> IO Bool
     run (name, src, expected) =
       case parseProgram @Tree name src of
