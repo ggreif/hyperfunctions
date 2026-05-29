@@ -7,6 +7,7 @@ import Constructor.HfLvl (HfLvl, inferProgramHf)
 import Constructor.Level (Lv (..), starLevel)
 import Constructor.LevelInfer (LevelMap, Lvl, LvErr (..), inferProgram)
 import Constructor.Parser (parseProgram)
+import Constructor.Tc (Tc, solveLevels, tcProgram)
 import Data.Functor.Const (Const (..))
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
@@ -74,6 +75,10 @@ tests =
     , parityLvlHf "data Nat : *0 { Z : Nat; S : Nat -> Nat }"
         [("Nat", lv 1), ("Z", lv 0), ("S", lv 0)]
     )
+  , ("Tc carrier parity — Lvl == Tc + solveLevels on Nat"
+    , parityLvlTc "data Nat : *0 { Z : Nat; S : Nat -> Nat }"
+        [("Nat", lv 1), ("Z", lv 0), ("S", lv 0)]
+    )
   ]
 
 -- | Run the same source through both the classical 'Lvl' carrier and the
@@ -96,6 +101,26 @@ parityLvlHf src want = do
            "Lvl:  " <> show lvlR <> "\n    " <>
            "HfLvl: " <> show hfR  <> "\n    " <>
            "want:  " <> show wantMap
+
+-- | Run the same source through 'Lvl' and through 'Tc' + 'solveLevels';
+--   both must produce the same 'LevelMap'.  The point is to confirm the
+--   constraint-gathering carrier's AST-preserving output, when projected
+--   back to a level map, agrees with the direct streaming pass.
+parityLvlTc :: Text -> [(Text, Lv)] -> IO Bool
+parityLvlTc src want = do
+  let wantMap = Map.fromList want
+      lvlR = case parseProgram @Lvl @(Const ()) "<parity>" src of
+        Left e  -> Left (errorBundlePretty e)
+        Right p -> either (Left . show) Right (inferProgram p)
+      tcR = case parseProgram @Tc @(Const ()) "<parity>" src of
+        Left e  -> Left (errorBundlePretty e)
+        Right p -> either (Left . show) Right (tcProgram p >>= solveLevels)
+  case (lvlR, tcR) of
+    (Right a, Right b) | a == b && a == wantMap -> pure True
+    _ -> reportFail $
+           "Lvl: " <> show lvlR <> "\n    " <>
+           "Tc:  " <> show tcR  <> "\n    " <>
+           "want: " <> show wantMap
 
 expectOK :: Text -> [(Text, Lv)] -> IO Bool
 expectOK src want = case infer src of
