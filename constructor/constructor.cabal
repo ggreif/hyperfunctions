@@ -31,6 +31,8 @@ library
     Constructor.HypTc
     Constructor.TyExpr
     Constructor.Tinf
+    Constructor.TyProc
+    Constructor.HypTinf
     Constructor.Syntax
     Constructor.AST
     Constructor.Parser
@@ -58,6 +60,7 @@ test-suite constructor-test
   other-modules:
     LevelInferSpec
     TinfSpec
+    HypTinfSpec
   build-depends:
     , base
     , constructor

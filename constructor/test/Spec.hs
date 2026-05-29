@@ -8,6 +8,7 @@ import Constructor.AST (Tree (..))
 import Constructor.Parser (parseProgram)
 import Constructor.Path (Path (..), PathStep (..))
 import Constructor.Sort (Sort (..))
+import qualified HypTinfSpec
 import qualified LevelInferSpec
 import qualified TinfSpec
 import Data.Functor.Const (Const (..))
@@ -31,7 +32,10 @@ main = do
   putStrLn ""
   putStrLn "type inference:"
   tinfOK <- mapM runInfer TinfSpec.tests
-  if and (parseOK ++ inferOK ++ tinfOK) then exitSuccess else exitFailure
+  putStrLn ""
+  putStrLn "B-side type-inference parity:"
+  hypTinfOK <- mapM runInfer HypTinfSpec.tests
+  if and (parseOK ++ inferOK ++ tinfOK ++ hypTinfOK) then exitSuccess else exitFailure
   where
     runInfer (name, go) = do
       ok <- go
