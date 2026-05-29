@@ -5,18 +5,19 @@ module Constructor.Level
   , addOffset
   ) where
 
+import Constructor.Path (Path)
+
 -- | Internal unary representation of universe levels, extended with
 --   level variables to support universe polymorphism.
 --
 --   The surface syntax @*n@ (decimal @n@) desugars to a universe term
 --   tagged with @n@; surface @*(l + k)@ desugars to @k@ applications of
---   'S' wrapped around @LVar i@, where @i@ is the level binder's
---   identifier.  Anchor: @level(*0) = 2@, which follows from
---   @*n : *(n+1)@ coinductively and @level(x : T) = level(T) − 1@.
+--   'S' wrapped around @LVar p@, where @p@ is the path of the '∀l.'
+--   binder that introduced the variable.  Anchor: @level(*0) = 2@.
 --
---   With 'LVar' present, unification on 'Lv' becomes Robinson-style
---   (five cases) rather than plain equality.
-data Lv = Z | S !Lv | LVar !Int
+--   Binder identity is path-derived (no counter, no multi-instantiation
+--   freshness — see "Constructor.Path" for the rationale).
+data Lv = Z | S !Lv | LVar !Path
   deriving (Eq, Ord, Show)
 
 -- | @starLevel n@ is the level of the universe written @*n@: that is, @n + 2@.

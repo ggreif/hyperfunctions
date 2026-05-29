@@ -3,15 +3,15 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 -- | Grammar functions written generically against any annotation regime
---   via 'HasAnn'.  The parser monad is polymorphic in @m@; concrete
---   runners pick a monad and an annotation type at the call site.
+--   via 'HasAnn'.  Threads two pieces of context explicitly:
 --
---   The grammar tracks level-variable binders explicitly via a 'Set
---   Name' threaded through the recursive descent.  Inside an outer
---   @∀l. expr@ (or @forall l. expr@), references @*l@ and @*(l + n)@
---   parse to 'starVar'; outside, they parse to a regular 'var'
---   reference (which the typechecker will still reject for level
---   positions, but the parser stays carrier-agnostic).
+--   * Current 'Path' — the position in the AST, used to give each
+--     '∀l.' binder a deterministic identity derived from its source
+--     position rather than a per-parse counter.
+--   * Binder map 'Map Name Path' — names of currently-bound level
+--     variables and their introducing paths.  Inside @*l@ or
+--     @*(l + n)@, looking up @l@ yields the path that becomes the
+--     'LVar' identity.
 module Constructor.Parser
   ( parseProgram
   , program
@@ -20,13 +20,14 @@ module Constructor.Parser
   ) where
 
 import Constructor.AST (Tree)
+import Constructor.Path (Path, PathStep (..), emptyPath, extendPath)
 import Constructor.Sort (Sort (..))
 import Constructor.Syntax (HasAnn (..), Lang (..), Name)
 import Control.Monad (void)
 import Data.Char (isAlpha, isAlphaNum)
 import Data.Functor.Const (Const (..))
-import Data.Set (Set)
-import qualified Data.Set as Set
+import Data.Map.Strict (Map)
+import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Void (Void)
@@ -34,14 +35,12 @@ import Text.Megaparsec
 import Text.Megaparsec.Char
 import qualified Text.Megaparsec.Char.Lexer as L
 
--- | The concrete raw parser monad.  Other phases will stack their own
---   transformers on top (e.g. constraint generation) and use
---   'program' directly.
 type Parser = Parsec Void Text
-
--- | Convenience alias for the raw-phase tree: untagged @Const ()@ at
---   every annotation slot.
 type RawTree s = Tree (Const ()) s
+
+-- | Map from a level-binder's surface name to the 'Path' of its '∀'
+--   introduction.  Threaded explicitly through the grammar.
+type LvBinders = Map Name Path
 
 -- Whitespace + line/block comments.
 sc :: (MonadParsec Void Text m) => m ()
@@ -66,16 +65,32 @@ identifier = lexeme . try $ do
   where
     isAlphaNumOrUnder c = isAlphaNum c || c == '_' || c == '\''
 
--- | Universe expression starting with @*@.  Three forms:
---
---     *n              -- literal universe at level @n@
---     *l              -- bare variable reference (l must be in scope)
---     *(l + n)        -- variable + literal offset
+-- | Parse a list of grammar elements separated by @sep@, passing each
+--   one its sibling index via the supplied parser builder.  Used to
+--   give each top-level / inner declaration its own path step.
+sepEndByIndexed
+  :: MonadParsec e s mm => (Int -> mm a) -> mm b -> mm [a]
+sepEndByIndexed mk sep = go 0
+  where
+    go i = do
+      mx <- optional (try (mk i))
+      case mx of
+        Nothing -> pure []
+        Just x  -> do
+          msep <- optional sep
+          case msep of
+            Nothing -> pure [x]
+            Just _  -> (x :) <$> go (i + 1)
+
+-- ----------------------------------------------------------------------
+-- Expression-level parsers.
+-- ----------------------------------------------------------------------
+
+-- | Universe expression starting with @*@.
 universe
   :: (Lang r, HasAnn a m, MonadParsec Void Text m, MonadFail m)
-  => Set Name
-  -> m (r a 'SExpr)
-universe lvs = lexeme $ do
+  => Path -> LvBinders -> m (r a 'SExpr)
+universe _path binders = lexeme $ do
   void (char '*')
   choice
     [ try $ do
@@ -84,87 +99,91 @@ universe lvs = lexeme $ do
         pure (star ann n)
     , between (symbol "(") (symbol ")") $ do
         n <- identifier
-        if Set.member n lvs
-          then do
+        case Map.lookup n binders of
+          Just binderPath -> do
             offset <- option 0 (symbol "+" *> L.decimal)
             ann    <- freshExprAnn
-            pure (starVar ann n offset)
-          else fail ("unbound level variable: " <> T.unpack n)
+            pure (starVar ann n binderPath offset)
+          Nothing -> fail ("unbound level variable: " <> T.unpack n)
     , do
         n <- identifier
-        if Set.member n lvs
-          then do
+        case Map.lookup n binders of
+          Just binderPath -> do
             ann <- freshExprAnn
-            pure (starVar ann n 0)
-          else fail ("unbound level variable: " <> T.unpack n)
+            pure (starVar ann n binderPath 0)
+          Nothing -> fail ("unbound level variable: " <> T.unpack n)
     ]
 
 atom
   :: (Lang r, HasAnn a m, MonadParsec Void Text m, MonadFail m)
-  => Set Name
-  -> m (r a 'SExpr)
-atom lvs = choice
-  [ universe lvs
+  => Path -> LvBinders -> m (r a 'SExpr)
+atom path binders = choice
+  [ universe path binders
   , do
       n   <- identifier
       ann <- freshExprAnn
       pure (var ann n)
-  , between (symbol "(") (symbol ")") (expr lvs)
+  , between (symbol "(") (symbol ")") (expr (extendPath PsParens path) binders)
   ]
 
--- | @∀l. expr@ or @forall l. expr@ — level-binder introduction.  The
---   bound name is added to @lvs@ while parsing the body.
+-- | @∀l. expr@ — level-binder introduction.  The binder's 'Path' is
+--   the *current* path (where the @∀@ sits); the body is parsed at
+--   @path ++ [PsForallBody]@ with the binder added to scope.
 forallExpr
   :: (Lang r, HasAnn a m, MonadParsec Void Text m, MonadFail m)
-  => Set Name
-  -> m (r a 'SExpr)
-forallExpr lvs = do
+  => Path -> LvBinders -> m (r a 'SExpr)
+forallExpr path binders = do
   void (symbol "\8704" <|> symbol "forall")
   n <- identifier
   void (symbol ".")
-  body <- expr (Set.insert n lvs)
+  let binderPath = path
+      binders'   = Map.insert n binderPath binders
+  body <- expr (extendPath PsForallBody path) binders'
   ann  <- freshExprAnn
-  pure (forallLv ann n body)
+  pure (forallLv ann n binderPath body)
 
 expr
   :: (Lang r, HasAnn a m, MonadParsec Void Text m, MonadFail m)
-  => Set Name
-  -> m (r a 'SExpr)
-expr lvs = forallExpr lvs <|> arrowExpr lvs
+  => Path -> LvBinders -> m (r a 'SExpr)
+expr path binders = forallExpr path binders <|> arrowExpr path binders
 
 arrowExpr
   :: (Lang r, HasAnn a m, MonadParsec Void Text m, MonadFail m)
-  => Set Name
-  -> m (r a 'SExpr)
-arrowExpr lvs = do
-  a <- atom lvs
+  => Path -> LvBinders -> m (r a 'SExpr)
+arrowExpr path binders = do
+  a <- atom (extendPath PsArrL path) binders
   option a $ do
     void (symbol "->")
-    b   <- expr lvs
+    b   <- expr (extendPath PsArrR path) binders
     ann <- freshExprAnn
     pure (arr ann a b)
 
+-- ----------------------------------------------------------------------
+-- Declaration-level parsers.
+-- ----------------------------------------------------------------------
+
 decl
   :: (Lang r, HasAnn a m, MonadParsec Void Text m, MonadFail m)
-  => Set Name
-  -> m (r a 'SDecl)
-decl lvs = dataD <|> ctorD
+  => Path -> LvBinders -> m (r a 'SDecl)
+decl path binders = dataD <|> ctorD
   where
     dataD = do
       void (symbol "data")
       n   <- identifier
       void (symbol ":")
-      e   <- expr lvs
-      -- Inside the data body, the outer ∀-scope does NOT carry over —
-      -- forall scopes to the type annotation only.
-      ds  <- between (symbol "{") (symbol "}") (decl Set.empty `sepEndBy` symbol ";")
+      e   <- expr (extendPath PsDataAnn path) binders
+      -- Inside the data body, the outer ∀-scope does NOT carry over.
+      ds  <- between (symbol "{") (symbol "}") $
+               sepEndByIndexed
+                 (\i -> decl (extendPath (PsDeclIdx i) path) Map.empty)
+                 (symbol ";")
       ann <- freshDeclAnn
       pure (dataDecl ann n e ds)
 
     ctorD = do
       n   <- identifier
       void (symbol ":")
-      e   <- expr lvs
+      e   <- expr (extendPath PsCtorTy path) binders
       ann <- freshDeclAnn
       pure (ctorDecl ann n e)
 
@@ -173,14 +192,13 @@ program
   => m (r a 'SProg)
 program = do
   sc
-  ds  <- decl Set.empty `sepEndBy` symbol ";"
+  ds  <- sepEndByIndexed
+           (\i -> decl (extendPath (PsProgDecl i) emptyPath) Map.empty)
+           (symbol ";")
   ann <- freshProgAnn
   eof
   pure (prog ann ds)
 
--- | Parse a 'Text' input into a program in the user's chosen carrier
---   and annotation.  The annotation type often needs to be supplied
---   explicitly at the call site (e.g. @parseProgram \@Tree \@(Const ())@).
 parseProgram
   :: (Lang r, HasAnn a Parser)
   => FilePath

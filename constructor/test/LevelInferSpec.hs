@@ -9,6 +9,7 @@ import Constructor.HypTc (HypTc, hypProgram, solveLevelsHyp)
 import Constructor.Level (Lv (..), starLevel)
 import Constructor.LevelInfer (LevelMap, Lvl, LvErr (..), inferProgram)
 import Constructor.Parser (parseProgram)
+import Constructor.Path (Path (..), PathStep (..))
 import Constructor.Tc (LvAnnot (..), Tc, solveLevels, tcProgram, tcRunWith)
 import Data.Functor.Const (Const (..))
 import qualified Data.Map.Strict as Map
@@ -96,12 +97,14 @@ tests =
     , parityRejectHypTc "data X : *2 { F : *0 -> *1 }"
     )
   , ("Polymorphic — data Foo : \8704l. *(l + 2) { c : Foo } (A side)"
-    , polyDataLvl "data Foo : \8704l. *(l + 2) { c : Foo }"
-        [("Foo", S (LVar 0)), ("c", LVar 0)]
+    , let p = Path [PsProgDecl 0, PsDataAnn]
+      in polyDataLvl "data Foo : \8704l. *(l + 2) { c : Foo }"
+           [("Foo", S (LVar p)), ("c", LVar p)]
     )
   , ("Polymorphic with arrow — data Foo : \8704l. *(l + 2) { c : Foo -> Foo } (A side)"
-    , polyDataLvl "data Foo : \8704l. *(l + 2) { c : Foo -> Foo }"
-        [("Foo", S (LVar 0)), ("c", LVar 0)]
+    , let p = Path [PsProgDecl 0, PsDataAnn]
+      in polyDataLvl "data Foo : \8704l. *(l + 2) { c : Foo -> Foo }"
+           [("Foo", S (LVar p)), ("c", LVar p)]
     )
   , ("Polymorphic — A vs B parity on \8704l. *(l + 2)"
     , parityPolyAB "data Foo : \8704l. *(l + 2) { c : Foo -> Foo }"

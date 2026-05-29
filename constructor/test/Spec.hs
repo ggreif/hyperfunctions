@@ -6,6 +6,7 @@ module Main (main) where
 
 import Constructor.AST (Tree (..))
 import Constructor.Parser (parseProgram)
+import Constructor.Path (Path (..), PathStep (..))
 import Constructor.Sort (Sort (..))
 import qualified LevelInferSpec
 import Data.Functor.Const (Const (..))
@@ -95,27 +96,30 @@ cases =
     )
   , ( "polymorphic universe — \8704l. *l"
     , "data Foo : \8704l. *l { c : Foo }"
-    , Prog u
+    , let pBinder = Path [PsProgDecl 0, PsDataAnn]
+      in Prog u
         [ DataDecl u "Foo"
-            (ForallLv u "l" (StarVar u "l" 0))
+            (ForallLv u "l" pBinder (StarVar u "l" pBinder 0))
             [ CtorDecl u "c" (Var u "Foo")
             ]
         ]
     )
   , ( "polymorphic universe with offset — \8704l. *(l + 2)"
     , "data Bar : \8704l. *(l + 2) { d : Bar }"
-    , Prog u
+    , let pBinder = Path [PsProgDecl 0, PsDataAnn]
+      in Prog u
         [ DataDecl u "Bar"
-            (ForallLv u "l" (StarVar u "l" 2))
+            (ForallLv u "l" pBinder (StarVar u "l" pBinder 2))
             [ CtorDecl u "d" (Var u "Bar")
             ]
         ]
     )
   , ( "polymorphic universe — keyword 'forall'"
     , "data Q : forall l . *(l + 1) { q : Q }"
-    , Prog u
+    , let pBinder = Path [PsProgDecl 0, PsDataAnn]
+      in Prog u
         [ DataDecl u "Q"
-            (ForallLv u "l" (StarVar u "l" 1))
+            (ForallLv u "l" pBinder (StarVar u "l" pBinder 1))
             [ CtorDecl u "q" (Var u "Q")
             ]
         ]

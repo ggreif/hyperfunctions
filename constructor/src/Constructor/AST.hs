@@ -8,6 +8,7 @@ module Constructor.AST
   ( Tree (..)
   ) where
 
+import Constructor.Path (Path)
 import Constructor.Sort (Sort (..))
 import Constructor.Syntax (Lang (..), Name)
 import Data.Kind (Type)
@@ -23,8 +24,8 @@ data Tree (a :: Sort -> Type) (s :: Sort) where
   Var      :: a 'SExpr -> Name -> Tree a 'SExpr
   Star     :: a 'SExpr -> Word -> Tree a 'SExpr
   Arr      :: a 'SExpr -> Tree a 'SExpr -> Tree a 'SExpr -> Tree a 'SExpr
-  ForallLv :: a 'SExpr -> Name -> Tree a 'SExpr -> Tree a 'SExpr
-  StarVar  :: a 'SExpr -> Name -> Word -> Tree a 'SExpr
+  ForallLv :: a 'SExpr -> Name -> Path -> Tree a 'SExpr -> Tree a 'SExpr
+  StarVar  :: a 'SExpr -> Name -> Path -> Word -> Tree a 'SExpr
 
 deriving instance (forall s. Show (a s)) => Show (Tree a t)
 deriving instance (forall s. Eq   (a s)) => Eq   (Tree a t)

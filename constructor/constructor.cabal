@@ -21,6 +21,7 @@ library
   hs-source-dirs:  src
   exposed-modules:
     Constructor.Sort
+    Constructor.Path
     Constructor.Level
     Constructor.Sheet
     Constructor.LevelInfer

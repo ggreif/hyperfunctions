@@ -57,14 +57,12 @@ hypExprProc :: HypVal 'SExpr -> LvProc
 hypExprProc (HypVExpr p) = p
 
 data HypEnv = HypEnv
-  { hypEnvNames     :: !(Map Name LvProc)
-  , hypEnvParent    :: !(Maybe LvProc)
-  , hypEnvLvBinders :: !(Map Name Int)
-  , hypEnvNextLVar  :: !Int
+  { hypEnvNames  :: !(Map Name LvProc)
+  , hypEnvParent :: !(Maybe LvProc)
   }
 
 emptyHypEnv :: HypEnv
-emptyHypEnv = HypEnv Map.empty Nothing Map.empty 0
+emptyHypEnv = HypEnv Map.empty Nothing
 
 -- | Solver-facing analysis result.  Just the bound-name → type-process
 --   map; no Sheet to consult.  Levels are obtained by self-applying
@@ -183,26 +181,21 @@ instance Lang HypTc where
         let lv = lvA
         in Right (HypVExpr procA, env2, arr (LvAExpr lv) polyA polyB)
 
-  forallLv _ann n body = HypTc $ \env -> do
-    -- Allocate fresh LVar; bind in scope; run body; restore binder map.
-    let i = hypEnvNextLVar env
-        env1 = env { hypEnvNextLVar  = i + 1
-                   , hypEnvLvBinders = Map.insert n i (hypEnvLvBinders env)
-                   }
-    (bv, env2, polyBody) <- runHypTc body env1
+  -- The parser resolved binder + use names to 'Path's; the carrier
+  -- just uses them.
+  forallLv _ann name binderPath body = HypTc $ \env -> do
+    (bv, env1, polyBody) <- runHypTc body env
     let procBody = hypExprProc bv
         lv = hRun procBody
     pure ( HypVExpr procBody
-         , env2 { hypEnvLvBinders = hypEnvLvBinders env }
-         , forallLv (LvAExpr lv) n polyBody
+         , env1
+         , forallLv (LvAExpr lv) name binderPath polyBody
          )
 
-  starVar _ann n offset = HypTc $ \env -> case Map.lookup n (hypEnvLvBinders env) of
-    Just i  ->
-      let lv = addOffset (LVar i) offset
-          proc = hPure lv
-      in Right (HypVExpr proc, env, starVar (LvAExpr lv) n offset)
-    Nothing -> Left (Unbound n)
+  starVar _ann name binderPath offset = HypTc $ \env ->
+    let lv = addOffset (LVar binderPath) offset
+        proc = hPure lv
+    in Right (HypVExpr proc, env, starVar (LvAExpr lv) name binderPath offset)
 
 -- ----------------------------------------------------------------------
 -- Solver: invoke each name's hyperfunction to extract its level.

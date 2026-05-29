@@ -9,6 +9,7 @@ module Constructor.Syntax
   , Name
   ) where
 
+import Constructor.Path (Path)
 import Constructor.Sort (Sort (..))
 import Data.Functor.Const (Const (..))
 import Data.Kind (Type)
@@ -37,15 +38,18 @@ class Lang (r :: (Sort -> Type) -> Sort -> Type) where
   arr      :: a 'SExpr -> r a 'SExpr -> r a 'SExpr -> r a 'SExpr
 
   -- | Level-binder introduction: @∀l. body@.  The @Name@ is the
-  --   binder's surface name; inside @body@ the parser parses
-  --   references to that name (in universe positions) via 'starVar'.
-  forallLv :: a 'SExpr -> Name -> r a 'SExpr -> r a 'SExpr
+  --   binder's surface name (for display); the @Path@ is its
+  --   syntactic identity (replaces the counter-based fresh id).
+  --   Inside @body@ the parser parses references to that name (in
+  --   universe positions) via 'starVar' with the same 'Path'.
+  forallLv :: a 'SExpr -> Name -> Path -> r a 'SExpr -> r a 'SExpr
   forallLv = error "Lang.forallLv: level polymorphism not supported by this carrier"
 
   -- | Variable-shifted universe: @*(l + n)@.  The @Name@ is the
-  --   binder this references; the @Word@ is the offset.  Bare @*l@
-  --   parses to @starVar ann l 0@.
-  starVar  :: a 'SExpr -> Name -> Word -> r a 'SExpr
+  --   binder's surface name; the @Path@ is the binder's identity
+  --   (resolved by the parser via name lookup); the @Word@ is the
+  --   offset.  Bare @*l@ parses to @starVar ann l p 0@.
+  starVar  :: a 'SExpr -> Name -> Path -> Word -> r a 'SExpr
   starVar  = error "Lang.starVar: level polymorphism not supported by this carrier"
 
 -- | Annotation provider in an applicative monad @m@.  The parser is

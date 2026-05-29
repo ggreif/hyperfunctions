@@ -41,14 +41,12 @@ extract :: LvProc -> Lv
 extract = hRun
 
 data Env = Env
-  { envNames     :: !(Map Name LvProc)
-  , envParent    :: !(Maybe LvProc)
-  , envLvBinders :: !(Map Name Int)
-  , envNextLVar  :: !Int
+  { envNames  :: !(Map Name LvProc)
+  , envParent :: !(Maybe LvProc)
   }
 
 emptyEnv :: Env
-emptyEnv = Env Map.empty Nothing Map.empty 0
+emptyEnv = Env Map.empty Nothing
 
 type family HfOut (s :: Sort) :: Type where
   HfOut 'SProg = LevelMap
@@ -126,14 +124,9 @@ instance Lang HfLvl where
     procR <- unifyProcs pa pb
     pure (procR, env2)
 
-  forallLv _ann n body = HfLvl $ \env -> do
-    let i = envNextLVar env
-        env1 = env { envNextLVar  = i + 1
-                   , envLvBinders = Map.insert n i (envLvBinders env)
-                   }
-    (procBody, env2) <- runHfLvl body env1
-    pure (procBody, env2 { envLvBinders = envLvBinders env })
+  -- The parser resolved binder + use names to 'Path's; the carrier
+  -- just uses them.
+  forallLv _ann _name _path body = HfLvl $ runHfLvl body
 
-  starVar _ann n offset = HfLvl $ \env -> case Map.lookup n (envLvBinders env) of
-    Just i  -> Right (fromLv (addOffset (LVar i) offset), env)
-    Nothing -> Left (Unbound n)
+  starVar _ann _name binderPath offset = HfLvl $ \env ->
+    Right (fromLv (addOffset (LVar binderPath) offset), env)

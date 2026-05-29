@@ -33,15 +33,13 @@ import qualified Data.Map.Strict as Map
 type LevelMap = Map Name Lv
 
 data Env = Env
-  { envSheet     :: !(Sheet Lv)
-  , envNames     :: !(Map Name Place)   -- declared name → its place
-  , envParent    :: !(Maybe Place)      -- enclosing data's place, set by 'dataDecl'
-  , envLvBinders :: !(Map Name Int)     -- ∀-bound level names → LVar ids
-  , envNextLVar  :: !Int                -- fresh LVar counter
+  { envSheet  :: !(Sheet Lv)
+  , envNames  :: !(Map Name Place)   -- declared name → its place
+  , envParent :: !(Maybe Place)      -- enclosing data's place, set by 'dataDecl'
   } deriving Show
 
 emptyEnv :: Env
-emptyEnv = Env emptySheet Map.empty Nothing Map.empty 0
+emptyEnv = Env emptySheet Map.empty Nothing
 
 -- | Errors surfaced by inference.
 data LvErr
@@ -141,18 +139,12 @@ instance Lang Lvl where
     sheet2 <- unify mergeLv parr pa sheet1
     pure (parr, env2 { envSheet = sheet2 })
 
-  forallLv _ann n body = Lvl $ \env -> do
-    let i = envNextLVar env
-        env1 = env { envNextLVar  = i + 1
-                   , envLvBinders = Map.insert n i (envLvBinders env)
-                   }
-    (pBody, env2) <- runLvl body env1
-    pure (pBody, env2 { envLvBinders = envLvBinders env })
+  -- The parser resolved the binder + use names to 'Path's; the carrier
+  -- just uses them.  No internal binder env, no counter.
+  forallLv _ann _name _path body = Lvl $ runLvl body
 
-  starVar _ann n offset = Lvl $ \env -> case Map.lookup n (envLvBinders env) of
-    Just i  -> do
-      let lv = addOffset (LVar i) offset
-          (p, sheet1) = freshPlace (envSheet env)
-      sheet2 <- pin mergeLv p lv sheet1
-      pure (p, env { envSheet = sheet2 })
-    Nothing -> Left (Unbound n)
+  starVar _ann _name binderPath offset = Lvl $ \env -> do
+    let lv = addOffset (LVar binderPath) offset
+        (p, sheet1) = freshPlace (envSheet env)
+    sheet2 <- pin mergeLv p lv sheet1
+    pure (p, env { envSheet = sheet2 })
