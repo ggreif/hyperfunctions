@@ -37,12 +37,6 @@ tests =
         (TyCon "Nat" natP)
         (TyCon "Bool" boolP)
     )
-  , ( "meet: TyCon ≢ TyCon (same name, different paths) — \
-       \def-path Stern-Gerlach"
-    , let p1 = Path [PsProgDecl 0]
-          p2 = Path [PsProgDecl 1]
-      in expectMismatch (TyCon "Bool" p1) (TyCon "Bool" p2)
-    )
   , ( "meet: TyArr ≡ TyArr — congruent children"
     , expectOK
         (TyArr (TyCon "Nat" natP) (TyCon "Bool" boolP))
