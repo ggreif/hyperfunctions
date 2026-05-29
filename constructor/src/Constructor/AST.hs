@@ -23,6 +23,8 @@ data Tree (a :: Sort -> Type) (s :: Sort) where
   Var      :: a 'SExpr -> Name -> Tree a 'SExpr
   Star     :: a 'SExpr -> Word -> Tree a 'SExpr
   Arr      :: a 'SExpr -> Tree a 'SExpr -> Tree a 'SExpr -> Tree a 'SExpr
+  ForallLv :: a 'SExpr -> Name -> Tree a 'SExpr -> Tree a 'SExpr
+  StarVar  :: a 'SExpr -> Name -> Word -> Tree a 'SExpr
 
 deriving instance (forall s. Show (a s)) => Show (Tree a t)
 deriving instance (forall s. Eq   (a s)) => Eq   (Tree a t)
@@ -34,3 +36,5 @@ instance Lang Tree where
   var      = Var
   star     = Star
   arr      = Arr
+  forallLv = ForallLv
+  starVar  = StarVar

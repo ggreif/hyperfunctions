@@ -124,8 +124,10 @@ tcRunWith p = do
 -- ----------------------------------------------------------------------
 
 predLv :: Lv -> Maybe Lv
-predLv Z     = Nothing
-predLv (S n) = Just n
+predLv Z        = Nothing
+predLv (S n)    = Just n
+predLv (LVar _) = Nothing   -- polymorphic levels: unsupported here; forallLv's
+                            -- error default will fire first in practice
 
 mergeLv :: Lv -> Lv -> Either LvErr Lv
 mergeLv a b

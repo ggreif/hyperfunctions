@@ -100,8 +100,10 @@ hypRunWith p = do
 -- ----------------------------------------------------------------------
 
 predLv :: Lv -> Maybe Lv
-predLv Z     = Nothing
-predLv (S n) = Just n
+predLv Z        = Nothing
+predLv (S n)    = Just n
+predLv (LVar _) = Nothing   -- polymorphic levels: unsupported here; forallLv's
+                            -- error default will fire first in practice
 
 bind :: Name -> LvProc -> HypEnv -> Either LvErr HypEnv
 bind n p env

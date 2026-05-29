@@ -72,8 +72,9 @@ inferProgram :: Lvl a 'SProg -> Either LvErr LevelMap
 inferProgram p = fst <$> runLvl p emptyEnv
 
 predLv :: Lv -> Maybe Lv
-predLv Z     = Nothing
-predLv (S n) = Just n
+predLv Z        = Nothing
+predLv (S n)    = Just n
+predLv (LVar _) = Nothing   -- polymorphic levels: unsupported here
 
 bind :: Name -> Place -> Env -> Either LvErr Env
 bind n p env

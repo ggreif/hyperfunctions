@@ -5,6 +5,13 @@
 -- | Grammar functions written generically against any annotation regime
 --   via 'HasAnn'.  The parser monad is polymorphic in @m@; concrete
 --   runners pick a monad and an annotation type at the call site.
+--
+--   The grammar tracks level-variable binders explicitly via a 'Set
+--   Name' threaded through the recursive descent.  Inside an outer
+--   @∀l. expr@ (or @forall l. expr@), references @*l@ and @*(l + n)@
+--   parse to 'starVar'; outside, they parse to a regular 'var'
+--   reference (which the typechecker will still reject for level
+--   positions, but the parser stays carrier-agnostic).
 module Constructor.Parser
   ( parseProgram
   , program
@@ -18,6 +25,8 @@ import Constructor.Syntax (HasAnn (..), Lang (..), Name)
 import Control.Monad (void)
 import Data.Char (isAlpha, isAlphaNum)
 import Data.Functor.Const (Const (..))
+import Data.Set (Set)
+import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Void (Void)
@@ -45,7 +54,7 @@ symbol :: (MonadParsec Void Text m) => Text -> m Text
 symbol = L.symbol sc
 
 keywords :: [Text]
-keywords = ["data"]
+keywords = ["data", "forall"]
 
 identifier :: (MonadParsec Void Text m, MonadFail m) => m Name
 identifier = lexeme . try $ do
@@ -57,55 +66,114 @@ identifier = lexeme . try $ do
   where
     isAlphaNumOrUnder c = isAlphaNum c || c == '_' || c == '\''
 
-starLit :: (Lang r, HasAnn a m, MonadParsec Void Text m) => m (r a 'SExpr)
-starLit = lexeme $ do
+-- | Universe expression starting with @*@.  Three forms:
+--
+--     *n              -- literal universe at level @n@
+--     *l              -- bare variable reference (l must be in scope)
+--     *(l + n)        -- variable + literal offset
+universe
+  :: (Lang r, HasAnn a m, MonadParsec Void Text m, MonadFail m)
+  => Set Name
+  -> m (r a 'SExpr)
+universe lvs = lexeme $ do
   void (char '*')
-  n   <- L.decimal
-  ann <- freshExprAnn
-  pure (star ann n)
+  choice
+    [ try $ do
+        n   <- L.decimal
+        ann <- freshExprAnn
+        pure (star ann n)
+    , between (symbol "(") (symbol ")") $ do
+        n <- identifier
+        if Set.member n lvs
+          then do
+            offset <- option 0 (symbol "+" *> L.decimal)
+            ann    <- freshExprAnn
+            pure (starVar ann n offset)
+          else fail ("unbound level variable: " <> T.unpack n)
+    , do
+        n <- identifier
+        if Set.member n lvs
+          then do
+            ann <- freshExprAnn
+            pure (starVar ann n 0)
+          else fail ("unbound level variable: " <> T.unpack n)
+    ]
 
-atom :: (Lang r, HasAnn a m, MonadParsec Void Text m, MonadFail m) => m (r a 'SExpr)
-atom = choice
-  [ starLit
+atom
+  :: (Lang r, HasAnn a m, MonadParsec Void Text m, MonadFail m)
+  => Set Name
+  -> m (r a 'SExpr)
+atom lvs = choice
+  [ universe lvs
   , do
       n   <- identifier
       ann <- freshExprAnn
       pure (var ann n)
-  , between (symbol "(") (symbol ")") expr
+  , between (symbol "(") (symbol ")") (expr lvs)
   ]
 
-expr :: (Lang r, HasAnn a m, MonadParsec Void Text m, MonadFail m) => m (r a 'SExpr)
-expr = do
-  a <- atom
+-- | @∀l. expr@ or @forall l. expr@ — level-binder introduction.  The
+--   bound name is added to @lvs@ while parsing the body.
+forallExpr
+  :: (Lang r, HasAnn a m, MonadParsec Void Text m, MonadFail m)
+  => Set Name
+  -> m (r a 'SExpr)
+forallExpr lvs = do
+  void (symbol "\8704" <|> symbol "forall")
+  n <- identifier
+  void (symbol ".")
+  body <- expr (Set.insert n lvs)
+  ann  <- freshExprAnn
+  pure (forallLv ann n body)
+
+expr
+  :: (Lang r, HasAnn a m, MonadParsec Void Text m, MonadFail m)
+  => Set Name
+  -> m (r a 'SExpr)
+expr lvs = forallExpr lvs <|> arrowExpr lvs
+
+arrowExpr
+  :: (Lang r, HasAnn a m, MonadParsec Void Text m, MonadFail m)
+  => Set Name
+  -> m (r a 'SExpr)
+arrowExpr lvs = do
+  a <- atom lvs
   option a $ do
     void (symbol "->")
-    b   <- expr
+    b   <- expr lvs
     ann <- freshExprAnn
     pure (arr ann a b)
 
-decl :: (Lang r, HasAnn a m, MonadParsec Void Text m, MonadFail m) => m (r a 'SDecl)
-decl = dataD <|> ctorD
+decl
+  :: (Lang r, HasAnn a m, MonadParsec Void Text m, MonadFail m)
+  => Set Name
+  -> m (r a 'SDecl)
+decl lvs = dataD <|> ctorD
   where
     dataD = do
       void (symbol "data")
       n   <- identifier
       void (symbol ":")
-      e   <- expr
-      ds  <- between (symbol "{") (symbol "}") (decl `sepEndBy` symbol ";")
+      e   <- expr lvs
+      -- Inside the data body, the outer ∀-scope does NOT carry over —
+      -- forall scopes to the type annotation only.
+      ds  <- between (symbol "{") (symbol "}") (decl Set.empty `sepEndBy` symbol ";")
       ann <- freshDeclAnn
       pure (dataDecl ann n e ds)
 
     ctorD = do
       n   <- identifier
       void (symbol ":")
-      e   <- expr
+      e   <- expr lvs
       ann <- freshDeclAnn
       pure (ctorDecl ann n e)
 
-program :: (Lang r, HasAnn a m, MonadParsec Void Text m, MonadFail m) => m (r a 'SProg)
+program
+  :: (Lang r, HasAnn a m, MonadParsec Void Text m, MonadFail m)
+  => m (r a 'SProg)
 program = do
   sc
-  ds  <- decl `sepEndBy` symbol ";"
+  ds  <- decl Set.empty `sepEndBy` symbol ";"
   ann <- freshProgAnn
   eof
   pure (prog ann ds)

@@ -61,8 +61,9 @@ inferProgramHf :: HfLvl a 'SProg -> Either LvErr LevelMap
 inferProgramHf p = fst <$> runHfLvl p emptyEnv
 
 predLv :: Lv -> Maybe Lv
-predLv Z     = Nothing
-predLv (S n) = Just n
+predLv Z        = Nothing
+predLv (S n)    = Just n
+predLv (LVar _) = Nothing   -- polymorphic levels: unsupported here
 
 bind :: Name -> LvProc -> Env -> Either LvErr Env
 bind n p env
