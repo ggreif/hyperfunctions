@@ -37,7 +37,7 @@ module Constructor.Tc
   , solveLevels
   ) where
 
-import Constructor.Level (Lv (..), starLevel)
+import Constructor.Level (Lv (..), addOffset, starLevel)
 import Constructor.LevelInfer (LevelMap, LvErr (..))
 import Constructor.Sheet
 import Constructor.Sort (Sort (..))
@@ -67,13 +67,18 @@ tcExprPlace :: TcVal 'SExpr -> Place
 tcExprPlace (TcVExpr p) = p
 
 data TcEnv = TcEnv
-  { tcEnvSheet  :: !(Sheet Lv)
-  , tcEnvNames  :: !(Map Name Place)
-  , tcEnvParent :: !(Maybe Place)
+  { tcEnvSheet     :: !(Sheet Lv)
+  , tcEnvNames     :: !(Map Name Place)
+  , tcEnvParent    :: !(Maybe Place)
+  , tcEnvLvBinders :: !(Map Name Int)
+    -- ^ ∀-bound level-variable names → their fresh 'LVar' id.  Scoped
+    --   to the body of each 'forallLv' call.
+  , tcEnvNextLVar  :: !Int
+    -- ^ Counter for fresh 'LVar' ids.
   } deriving Show
 
 emptyTcEnv :: TcEnv
-emptyTcEnv = TcEnv emptySheet Map.empty Nothing
+emptyTcEnv = TcEnv emptySheet Map.empty Nothing Map.empty 0
 
 -- | Solver-facing analysis result.
 data TcResult = TcResult
@@ -209,6 +214,33 @@ instance Lang Tc where
     let (mLv, sheet3) = levelOf parr sheet2
     lv <- maybe (Left UnpinnedLevel) Right mLv
     pure (TcVExpr parr, env2 { tcEnvSheet = sheet3 }, arr (LvAExpr lv) polyA polyB)
+
+  forallLv _ann n body = Tc $ \env -> do
+    -- Allocate a fresh LVar id for this binder, bind n → id in the
+    -- env, then run the body with the binding in scope.  Restore the
+    -- binder map after — forall scopes only to its immediate body.
+    let i = tcEnvNextLVar env
+        env1 = env { tcEnvNextLVar  = i + 1
+                   , tcEnvLvBinders = Map.insert n i (tcEnvLvBinders env)
+                   }
+    (bv, env2, polyBody) <- runTc body env1
+    let pBody = tcExprPlace bv
+        (mLv, sheet') = levelOf pBody (tcEnvSheet env2)
+    lv <- maybe (Left UnpinnedLevel) Right mLv
+    pure ( TcVExpr pBody
+         , env2 { tcEnvSheet     = sheet'
+                , tcEnvLvBinders = tcEnvLvBinders env  -- restore (forall scopes to body)
+                }
+         , forallLv (LvAExpr lv) n polyBody
+         )
+
+  starVar _ann n offset = Tc $ \env -> case Map.lookup n (tcEnvLvBinders env) of
+    Just i  -> do
+      let lv = addOffset (LVar i) offset
+          (p, sheet1) = freshPlace (tcEnvSheet env)
+      sheet2 <- pin mergeLv p lv sheet1
+      pure (TcVExpr p, env { tcEnvSheet = sheet2 }, starVar (LvAExpr lv) n offset)
+    Nothing -> Left (Unbound n)
 
 -- ----------------------------------------------------------------------
 -- Solver.  Pure record-projection over 'TcResult'.

@@ -21,7 +21,7 @@ module Constructor.LevelInfer
   , LevelMap
   ) where
 
-import Constructor.Level (Lv (..), starLevel)
+import Constructor.Level (Lv (..), addOffset, starLevel)
 import Constructor.Sheet
 import Constructor.Sort (Sort (..))
 import Constructor.Syntax (Lang (..), Name)
@@ -33,13 +33,15 @@ import qualified Data.Map.Strict as Map
 type LevelMap = Map Name Lv
 
 data Env = Env
-  { envSheet  :: !(Sheet Lv)
-  , envNames  :: !(Map Name Place)   -- declared name → its place
-  , envParent :: !(Maybe Place)      -- enclosing data's place, set by 'dataDecl'
+  { envSheet     :: !(Sheet Lv)
+  , envNames     :: !(Map Name Place)   -- declared name → its place
+  , envParent    :: !(Maybe Place)      -- enclosing data's place, set by 'dataDecl'
+  , envLvBinders :: !(Map Name Int)     -- ∀-bound level names → LVar ids
+  , envNextLVar  :: !Int                -- fresh LVar counter
   } deriving Show
 
 emptyEnv :: Env
-emptyEnv = Env emptySheet Map.empty Nothing
+emptyEnv = Env emptySheet Map.empty Nothing Map.empty 0
 
 -- | Errors surfaced by inference.
 data LvErr
@@ -138,3 +140,19 @@ instance Lang Lvl where
     sheet1 <- unify mergeLv pa pb sheet0
     sheet2 <- unify mergeLv parr pa sheet1
     pure (parr, env2 { envSheet = sheet2 })
+
+  forallLv _ann n body = Lvl $ \env -> do
+    let i = envNextLVar env
+        env1 = env { envNextLVar  = i + 1
+                   , envLvBinders = Map.insert n i (envLvBinders env)
+                   }
+    (pBody, env2) <- runLvl body env1
+    pure (pBody, env2 { envLvBinders = envLvBinders env })
+
+  starVar _ann n offset = Lvl $ \env -> case Map.lookup n (envLvBinders env) of
+    Just i  -> do
+      let lv = addOffset (LVar i) offset
+          (p, sheet1) = freshPlace (envSheet env)
+      sheet2 <- pin mergeLv p lv sheet1
+      pure (p, env { envSheet = sheet2 })
+    Nothing -> Left (Unbound n)

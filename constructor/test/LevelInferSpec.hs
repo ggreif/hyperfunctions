@@ -95,6 +95,14 @@ tests =
   , ("Architecture B parity — HypTc on heterogeneous arrow rejects"
     , parityRejectHypTc "data X : *2 { F : *0 -> *1 }"
     )
+  , ("Polymorphic — data Foo : \8704l. *(l + 2) { c : Foo } (A side)"
+    , polyDataLvl "data Foo : \8704l. *(l + 2) { c : Foo }"
+        [("Foo", S (LVar 0)), ("c", LVar 0)]
+    )
+  , ("Polymorphic with arrow — data Foo : \8704l. *(l + 2) { c : Foo -> Foo } (A side)"
+    , polyDataLvl "data Foo : \8704l. *(l + 2) { c : Foo -> Foo }"
+        [("Foo", S (LVar 0)), ("c", LVar 0)]
+    )
   ]
 
 -- | Run the same source through both the classical 'Lvl' carrier and the
@@ -172,6 +180,23 @@ parityRejectHypTc src = do
     _ -> reportFail $
            "Lvl:   " <> show lvlR <> "\n    " <>
            "HypTc: " <> show hypR <> "\n    (both should reject)"
+
+-- | Polymorphic-data parity for the A side: parse a polymorphic source
+--   via 'Lvl', verify the produced 'LevelMap' contains the expected
+--   level expressions (including 'LVar' references for unresolved
+--   polymorphic levels).
+polyDataLvl :: Text -> [(Text, Lv)] -> IO Bool
+polyDataLvl src want = do
+  let wantMap = Map.fromList want
+  case parseProgram @Lvl @(Const ()) "<poly>" src of
+    Left e  -> reportFail (errorBundlePretty e)
+    Right p -> case inferProgram p of
+      Left err -> reportFail (show err)
+      Right got
+        | got == wantMap -> pure True
+        | otherwise -> reportFail $
+            "level map mismatch\n  want: " <> show wantMap <>
+            "\n  got:  " <> show got
 
 -- | Demonstrate 'tcRunWith' producing a 'Tree' decorated with 'LvAnnot'.
 --   Pattern-matches the resulting Tree against the expected structure +
