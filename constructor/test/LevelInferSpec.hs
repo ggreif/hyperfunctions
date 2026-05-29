@@ -5,6 +5,7 @@ module LevelInferSpec (tests) where
 
 import Constructor.AST (Tree (..))
 import Constructor.HfLvl (HfLvl, inferProgramHf)
+import Constructor.HypTc (HypTc, hypProgram, solveLevelsHyp)
 import Constructor.Level (Lv (..), starLevel)
 import Constructor.LevelInfer (LevelMap, Lvl, LvErr (..), inferProgram)
 import Constructor.Parser (parseProgram)
@@ -83,6 +84,17 @@ tests =
   , ("tcRunWith @Tree — polymorphic LvAnnot-decorated term"
     , tcRunWithTreeCheck
     )
+  , ("Architecture B parity — HypTc + solveLevelsHyp on Nat"
+    , parityLvlHypTc "data Nat : *0 { Z : Nat; S : Nat -> Nat }"
+        [("Nat", lv 1), ("Z", lv 0), ("S", lv 0)]
+    )
+  , ("Architecture B parity — HypTc on nested data"
+    , parityLvlHypTc "data Type : *1 { Constr : Type; data Ty2 : Type { Foo : Ty2 } }"
+        [("Type", lv 2), ("Constr", lv 1), ("Ty2", lv 1), ("Foo", lv 0)]
+    )
+  , ("Architecture B parity — HypTc on heterogeneous arrow rejects"
+    , parityRejectHypTc "data X : *2 { F : *0 -> *1 }"
+    )
   ]
 
 -- | Run the same source through both the classical 'Lvl' carrier and the
@@ -125,6 +137,41 @@ parityLvlTc src want = do
            "Lvl: " <> show lvlR <> "\n    " <>
            "Tc:  " <> show tcR  <> "\n    " <>
            "want: " <> show wantMap
+
+-- | Architecture B parity: 'HypTc' (hyperfunction web) must agree with
+--   'Lvl' (sheet-driven) on v0 inputs — the architectures are
+--   semantically identical for flat-level inference.
+parityLvlHypTc :: Text -> [(Text, Lv)] -> IO Bool
+parityLvlHypTc src want = do
+  let wantMap = Map.fromList want
+      lvlR = case parseProgram @Lvl @(Const ()) "<parity>" src of
+        Left e  -> Left (errorBundlePretty e)
+        Right p -> either (Left . show) Right (inferProgram p)
+      hypR = case parseProgram @HypTc @(Const ()) "<parity>" src of
+        Left e  -> Left (errorBundlePretty e)
+        Right p -> either (Left . show) Right (hypProgram p >>= solveLevelsHyp)
+  case (lvlR, hypR) of
+    (Right a, Right b) | a == b && a == wantMap -> pure True
+    _ -> reportFail $
+           "Lvl:   " <> show lvlR <> "\n    " <>
+           "HypTc: " <> show hypR <> "\n    " <>
+           "want:  " <> show wantMap
+
+-- | 'HypTc' must reject the same heterogeneous-arrow cases that 'Lvl'
+--   rejects.  Both should produce a 'LevelTear' error.
+parityRejectHypTc :: Text -> IO Bool
+parityRejectHypTc src = do
+  let lvlR = case parseProgram @Lvl @(Const ()) "<reject>" src of
+        Left e  -> Left (errorBundlePretty e)
+        Right p -> either (Left . show) Right (inferProgram p)
+      hypR = case parseProgram @HypTc @(Const ()) "<reject>" src of
+        Left e  -> Left (errorBundlePretty e)
+        Right p -> either (Left . show) Right (hypProgram p >>= solveLevelsHyp)
+  case (lvlR, hypR) of
+    (Left _, Left _) -> pure True   -- both rejected; agree
+    _ -> reportFail $
+           "Lvl:   " <> show lvlR <> "\n    " <>
+           "HypTc: " <> show hypR <> "\n    (both should reject)"
 
 -- | Demonstrate 'tcRunWith' producing a 'Tree' decorated with 'LvAnnot'.
 --   Pattern-matches the resulting Tree against the expected structure +

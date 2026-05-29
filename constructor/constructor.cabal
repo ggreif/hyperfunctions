@@ -27,6 +27,7 @@ library
     Constructor.HyperLite
     Constructor.HfLvl
     Constructor.Tc
+    Constructor.HypTc
     Constructor.Syntax
     Constructor.AST
     Constructor.Parser

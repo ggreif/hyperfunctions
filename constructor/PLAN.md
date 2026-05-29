@@ -112,3 +112,116 @@ on a union-find structure in `Constructor.Sheet`:
 Each of these unlocks a specific future direction; the HKT carrier
 shape and the union-find substrate are exactly the seams along which
 they will be added.
+
+## Tc carrier shape — decisions from 2026-05-29
+
+### Carrier value ≠ syntactic Tree
+
+Building `Tree a s` IS exactly what `Lang r => r a s` evaluates to at
+`r ~ Tree`.  Constructors `Prog` / `DataDecl` / … are the names the
+lowercase Lang methods `prog` / `dataDecl` / … reduce to at that
+carrier.  No separate "Sem" newtype is necessary — the Tree, when
+*built via the lowercase vocabulary*, is already the Church-encoded
+polymorphic form, just specialised at one `r`.
+
+Consequence for `Tc`:
+
+- The `Lang Tc` instance never patterns-matches on `Tree`.  It
+  emits constraints into the substrate and tracks declared names
+  in its environment.  Its value type is a small `TcVal` (Place +
+  sort tag), *not* a `Tree`.
+- Constructors of `Tree` appear in `Tc.hs` exactly nowhere; the
+  module doesn't even import `Tree`.  Consumers that want a
+  `Tree` parse separately at `r = Tree`, or specialise the
+  polymorphic third slot of `Tc` at `Tree`.
+
+### Impredicative `Tc` — analysis + polymorphic LvAnnot term
+
+`Tc`'s `runTc` field has type
+
+```haskell
+forall r. Lang r => TcEnv -> Either LvErr (TcVal s, TcEnv, r LvAnnot s)
+```
+
+so each method does its analysis work **and** simultaneously builds
+a polymorphic finally-tagless term decorated with the inferred
+levels (`LvAnnot :: Sort -> Type`, carrying an `Lv` per node).
+
+Two entry points:
+
+- `tcProgram :: Tc a 'SProg -> Either LvErr TcResult` — analysis
+  only; specialises the polymorphic slot at a trivial `Discard`
+  carrier internally.
+- `tcRunWith :: forall r a. Lang r => Tc a 'SProg -> Either LvErr (TcResult, r LvAnnot 'SProg)`
+  — analysis **plus** the polymorphic term at the caller's chosen
+  `r`.
+
+GHC 9.10's QuickLook handles the impredicative field without
+explicit type-application acrobatics; only the `@Tree` / `@Discard`
+choices at the entry points need `@`.  `{-# LANGUAGE
+ImpredicativeTypes #-}` is on in `Tc.hs`.
+
+### Escape hatch if QuickLook misbehaves
+
+Hoist `r` to be a type parameter of `Tc`, giving `Tc r a s`, and put
+the `Lang r` constraint on the instance head:
+
+```haskell
+newtype Tc r a s = Tc { runTc :: TcEnv -> Either LvErr (TcVal s, TcEnv, r LvAnnot s) }
+instance Lang r => Lang (Tc r) where  ...
+```
+
+No impredicativity needed; standard rank-1 Haskell.  Trade-off: the
+caller picks `r` at parse time rather than at extraction time, and
+re-specialisation across multiple `r` would require either re-parsing
+or going through a `Tree` intermediate.  Not worse, just less
+flexible.  Worth knowing in case the impredicative path ever bites.
+
+### Solver is record projection
+
+With name collection moved into `tcEnvNames` during the Tc pass,
+`solveLevels` is just `Map.toList → resolveOne → Map.fromList` over
+`TcResult`.  No `Tree` walked, no `collectNames`, no pattern matches
+on syntactic structure.  The Tree-handling territory ("legitimate
+non-compositional analysis") survives intact for future passes
+(pretty-printer, error reporter, dependency analyser) — it just
+isn't on the v0 level-inference path.
+
+## Hyperfunctions: `HyperLite` excerpt vs the upstream package
+
+`Constructor.HyperLite` is a deliberately minimal 17-line inline of the
+`newtype Hyper a b = Hyper { invoke :: Hyper b a -> b }` formalism
+(same definition as in Edward Kmett's [`hyperfunctions`](https://github.com/ekmett/hyperfunctions))
+plus `hPure` and `hRun`.  We use only those two functions in v0; the
+full algebra (`Category`, `Profunctor`, `Arrow`, `ArrowLoop`,
+`MonadZip`, `ana`, `cata`, `push`, `project`, the `Rep`-backed
+memoising variant in `Control.Monad.Hyper.Rep`) isn't needed yet.
+
+### Why inlined, not depended-on
+
+The upstream `hyperfunctions.cabal` pins `transformers >= 0.3 && < 0.5`,
+which conflicts with GHC 9.10's bundled `transformers 0.6`.  The
+upstream library doesn't actually use anything from `transformers`
+that broke — `Data.Functor.Identity` and `Data.Functor.Compose` moved
+to `base` years ago — so the bound is purely speculative.  Inlining
+17 lines was cheaper than working around the bound for the v0 needs.
+
+### Switch path when we want the full algebra
+
+For Architecture B with structural type-processes (composition of
+unification negotiations, profunctor-aware variance, recursive
+unification via `ana`/`cata`, memoised state spaces via `Rep`), the
+library starts paying off.  Migration is mechanical:
+
+1. `~/hyperfunctions/hyperfunctions.cabal`: bump `transformers < 0.5`
+   → `< 0.7` (or drop the upper bound).
+2. `~/hyperfunctions/cabal.project` (new file): list both
+   `./` (the package) and `./constructor/`.
+3. `constructor/constructor.cabal`: add `hyperfunctions` to
+   `build-depends`.
+4. `Constructor.HyperLite` becomes a re-export of `Control.Monad.Hyper`
+   (or is deleted and modules import directly).
+
+No source changes required in either the library or our project.  The
+bound bump is also publishable upstream as a small modernisation PR
+should we choose to send it.
