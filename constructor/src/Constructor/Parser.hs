@@ -23,7 +23,7 @@ import Constructor.AST (Tree)
 import Constructor.Path (Path, PathStep (..), emptyPath, extendPath)
 import Constructor.Sort (Sort (..))
 import Constructor.Syntax (HasAnn (..), Lang (..), Name)
-import Control.Monad (void)
+import Control.Monad (foldM, void)
 import Data.Char (isAlpha, isAlphaNum)
 import Data.Functor.Const (Const (..))
 import Data.Map.Strict (Map)
@@ -151,12 +151,26 @@ arrowExpr
   :: (Lang r, HasAnn a m, MonadParsec Void Text m, MonadFail m)
   => Path -> LvBinders -> m (r a 'SExpr)
 arrowExpr path binders = do
-  a <- atom (extendPath PsArrL path) binders
+  a <- application (extendPath PsArrL path) binders
   option a $ do
     void (symbol "->")
     b   <- expr (extendPath PsArrR path) binders
     ann <- freshExprAnn
     pure (arr ann a b)
+
+-- | Left-associative juxtaposition for type-level application:
+--   @f x y z@ parses to @app (app (app f x) y) z@.
+application
+  :: (Lang r, HasAnn a m, MonadParsec Void Text m, MonadFail m)
+  => Path -> LvBinders -> m (r a 'SExpr)
+application path binders = do
+  head_ <- atom path binders
+  args  <- many (atom path binders)
+  foldM apply1 head_ args
+  where
+    apply1 f x = do
+      ann <- freshExprAnn
+      pure (app ann f x)
 
 -- ----------------------------------------------------------------------
 -- Declaration-level parsers.
@@ -169,7 +183,8 @@ decl path binders = dataD <|> ctorD
   where
     dataD = do
       void (symbol "data")
-      n   <- identifier
+      n      <- identifier
+      params <- many identifier  -- zero-or-more parameter names
       void (symbol ":")
       e   <- expr (extendPath PsDataAnn path) binders
       -- Inside the data body, the outer ∀-scope does NOT carry over.
@@ -178,7 +193,7 @@ decl path binders = dataD <|> ctorD
                  (\i -> decl (extendPath (PsDeclIdx i) path) Map.empty)
                  (symbol ";")
       ann <- freshDeclAnn
-      pure (dataDecl ann n e ds)
+      pure (dataDecl ann n params e ds)
 
     ctorD = do
       n   <- identifier

@@ -31,11 +31,19 @@ type Name = Text
 --   polymorphic input, which is honest about what they support.
 class Lang (r :: (Sort -> Type) -> Sort -> Type) where
   prog     :: a 'SProg -> [r a 'SDecl] -> r a 'SProg
-  dataDecl :: a 'SDecl -> Name -> r a 'SExpr -> [r a 'SDecl] -> r a 'SDecl
+  -- | Data declaration.  The @[Name]@ list is the parameter list
+  --   (empty for non-parametric data).  Each parameter binds a type
+  --   variable scoped over the body's constructor types.
+  dataDecl :: a 'SDecl -> Name -> [Name] -> r a 'SExpr -> [r a 'SDecl] -> r a 'SDecl
   ctorDecl :: a 'SDecl -> Name -> r a 'SExpr -> r a 'SDecl
   var      :: a 'SExpr -> Name -> r a 'SExpr
   star     :: a 'SExpr -> Word -> r a 'SExpr
   arr      :: a 'SExpr -> r a 'SExpr -> r a 'SExpr -> r a 'SExpr
+  -- | Type-level application: @f x@.  Left-associative
+  --   juxtaposition at the surface; @f x y@ parses to @app (app f x) y@.
+  --   Has an error default for carriers that don't (yet) support it.
+  app      :: a 'SExpr -> r a 'SExpr -> r a 'SExpr -> r a 'SExpr
+  app = error "Lang.app: application not supported by this carrier"
 
   -- | Level-binder introduction: @∀l. body@.  The @Name@ is the
   --   binder's surface name (for display); the @Path@ is its

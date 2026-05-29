@@ -98,7 +98,7 @@ instance Lang Lvl where
                       ) (Map.toList (envNames env'))
     pure (Map.fromList pairs, env')
 
-  dataDecl _ann n e ds = Lvl $ \env -> do
+  dataDecl _ann n _params e ds = Lvl $ \env -> do
     (pe, env1) <- runLvl e env
     let (mLe, sheet1) = levelOf pe (envSheet env1)
         env1' = env1 { envSheet = sheet1 }

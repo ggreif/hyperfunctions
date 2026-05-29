@@ -233,7 +233,7 @@ tcRunWithTreeCheck = do
       Left err -> reportFail (show err)
       Right (_, tree)
         | Prog LvAProg
-            [ DataDecl (LvADecl lnX) "X"
+            [ DataDecl (LvADecl lnX) "X" []
                 (Star (LvAExpr lvStar) 0)
                 [ CtorDecl (LvADecl lcC) "c" (Var (LvAExpr lvVar) "X")
                 ]

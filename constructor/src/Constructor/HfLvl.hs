@@ -93,7 +93,7 @@ instance Lang HfLvl where
     let finals = [ (n, extract proc) | (n, proc) <- Map.toList (envNames env') ]
     pure (Map.fromList finals, env')
 
-  dataDecl _ann n e ds = HfLvl $ \env -> do
+  dataDecl _ann n _params e ds = HfLvl $ \env -> do
     (procE, env1) <- runHfLvl e env
     let le = extract procE
     ln <- maybe (Left (DataAnnotationTooLow n le)) Right (predLv le)

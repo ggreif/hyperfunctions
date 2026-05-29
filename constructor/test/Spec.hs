@@ -60,7 +60,7 @@ cases =
   , ( "single nullary data"
     , "data Bool : *0 { True : Bool; False : Bool }"
     , Prog u
-        [ DataDecl u "Bool" (Star u 0)
+        [ DataDecl u "Bool" [] (Star u 0)
             [ CtorDecl u "True"  (Var u "Bool")
             , CtorDecl u "False" (Var u "Bool")
             ]
@@ -69,7 +69,7 @@ cases =
   , ( "Nat with arrow"
     , "data Nat : *0 { Z : Nat; S : Nat -> Nat }"
     , Prog u
-        [ DataDecl u "Nat" (Star u 0)
+        [ DataDecl u "Nat" [] (Star u 0)
             [ CtorDecl u "Z" (Var u "Nat")
             , CtorDecl u "S" (Arr u (Var u "Nat") (Var u "Nat"))
             ]
@@ -78,9 +78,9 @@ cases =
   , ( "nested data"
     , "data Type : *1 { Constr : Type; data Ty2 : Type { Foo : Ty2 } }"
     , Prog u
-        [ DataDecl u "Type" (Star u 1)
+        [ DataDecl u "Type" [] (Star u 1)
             [ CtorDecl u "Constr" (Var u "Type")
-            , DataDecl u "Ty2" (Var u "Type")
+            , DataDecl u "Ty2" [] (Var u "Type")
                 [ CtorDecl u "Foo" (Var u "Ty2")
                 ]
             ]
@@ -89,7 +89,7 @@ cases =
   , ( "right-assoc arrow"
     , "data X : *0 { F : X -> X -> X }"
     , Prog u
-        [ DataDecl u "X" (Star u 0)
+        [ DataDecl u "X" [] (Star u 0)
             [ CtorDecl u "F" (Arr u (Var u "X") (Arr u (Var u "X") (Var u "X")))
             ]
         ]
@@ -98,7 +98,7 @@ cases =
     , "data Foo : \8704l. *l { c : Foo }"
     , let pBinder = Path [PsProgDecl 0, PsDataAnn]
       in Prog u
-        [ DataDecl u "Foo"
+        [ DataDecl u "Foo" []
             (ForallLv u "l" pBinder (StarVar u "l" pBinder 0))
             [ CtorDecl u "c" (Var u "Foo")
             ]
@@ -108,7 +108,7 @@ cases =
     , "data Bar : \8704l. *(l + 2) { d : Bar }"
     , let pBinder = Path [PsProgDecl 0, PsDataAnn]
       in Prog u
-        [ DataDecl u "Bar"
+        [ DataDecl u "Bar" []
             (ForallLv u "l" pBinder (StarVar u "l" pBinder 2))
             [ CtorDecl u "d" (Var u "Bar")
             ]
@@ -118,9 +118,42 @@ cases =
     , "data Q : forall l . *(l + 1) { q : Q }"
     , let pBinder = Path [PsProgDecl 0, PsDataAnn]
       in Prog u
-        [ DataDecl u "Q"
+        [ DataDecl u "Q" []
             (ForallLv u "l" pBinder (StarVar u "l" pBinder 1))
             [ CtorDecl u "q" (Var u "Q")
+            ]
+        ]
+    )
+  , ( "parametric data — data List a : *0 { Nil : List a }"
+    , "data List a : *0 { Nil : List a }"
+    , Prog u
+        [ DataDecl u "List" ["a"] (Star u 0)
+            [ CtorDecl u "Nil"
+                (App u (Var u "List") (Var u "a"))
+            ]
+        ]
+    )
+  , ( "parametric data with arrow ctor — data List a : *0 { Cons : a -> List a -> List a }"
+    , "data List a : *0 { Cons : a -> List a -> List a }"
+    , Prog u
+        [ DataDecl u "List" ["a"] (Star u 0)
+            [ CtorDecl u "Cons"
+                (Arr u (Var u "a")
+                  (Arr u (App u (Var u "List") (Var u "a"))
+                          (App u (Var u "List") (Var u "a"))))
+            ]
+        ]
+    )
+  , ( "application — three-arg left-assoc f x y z = ((f x) y) z"
+    , "data D : *0 { c : f x y z }"
+    , Prog u
+        [ DataDecl u "D" [] (Star u 0)
+            [ CtorDecl u "c"
+                (App u
+                  (App u
+                    (App u (Var u "f") (Var u "x"))
+                    (Var u "y"))
+                  (Var u "z"))
             ]
         ]
     )

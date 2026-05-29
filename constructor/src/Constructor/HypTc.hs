@@ -126,7 +126,7 @@ instance Lang HypTc where
     (ts, env') <- threadDecls ds env
     pure (HypVProg, env', prog LvAProg ts)
 
-  dataDecl _ann n e ds = HypTc $ \env -> do
+  dataDecl _ann n params e ds = HypTc $ \env -> do
     (ev, env1, polyE) <- runHypTc e env
     let procE = hypExprProc ev
         le    = hRun procE
@@ -136,7 +136,7 @@ instance Lang HypTc where
     (polys, env3) <- threadDecls ds env2
     pure ( HypVDecl procN
          , env3 { hypEnvParent = hypEnvParent env1 }
-         , dataDecl (LvADecl ln) n polyE polys
+         , dataDecl (LvADecl ln) n params polyE polys
          )
 
   ctorDecl _ann n t = HypTc $ \env -> do
