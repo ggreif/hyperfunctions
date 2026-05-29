@@ -29,6 +29,8 @@ library
     Constructor.HfLvl
     Constructor.Tc
     Constructor.HypTc
+    Constructor.TyExpr
+    Constructor.Tinf
     Constructor.Syntax
     Constructor.AST
     Constructor.Parser
@@ -55,6 +57,7 @@ test-suite constructor-test
   main-is:        Spec.hs
   other-modules:
     LevelInferSpec
+    TinfSpec
   build-depends:
     , base
     , constructor

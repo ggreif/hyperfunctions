@@ -9,6 +9,7 @@ import Constructor.Parser (parseProgram)
 import Constructor.Path (Path (..), PathStep (..))
 import Constructor.Sort (Sort (..))
 import qualified LevelInferSpec
+import qualified TinfSpec
 import Data.Functor.Const (Const (..))
 import Data.Text (Text)
 import System.Exit (exitFailure, exitSuccess)
@@ -27,7 +28,10 @@ main = do
   putStrLn ""
   putStrLn "level inference:"
   inferOK <- mapM runInfer LevelInferSpec.tests
-  if and (parseOK ++ inferOK) then exitSuccess else exitFailure
+  putStrLn ""
+  putStrLn "type inference:"
+  tinfOK <- mapM runInfer TinfSpec.tests
+  if and (parseOK ++ inferOK ++ tinfOK) then exitSuccess else exitFailure
   where
     runInfer (name, go) = do
       ok <- go
