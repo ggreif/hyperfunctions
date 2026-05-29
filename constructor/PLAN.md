@@ -440,17 +440,20 @@ fresh-α addressing that multi-site distinction depends on.
 
 3. **End-of-arc decoration.**  When downstream consumers (codegen,
    pretty-printer, error reporter) want "the parsed program plus its
-   types per node," add the impredicative `r TypAnnot s` slot on the
-   A side (`TypAnnot 'SExpr = TyExpr`).  The B side exposes the
-   `TyProc` web directly — see "Decoration shape at the end of the
-   arc" below.
+   types per node," add an impredicative @r TypAnnot s@ slot on the
+   A side, where the planned annotation kind would satisfy
+   @TypAnnot \'SExpr ~ TyExpr@.  The B side exposes the `TyProc` web
+   directly — see "Decoration shape at the end of the arc" below.
+   *(@TypAnnot@ is a forward-looking design name; no such type
+   exists in the source yet.)*
 
 ### Decoration shape at the end of the arc
 
 Both `Tinf` and `HypTinf` currently lack the impredicative
-`r TypAnnot s` slot that `HypTc` has for the level layer
-(`r LvAnnot s`).  Two reasons this is *not* an oversight to retrofit
-identically across A and B:
+"polymorphic decorated term" slot that `HypTc` has for the level
+layer (`r LvAnnot s`, where `LvAnnot` is the existing per-node
+`Lv` annotation kind in `Constructor.Tc`).  Two reasons this is
+*not* an oversight to retrofit identically across A and B:
 
 - For A, the slot would carry per-node `TyExpr` — and `Tinf`'s
   carrier value is already `TyExpr`.  Adding the slot duplicates
@@ -461,15 +464,16 @@ identically across A and B:
 - For B, the slot is **structurally redundant**.  A `TyProc`
   IS a `Lang`-shaped thing valued in `TyView`; the carrier value
   at each `SExpr` is *already* the decorated-by-its-own-type form.
-  Adding an impredicative `r TypAnnot s` would duplicate the web
-  into an annotation channel for no information gain.
+  Adding a separate annotation channel would duplicate the web
+  for no information gain.
 
 End-of-arc decision: **each architecture decorates the way that's
 natural to it** (the "(α)" choice from the design conversation).  A
-gets a syntactic `TypAnnot 'SExpr = TyExpr` and the impredicative
-slot; B exposes the `TyProc` web directly to downstream consumers.
-Symmetry-for-its-own-sake would obscure the structural difference
-the A/B split exists to expose.
+would gain a future `TypAnnot` annotation kind carrying `TyExpr` per
+@\'SExpr@ node, plus the impredicative slot; B exposes the `TyProc`
+web directly to downstream consumers.  Symmetry-for-its-own-sake
+would obscure the structural difference the A/B split exists to
+expose.
 
 ### Why these commits, in this order
 
