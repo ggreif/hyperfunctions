@@ -27,6 +27,7 @@ data Tree (a :: Sort -> Type) (s :: Sort) where
   ForallLv :: a 'SExpr -> Name -> Path -> Tree a 'SExpr -> Tree a 'SExpr
   StarVar  :: a 'SExpr -> Name -> Path -> Word -> Tree a 'SExpr
   App      :: a 'SExpr -> Tree a 'SExpr -> Tree a 'SExpr -> Tree a 'SExpr
+  TyParamRef :: a 'SExpr -> Name -> Path -> Tree a 'SExpr
 
 deriving instance (forall s. Show (a s)) => Show (Tree a t)
 deriving instance (forall s. Eq   (a s)) => Eq   (Tree a t)
@@ -38,6 +39,7 @@ instance Lang Tree where
   var      = Var
   star     = Star
   arr      = Arr
-  forallLv = ForallLv
-  starVar  = StarVar
-  app      = App
+  forallLv   = ForallLv
+  starVar    = StarVar
+  app        = App
+  tyParamRef = TyParamRef

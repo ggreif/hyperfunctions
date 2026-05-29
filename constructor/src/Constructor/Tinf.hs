@@ -6,15 +6,20 @@
 -- | First-cut A-side type inference: a 'Lang' carrier that elaborates
 --   each 'SExpr' to its 'TyExpr'.
 --
---   v0_polyType scope (this commit):
---     * Validates identifier references (data type names + in-scope
---       type parameters).
+--   v0_polyType + path-combining scope (this commit):
 --     * Builds structural 'TyExpr' values from the surface grammar
---       (var → 'TyVar' / 'TyCon', arr → 'TyArr', app → 'TyApp',
---       star → 'TyUniv').
---     * No Robinson unification yet — same-named type variables share
---       identity by name within a data declaration's scope; cross-
---       declaration unification is future work.
+--       (var → 'TyCon', tyParamRef → 'TyVar' with binder path, arr
+--       → 'TyArr', app → 'TyApp', star → 'TyUniv').
+--     * Type-parameter references are pre-resolved by the parser: it
+--       emits 'tyParamRef ann name binderPath' for each occurrence,
+--       carrying the defining 'data Foo a' parameter's path.  Two
+--       distinct 'a' parameters from different declarations are
+--       therefore distinguishable here (the Stern-Gerlach reading).
+--     * 'var' is now reserved for nullary type-constructor references;
+--       unresolved names produce 'TyUnbound'.
+--     * No Robinson unification yet — paths only carry identity into
+--       the elaborated 'TyExpr'; unification across uses is future
+--       work.
 --     * Forall / starVar are universe-layer constructs handled by the
 --       level carriers, but here they produce 'TyUniv' stubs (since
 --       a '∀l. *l' /is/ a type expression at universe level).
@@ -50,15 +55,12 @@ data TyVal (s :: Sort) where
 data TinfEnv = TinfEnv
   { tinfDataTypes  :: !(Map Name Int)
     -- ^ Declared data type names → their arity.
-  , tinfParamScope :: !(Map Name ())
-    -- ^ In-scope type parameters of the enclosing data declaration.
-    --   Value is '()' because identity is by name for this commit.
   , tinfCtors      :: !(Map Name TyExpr)
     -- ^ Declared constructor names → their types.
   } deriving Show
 
 emptyTinfEnv :: TinfEnv
-emptyTinfEnv = TinfEnv Map.empty Map.empty Map.empty
+emptyTinfEnv = TinfEnv Map.empty Map.empty
 
 data TyErr
   = TyUnbound Name
@@ -96,19 +98,16 @@ instance Lang Tinf where
     pure (TyVProg, env')
 
   dataDecl _ann name params _e ds = Tinf $ \env -> do
-    -- Register the new data type; reject duplicates.
+    -- Register the new data type; reject duplicates.  Parameter scope
+    -- is handled in the parser (which resolves each occurrence to a
+    -- 'tyParamRef' with binder path), so no scope threading here.
     case Map.lookup name (tinfDataTypes env) of
       Just _  -> Left (TyDuplicateType name)
       Nothing -> do
         let env1 = env
-              { tinfDataTypes  = Map.insert name (length params) (tinfDataTypes env)
-                -- Bring parameters into scope for the body.
-              , tinfParamScope = foldr (`Map.insert` ()) (tinfParamScope env) params
-              }
+              { tinfDataTypes = Map.insert name (length params) (tinfDataTypes env) }
         env2 <- threadDecls ds env1
-        -- Restore parameter scope after body (the data's params don't
-        -- leak to sibling declarations).
-        pure (TyVDecl Nothing, env2 { tinfParamScope = tinfParamScope env })
+        pure (TyVDecl Nothing, env2)
 
   ctorDecl _ann name e = Tinf $ \env -> do
     (val, env1) <- runTinf e env
@@ -119,12 +118,15 @@ instance Lang Tinf where
         let env2 = env1 { tinfCtors = Map.insert name ty (tinfCtors env1) }
         in Right (TyVDecl (Just (name, ty)), env2)
 
+  -- 'var' here is reserved for nullary type-constructor references —
+  -- parameter occurrences come through 'tyParamRef' (parser-resolved).
   var _ann n = Tinf $ \env ->
-    case Map.lookup n (tinfParamScope env) of
-      Just () -> Right (TyVExpr (TyVar n), env)
-      Nothing -> case Map.lookup n (tinfDataTypes env) of
-        Just _  -> Right (TyVExpr (TyCon n), env)
-        Nothing -> Left (TyUnbound n)
+    case Map.lookup n (tinfDataTypes env) of
+      Just _  -> Right (TyVExpr (TyCon n), env)
+      Nothing -> Left (TyUnbound n)
+
+  tyParamRef _ann n path = Tinf $ \env ->
+    Right (TyVExpr (TyVar n path), env)
 
   star _ann w = Tinf $ \env ->
     Right (TyVExpr (TyUniv (starLevel w)), env)

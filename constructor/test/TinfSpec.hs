@@ -4,12 +4,19 @@
 module TinfSpec (tests) where
 
 import Constructor.Parser (parseProgram)
+import Constructor.Path (Path (..), PathStep (..))
 import Constructor.Tinf (TyErr (..), Tinf, TyResult (..), tinfProgram)
 import Constructor.TyExpr (TyExpr (..))
 import Data.Functor.Const (Const (..))
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import Text.Megaparsec (errorBundlePretty)
+
+-- | Path of the 0th type parameter of the @nth@ top-level declaration.
+--   Mirrors the parser's @[PsProgDecl n, PsDataParam 0]@ for the
+--   single-parameter cases under test.
+param0Path :: Int -> Path
+param0Path n = Path [PsProgDecl n, PsDataParam 0]
 
 tests :: [(String, IO Bool)]
 tests =
@@ -30,14 +37,15 @@ tests =
           ])
     )
   , ( "Tinf: parametric data — data List a : *0 { Nil : List a; Cons : a -> List a -> List a }"
-    , expectOK "data List a : *0 { Nil : List a; Cons : a -> List a -> List a }"
-        (Map.fromList [("List", 1)])
-        (Map.fromList
-          [ ("Nil", TyApp (TyCon "List") (TyVar "a"))
-          , ("Cons", TyArr (TyVar "a")
-                       (TyArr (TyApp (TyCon "List") (TyVar "a"))
-                              (TyApp (TyCon "List") (TyVar "a"))))
-          ])
+    , let pa = param0Path 0
+      in expectOK "data List a : *0 { Nil : List a; Cons : a -> List a -> List a }"
+           (Map.fromList [("List", 1)])
+           (Map.fromList
+             [ ("Nil", TyApp (TyCon "List") (TyVar "a" pa))
+             , ("Cons", TyArr (TyVar "a" pa)
+                          (TyArr (TyApp (TyCon "List") (TyVar "a" pa))
+                                 (TyApp (TyCon "List") (TyVar "a" pa))))
+             ])
     )
   , ( "Tinf: parameter goes out of scope after data body"
     , expectErr "data List a : *0 { Nil : List a }; data D : *0 { use : a }"
@@ -52,13 +60,24 @@ tests =
         (TyDuplicateType "Bool")
     )
   , ( "Tinf: cross-decl reference — data NatList : *0 { mk : List Nat }"
-    , expectOK "data Nat : *0 { Z : Nat }; data List a : *0 { Nil : List a }; data NatList : *0 { mk : List Nat }"
-        (Map.fromList [("Nat", 0), ("List", 1), ("NatList", 0)])
-        (Map.fromList
-          [ ("Z",   TyCon "Nat")
-          , ("Nil", TyApp (TyCon "List") (TyVar "a"))
-          , ("mk",  TyApp (TyCon "List") (TyCon "Nat"))
-          ])
+    , let pa = param0Path 1  -- 'a' is param 0 of the 2nd top-level decl (List)
+      in expectOK "data Nat : *0 { Z : Nat }; data List a : *0 { Nil : List a }; data NatList : *0 { mk : List Nat }"
+           (Map.fromList [("Nat", 0), ("List", 1), ("NatList", 0)])
+           (Map.fromList
+             [ ("Z",   TyCon "Nat")
+             , ("Nil", TyApp (TyCon "List") (TyVar "a" pa))
+             , ("mk",  TyApp (TyCon "List") (TyCon "Nat"))
+             ])
+    )
+  , ( "Tinf: distinct parameter paths — two 'a's are different vars (Stern-Gerlach)"
+    , let pa1 = param0Path 0
+          pa2 = param0Path 1
+      in expectOK "data Box a : *0 { mk : a -> Box a }; data Bag a : *0 { mk2 : a -> Bag a }"
+           (Map.fromList [("Box", 1), ("Bag", 1)])
+           (Map.fromList
+             [ ("mk",  TyArr (TyVar "a" pa1) (TyApp (TyCon "Box") (TyVar "a" pa1)))
+             , ("mk2", TyArr (TyVar "a" pa2) (TyApp (TyCon "Bag") (TyVar "a" pa2)))
+             ])
     )
   ]
 

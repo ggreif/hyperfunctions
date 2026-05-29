@@ -21,13 +21,18 @@ module Constructor.TyExpr
   ) where
 
 import Constructor.Level (Lv)
+import Constructor.Path (Path)
 import Constructor.Syntax (Name)
 import Data.Text (Text)
 import qualified Data.Text as T
 
--- | Value-level types.
+-- | Value-level types.  Type-variable identity is by 'Path' — the
+--   parser supplies the binder's path so two distinct parameter
+--   declarations with the same surface name are distinguishable
+--   (the Stern-Gerlach reading: paths get fine-structure that the
+--   surface name doesn't see).
 data TyExpr
-  = TyVar  !Name                  -- ^ type variable (parameter)
+  = TyVar  !Name !Path            -- ^ type variable: surface name + binder path
   | TyCon  !Name                  -- ^ nullary type-constructor reference
   | TyApp  !TyExpr !TyExpr        -- ^ type application: @f x@
   | TyArr  !TyExpr !TyExpr        -- ^ function type: @a -> b@
@@ -35,10 +40,11 @@ data TyExpr
   deriving (Eq, Ord, Show)
 
 -- | Compact pretty representation, useful in tests + error messages.
+--   Drops the path; users see only the surface name.
 prettyTy :: TyExpr -> Text
 prettyTy = go
   where
-    go (TyVar n)       = n
+    go (TyVar n _)     = n
     go (TyCon n)       = n
     go (TyApp f x)     = goAtom f <> " " <> goAtom x
     go (TyArr a b)     = goAtom a <> " -> " <> go b

@@ -45,6 +45,14 @@ class Lang (r :: (Sort -> Type) -> Sort -> Type) where
   app      :: a 'SExpr -> r a 'SExpr -> r a 'SExpr -> r a 'SExpr
   app = error "Lang.app: application not supported by this carrier"
 
+  -- | Reference to a type parameter introduced by a 'data' declaration.
+  --   Distinct from 'var' because the parser knows the resolved
+  --   binder path: the @Name@ is the surface name (for display); the
+  --   @Path@ is the parameter's def-position.  Same shape as
+  --   'starVar' for the level layer.
+  tyParamRef :: a 'SExpr -> Name -> Path -> r a 'SExpr
+  tyParamRef = error "Lang.tyParamRef: type-parameter resolution not supported by this carrier"
+
   -- | Level-binder introduction: @∀l. body@.  The @Name@ is the
   --   binder's surface name (for display); the @Path@ is its
   --   syntactic identity (replaces the counter-based fresh id).

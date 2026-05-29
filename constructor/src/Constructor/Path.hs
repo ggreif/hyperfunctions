@@ -26,8 +26,11 @@ data PathStep
   | PsCtorTy           -- ^ the type of a constructor declaration
   | PsArrL             -- ^ left side of an arrow
   | PsArrR             -- ^ right side of an arrow
+  | PsAppFun           -- ^ function position of an application
+  | PsAppArg           -- ^ argument position of an application
   | PsForallBody       -- ^ the body of a '∀l.' expression
   | PsParens           -- ^ inside an explicit '(…)' grouping
+  | PsDataParam !Int   -- ^ the nth type parameter of a data declaration (def-path)
   deriving (Eq, Ord, Show)
 
 -- | A path from the root of the program to a particular grammar

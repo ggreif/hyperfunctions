@@ -38,9 +38,25 @@ import qualified Text.Megaparsec.Char.Lexer as L
 type Parser = Parsec Void Text
 type RawTree s = Tree (Const ()) s
 
--- | Map from a level-binder's surface name to the 'Path' of its '∀'
---   introduction.  Threaded explicitly through the grammar.
-type LvBinders = Map Name Path
+-- | Binders threaded through the grammar — level-variable binders
+--   (from @∀l.@) and type-parameter binders (from @data Foo a@).
+--   Disjoint surface-name namespaces but threaded together for
+--   convenience.
+data Binders = Binders
+  { lvBinders :: !(Map Name Path)
+    -- ^ '∀l.'-bound names → their binder path.
+  , tyBinders :: !(Map Name Path)
+    -- ^ Data-type-parameter names → their parameter-binding path.
+  }
+
+emptyBinders :: Binders
+emptyBinders = Binders Map.empty Map.empty
+
+extendLv :: Name -> Path -> Binders -> Binders
+extendLv n p b = b { lvBinders = Map.insert n p (lvBinders b) }
+
+extendTys :: [(Name, Path)] -> Binders -> Binders
+extendTys ps b = b { tyBinders = foldr (\(n, p) -> Map.insert n p) (tyBinders b) ps }
 
 -- Whitespace + line/block comments.
 sc :: (MonadParsec Void Text m) => m ()
@@ -89,7 +105,7 @@ sepEndByIndexed mk sep = go 0
 -- | Universe expression starting with @*@.
 universe
   :: (Lang r, HasAnn a m, MonadParsec Void Text m, MonadFail m)
-  => Path -> LvBinders -> m (r a 'SExpr)
+  => Path -> Binders -> m (r a 'SExpr)
 universe _path binders = lexeme $ do
   void (char '*')
   choice
@@ -99,7 +115,7 @@ universe _path binders = lexeme $ do
         pure (star ann n)
     , between (symbol "(") (symbol ")") $ do
         n <- identifier
-        case Map.lookup n binders of
+        case Map.lookup n (lvBinders binders) of
           Just binderPath -> do
             offset <- option 0 (symbol "+" *> L.decimal)
             ann    <- freshExprAnn
@@ -107,7 +123,7 @@ universe _path binders = lexeme $ do
           Nothing -> fail ("unbound level variable: " <> T.unpack n)
     , do
         n <- identifier
-        case Map.lookup n binders of
+        case Map.lookup n (lvBinders binders) of
           Just binderPath -> do
             ann <- freshExprAnn
             pure (starVar ann n binderPath 0)
@@ -116,13 +132,18 @@ universe _path binders = lexeme $ do
 
 atom
   :: (Lang r, HasAnn a m, MonadParsec Void Text m, MonadFail m)
-  => Path -> LvBinders -> m (r a 'SExpr)
+  => Path -> Binders -> m (r a 'SExpr)
 atom path binders = choice
   [ universe path binders
   , do
       n   <- identifier
-      ann <- freshExprAnn
-      pure (var ann n)
+      case Map.lookup n (tyBinders binders) of
+        Just paramPath -> do
+          ann <- freshExprAnn
+          pure (tyParamRef ann n paramPath)
+        Nothing -> do
+          ann <- freshExprAnn
+          pure (var ann n)
   , between (symbol "(") (symbol ")") (expr (extendPath PsParens path) binders)
   ]
 
@@ -131,25 +152,25 @@ atom path binders = choice
 --   @path ++ [PsForallBody]@ with the binder added to scope.
 forallExpr
   :: (Lang r, HasAnn a m, MonadParsec Void Text m, MonadFail m)
-  => Path -> LvBinders -> m (r a 'SExpr)
+  => Path -> Binders -> m (r a 'SExpr)
 forallExpr path binders = do
   void (symbol "\8704" <|> symbol "forall")
   n <- identifier
   void (symbol ".")
   let binderPath = path
-      binders'   = Map.insert n binderPath binders
+      binders'   = extendLv n binderPath binders
   body <- expr (extendPath PsForallBody path) binders'
   ann  <- freshExprAnn
   pure (forallLv ann n binderPath body)
 
 expr
   :: (Lang r, HasAnn a m, MonadParsec Void Text m, MonadFail m)
-  => Path -> LvBinders -> m (r a 'SExpr)
+  => Path -> Binders -> m (r a 'SExpr)
 expr path binders = forallExpr path binders <|> arrowExpr path binders
 
 arrowExpr
   :: (Lang r, HasAnn a m, MonadParsec Void Text m, MonadFail m)
-  => Path -> LvBinders -> m (r a 'SExpr)
+  => Path -> Binders -> m (r a 'SExpr)
 arrowExpr path binders = do
   a <- application (extendPath PsArrL path) binders
   option a $ do
@@ -162,7 +183,7 @@ arrowExpr path binders = do
 --   @f x y z@ parses to @app (app (app f x) y) z@.
 application
   :: (Lang r, HasAnn a m, MonadParsec Void Text m, MonadFail m)
-  => Path -> LvBinders -> m (r a 'SExpr)
+  => Path -> Binders -> m (r a 'SExpr)
 application path binders = do
   head_ <- atom path binders
   args  <- many (atom path binders)
@@ -178,7 +199,7 @@ application path binders = do
 
 decl
   :: (Lang r, HasAnn a m, MonadParsec Void Text m, MonadFail m)
-  => Path -> LvBinders -> m (r a 'SDecl)
+  => Path -> Binders -> m (r a 'SDecl)
 decl path binders = dataD <|> ctorD
   where
     dataD = do
@@ -187,10 +208,16 @@ decl path binders = dataD <|> ctorD
       params <- many identifier  -- zero-or-more parameter names
       void (symbol ":")
       e   <- expr (extendPath PsDataAnn path) binders
-      -- Inside the data body, the outer ∀-scope does NOT carry over.
+      -- Inside the data body, the outer ∀-scope does NOT carry over,
+      -- but the data's own type parameters DO — they're in scope over
+      -- every constructor's type.  Each parameter's def-path is
+      -- @PsDataParam i@ off the data-declaration path.
+      let paramPaths  = zipWith (\i p -> (p, extendPath (PsDataParam i) path))
+                                [0 ..] params
+          bodyBinders = extendTys paramPaths emptyBinders
       ds  <- between (symbol "{") (symbol "}") $
                sepEndByIndexed
-                 (\i -> decl (extendPath (PsDeclIdx i) path) Map.empty)
+                 (\i -> decl (extendPath (PsDeclIdx i) path) bodyBinders)
                  (symbol ";")
       ann <- freshDeclAnn
       pure (dataDecl ann n params e ds)
@@ -208,7 +235,7 @@ program
 program = do
   sc
   ds  <- sepEndByIndexed
-           (\i -> decl (extendPath (PsProgDecl i) emptyPath) Map.empty)
+           (\i -> decl (extendPath (PsProgDecl i) emptyPath) emptyBinders)
            (symbol ";")
   ann <- freshProgAnn
   eof

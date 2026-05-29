@@ -130,21 +130,23 @@ cases =
     )
   , ( "parametric data — data List a : *0 { Nil : List a }"
     , "data List a : *0 { Nil : List a }"
-    , Prog u
+    , let pa = Path [PsProgDecl 0, PsDataParam 0]
+      in Prog u
         [ DataDecl u "List" ["a"] (Star u 0)
             [ CtorDecl u "Nil"
-                (App u (Var u "List") (Var u "a"))
+                (App u (Var u "List") (TyParamRef u "a" pa))
             ]
         ]
     )
   , ( "parametric data with arrow ctor — data List a : *0 { Cons : a -> List a -> List a }"
     , "data List a : *0 { Cons : a -> List a -> List a }"
-    , Prog u
+    , let pa = Path [PsProgDecl 0, PsDataParam 0]
+      in Prog u
         [ DataDecl u "List" ["a"] (Star u 0)
             [ CtorDecl u "Cons"
-                (Arr u (Var u "a")
-                  (Arr u (App u (Var u "List") (Var u "a"))
-                          (App u (Var u "List") (Var u "a"))))
+                (Arr u (TyParamRef u "a" pa)
+                  (Arr u (App u (Var u "List") (TyParamRef u "a" pa))
+                          (App u (Var u "List") (TyParamRef u "a" pa))))
             ]
         ]
     )
