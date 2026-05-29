@@ -225,3 +225,157 @@ library starts paying off.  Migration is mechanical:
 No source changes required in either the library or our project.  The
 bound bump is also publishable upstream as a small modernisation PR
 should we choose to send it.
+
+## Type-inference arc — commits 2, 3 (landed) and 4+ (planned)
+
+The level-inference layer is closed at v_polymorphic.  The type-
+inference arc now opens.  The corpus's parser is annotation-agnostic
+already; both arms can be added under `Lang` instances without parser
+changes.
+
+### Commit 2 (landed) — `TyExpr` + `Tinf` (A side, baseline)
+
+Value-level types live in `Constructor.TyExpr`:
+
+```haskell
+data TyExpr
+  = TyVar  !Name !Path           -- variable, identified by its binder path
+  | TyCon  !Name                 -- nullary type constructor reference
+  | TyApp  !TyExpr !TyExpr       -- type-level application: f x
+  | TyArr  !TyExpr !TyExpr       -- function type: a -> b
+  | TyUniv !Lv                   -- universe at a given level
+```
+
+`Constructor.Tinf` is the A-side carrier: a small state-threading
+elaborator that produces a `TyResult` (declared data types + their
+arities, declared constructors with elaborated types).  No Robinson
+unification yet — each `TyExpr` is fully concrete at construction.
+This is the *control* arm against which B is to be benchmarked, the
+way `Tc` is the control arm for the level-inference experiments.
+
+### Commit 3 (landed) — use-site path-combining (Stern-Gerlach)
+
+Type-parameter occurrences inside a `data Foo a { … }` body now carry
+the **binder's** path, not just the surface name `"a"`.  The parser
+threads a `Binders` record with two namespaces (`lvBinders` for `∀l.`
+binders, `tyBinders` for `data` parameters), allocates parameter paths
+as `extendPath (PsDataParam i)` off the data declaration's own path,
+and emits a new `Lang` method:
+
+```haskell
+tyParamRef :: a 'SExpr -> Name -> Path -> r a 'SExpr
+```
+
+So two distinct `data X a { … }` declarations in the same program
+produce two *distinct* paths for their respective `a` parameters.
+Inside the elaborator, both become `TyVar "a" pathⱼ` with different
+`pathⱼ`s — visually the same name, structurally different.
+
+This is the **Stern-Gerlach split**: a single surface name acquires
+fine-structure under measurement, where measurement = the parser
+descending into the binder.  It is the prerequisite for multi-site
+polymorphic instantiation (when commit 5+ allocates a *fresh* α
+per use site, the (def-path, use-path) pair becomes its identity);
+without it, both A and B would conflate use-sites and have to fight
+the conflation later.
+
+`Tinf` consumes the resolved paths directly — its `var` is now
+reserved for nullary type-constructor references; its new
+`tyParamRef` method emits `TyVar n path` unchanged.  The
+`tinfParamScope` field of `TinfEnv`, which would have done the
+name-based parameter resolution, is gone — the parser owns that
+work now.
+
+### Commit 4 (next) — B-side `HypTinf` carrier
+
+Direct sibling of `HypTc` for type inference.  The substrate is no
+longer a Sheet (or a state-threaded `TyResult`-builder) but a *web of
+type-processes*, each a hyperfunction valued in a one-layer-unfolded
+view of the type:
+
+```haskell
+data TyView
+  = TyConV  !Name
+  | TyVarV  !Name !Path
+  | TyAppV  !TyProc !TyProc
+  | TyArrV  !TyProc !TyProc
+  | TyUnivV !Lv
+  | TyMetaV !Path !Path    -- fresh metavariable at (def-path, use-path)
+                           -- — dormant in commit 4, activated later
+
+type TyProc = Hyper TyView TyView
+```
+
+The HKT'd carrier mirrors `HypTc`:
+
+```haskell
+data HypTinfVal (s :: Sort) where
+  HypTinfExpr :: !TyProc                         -> HypTinfVal 'SExpr
+  HypTinfDecl :: !(Maybe (Name, TyProc))         -> HypTinfVal 'SDecl
+  HypTinfProg ::                                    HypTinfVal 'SProg
+```
+
+A type-process is **what its peer-callback exposes when interrogated**.
+Constructing it from a `TyExpr` is the identity coalgebra: `tyToProc t
+= hPure (oneLayer t)` where `oneLayer` is the one-step unfolding into
+`TyView` (children remain as `TyProc`s by recursion).  Running it
+back out is the dual unfold (the "probe" / final-coalgebra unfolding
+that the memory file's design discussion converged on as the right
+extraction story — *no* shadow state, no Tree on the side; the
+unfolder is itself a hyperfunction-style traversal).
+
+Commit 4's scope (the **carrier+apparatus** middle ground):
+
+- New module `Constructor.TyProc` — `TyView`, `TyProc`, `tyToProc`,
+  `procToTy` (the probe-unfolder), and `meet :: TyProc -> TyProc ->
+  Either TyErr TyProc` over structurally-concrete views only.  The
+  `TyMetaV` constructor is in place so the carrier *shape* is right,
+  but unification of metavariables is deferred to commit 5.
+- New module `Constructor.HypTinf` — the `Lang HypTinf` instance,
+  mirroring `Tinf`'s structure.  `tyParamRef` builds a `TyMetaV`-free
+  `TyVarV` process (commit 4 shares one process across all uses of
+  the same binder; commit 5 promotes to per-use fresh α).
+- Parity tests: `HypTinf` vs `Tinf` on the existing corpus must agree
+  modulo extraction.  Plus the Stern-Gerlach test in process form.
+
+### Commits 5+ — exercising the algebra
+
+The genuine workout for the hyperfunction architecture sits past
+commit 4:
+
+1. **Metavariables and Robinson unification.**  `meet` learns to
+   handle `α ≡ τ` by *rewiring* α's process to defer to τ's peer,
+   not by writing to a side-channel.  This is where the
+   `π₁`-flavoured trace the memory file talks about starts being
+   visible: two unifications of the same pair α ≡ β via different
+   routes leave behind two distinct peer-callback compositions.
+2. **Multi-site fresh-α.**  Each use of `Nil :: List a` allocates a
+   process at identity `(binder-path-of-a, use-path)`.  Two uses of
+   `Nil` in `data D : *0 { nilNat : List Nat; nilBool : List Bool }`
+   produce two non-identified α-processes; unification with the
+   context determines each independently.
+3. **Occurs check + termination.**  Standard guards translated into
+   the algebra.  CCS-bisimulation-style finiteness arguments are the
+   theoretical framing; the implementation is the conventional
+   first-order check on the underlying `TyView` graph.
+4. **Higher-cell observation (speculative).**  When the *same* α ≡ β
+   gets identified through two routes, the two hyperfunction-traces
+   produce identical `TyView`s under extraction (UIP for first-order
+   unification) but differ as morphisms in the web.  This is where
+   we'd start touching HITs proper — coherence between paths, not
+   just identification.  The apparatus is in place; whether anything
+   useful at our scale exploits it is open.
+
+### Why these commits, in this order
+
+The path-combining-before-B-side reorder happened because both A and
+B would otherwise need to be retrofitted with Stern-Gerlach
+simultaneously.  Doing path-combining once, in shared infrastructure,
+lets both carriers consume the resolved paths from the parser
+identically.  B then enters with the right vocabulary already.
+
+The carrier+apparatus middle ground for commit 4 buys the natural
+seam without overcommitting: the `TyView` shape (including its
+`TyMetaV` slot) is the data structure both for commit 4's
+extension-free elaboration and for commit 5's unification.  Adding
+unification logic later doesn't reshape the algebra.
