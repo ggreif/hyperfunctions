@@ -3,11 +3,12 @@
 
 module LevelInferSpec (tests) where
 
+import Constructor.AST (Tree (..))
 import Constructor.HfLvl (HfLvl, inferProgramHf)
 import Constructor.Level (Lv (..), starLevel)
 import Constructor.LevelInfer (LevelMap, Lvl, LvErr (..), inferProgram)
 import Constructor.Parser (parseProgram)
-import Constructor.Tc (Tc, solveLevels, tcProgram)
+import Constructor.Tc (LvAnnot (..), Tc, solveLevels, tcProgram, tcRunWith)
 import Data.Functor.Const (Const (..))
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
@@ -79,6 +80,9 @@ tests =
     , parityLvlTc "data Nat : *0 { Z : Nat; S : Nat -> Nat }"
         [("Nat", lv 1), ("Z", lv 0), ("S", lv 0)]
     )
+  , ("tcRunWith @Tree — polymorphic LvAnnot-decorated term"
+    , tcRunWithTreeCheck
+    )
   ]
 
 -- | Run the same source through both the classical 'Lvl' carrier and the
@@ -121,6 +125,31 @@ parityLvlTc src want = do
            "Lvl: " <> show lvlR <> "\n    " <>
            "Tc:  " <> show tcR  <> "\n    " <>
            "want: " <> show wantMap
+
+-- | Demonstrate 'tcRunWith' producing a 'Tree' decorated with 'LvAnnot'.
+--   Pattern-matches the resulting Tree against the expected structure +
+--   level annotations.  Confirms the polymorphic term slot is genuinely
+--   re-interpretable at any 'Lang' carrier (here, 'Tree').
+tcRunWithTreeCheck :: IO Bool
+tcRunWithTreeCheck = do
+  let src = "data X : *0 { c : X }"
+  case parseProgram @Tc @(Const ()) "<tree-annot>" src of
+    Left e -> reportFail (errorBundlePretty e)
+    Right p -> case tcRunWith @Tree p of
+      Left err -> reportFail (show err)
+      Right (_, tree)
+        | Prog LvAProg
+            [ DataDecl (LvADecl lnX) "X"
+                (Star (LvAExpr lvStar) 0)
+                [ CtorDecl (LvADecl lcC) "c" (Var (LvAExpr lvVar) "X")
+                ]
+            ] <- tree
+        , lnX    == lv 1  -- X at level 1 (data inhabiting *0)
+        , lvStar == lv 2  -- *0 itself at level 2
+        , lcC    == lv 0  -- c at level 0 (value of X)
+        , lvVar  == lv 1  -- the 'X' reference, at level 1 (same as X)
+        -> pure True
+      Right (_, tree) -> reportFail $ "unexpected tree shape:\n    " <> show tree
 
 expectOK :: Text -> [(Text, Lv)] -> IO Bool
 expectOK src want = case infer src of
