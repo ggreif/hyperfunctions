@@ -109,10 +109,12 @@ instance Lang HypTinf where
         let env2 = env1 { hypEnvCtors = Map.insert name proc_ (hypEnvCtors env1) }
         in Right (HypTinfDecl (Just (name, proc_)), env2)
 
-  var _ann n = HypTinf $ \env ->
-    case Map.lookup n (hypEnvDataTypes env) of
-      Just _  -> Right (HypTinfExpr (hPure (TyConV n)), env)
-      Nothing -> Left (TyUnbound n)
+  -- Parser owns type-constructor resolution; 'var' is only reached
+  -- for genuinely unbound names.
+  var _ann n = HypTinf $ \_env -> Left (TyUnbound n)
+
+  tyConRef _ann n path = HypTinf $ \env ->
+    Right (HypTinfExpr (hPure (TyConV n path)), env)
 
   tyParamRef _ann n path = HypTinf $ \env ->
     Right (HypTinfExpr (hPure (TyVarV n path)), env)

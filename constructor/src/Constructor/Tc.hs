@@ -195,6 +195,11 @@ instance Lang Tc where
         Nothing -> Left UnpinnedLevel
     Nothing -> Left (Unbound x)
 
+  -- Level inference / constraint generation ignore the def-path: a
+  -- tycon reference at this layer just needs its name to look up the
+  -- pinned level in the sheet.
+  tyConRef ann n _path = var ann n
+
   star _ann w = Tc $ \env -> do
     let (p, sheet1) = freshPlace (tcEnvSheet env)
     sheet2 <- pin mergeLv p (starLevel w) sheet1

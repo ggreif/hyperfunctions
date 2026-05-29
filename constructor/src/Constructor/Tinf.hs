@@ -124,12 +124,12 @@ instance Lang Tinf where
         let env2 = env1 { tinfCtors = Map.insert name ty (tinfCtors env1) }
         in Right (TyVDecl (Just (name, ty)), env2)
 
-  -- 'var' here is reserved for nullary type-constructor references —
-  -- parameter occurrences come through 'tyParamRef' (parser-resolved).
-  var _ann n = Tinf $ \env ->
-    case Map.lookup n (tinfDataTypes env) of
-      Just _  -> Right (TyVExpr (TyCon n), env)
-      Nothing -> Left (TyUnbound n)
+  -- The parser now resolves all type-constructor references via
+  -- 'tyConRef'; 'var' is reached only for genuinely unbound names.
+  var _ann n = Tinf $ \_env -> Left (TyUnbound n)
+
+  tyConRef _ann n path = Tinf $ \env ->
+    Right (TyVExpr (TyCon n path), env)
 
   tyParamRef _ann n path = Tinf $ \env ->
     Right (TyVExpr (TyVar n path), env)

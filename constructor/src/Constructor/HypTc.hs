@@ -159,6 +159,10 @@ instance Lang HypTc where
       in Right (HypVExpr proc, env, var (LvAExpr lv) x)
     Nothing -> Left (Unbound x)
 
+  -- Hyperfunction-driven level inference ignores the def-path; the
+  -- level-process for a binder is keyed by name in 'hypEnvNames'.
+  tyConRef ann n _path = var ann n
+
   star _ann w = HypTc $ \env -> do
     let lv   = starLevel w
         proc = hPure lv

@@ -40,15 +40,15 @@ import Constructor.TyExpr (TyExpr (..))
 --   'TyProc's by recursion, so unfolding cost is paid lazily as the
 --   web is traversed.
 data TyView
-  = TyConV  !Name              -- ^ nullary type-constructor reference
-  | TyVarV  !Name !Path        -- ^ data-parameter reference (Stern-Gerlach path)
+  = TyConV  !Name !Path        -- ^ nullary type-constructor; identified by decl path
+  | TyVarV  !Name !Path        -- ^ data-parameter reference; identified by binder path
   | TyAppV  !TyProc !TyProc    -- ^ type-level application
   | TyArrV  !TyProc !TyProc    -- ^ function type
   | TyUnivV !Lv                -- ^ universe at a level
   | TyMetaV !Path !Path        -- ^ fresh metavariable; @(def-path, use-path)@
                                --   identity.  Inert in commit 4 — present
-                               --   so commit 5's unifier doesn't reshape
-                               --   the algebra.
+                               --   so a later commit's unifier doesn't
+                               --   reshape the algebra.
 
 -- | A type-process: a hyperfunction that, when self-applied via
 --   'hRun', yields its 'TyView'.  Identifications between two
@@ -64,7 +64,7 @@ type TyProc = Hyper TyView TyView
 tyToProc :: TyExpr -> TyProc
 tyToProc = hPure . oneLayer
   where
-    oneLayer (TyCon n)   = TyConV n
+    oneLayer (TyCon n p) = TyConV n p
     oneLayer (TyVar n p) = TyVarV n p
     oneLayer (TyApp f x) = TyAppV (tyToProc f) (tyToProc x)
     oneLayer (TyArr a b) = TyArrV (tyToProc a) (tyToProc b)
@@ -84,14 +84,14 @@ procToTy = viewToTy . hRun
 --   children via 'procToTy'.  Useful when handling a view directly
 --   (e.g. in error reporting from 'meet') without going via 'hRun'.
 viewToTy :: TyView -> TyExpr
-viewToTy (TyConV n)    = TyCon n
+viewToTy (TyConV n p)  = TyCon n p
 viewToTy (TyVarV n pa) = TyVar n pa
 viewToTy (TyAppV f x)  = TyApp (procToTy f) (procToTy x)
 viewToTy (TyArrV a b)  = TyArr (procToTy a) (procToTy b)
 viewToTy (TyUnivV l)   = TyUniv l
 viewToTy (TyMetaV _ _) =
   error "Constructor.TyProc.viewToTy: unresolved metavariable \
-        \(expected only post-commit-5)"
+        \(expected only after a later commit lands meta resolution)"
 
 -- | Structural unification on type-processes.
 --
@@ -115,8 +115,8 @@ meet :: TyProc -> TyProc -> Either TyErr TyProc
 meet p1 p2 = hPure <$> meetView (hRun p1) (hRun p2)
   where
     meetView v1 v2 = case (v1, v2) of
-      (TyConV n1, TyConV n2)
-        | n1 == n2 -> Right v1
+      (TyConV n1 p1', TyConV n2 p2')
+        | n1 == n2 && p1' == p2' -> Right v1
       (TyVarV n1 p1', TyVarV n2 p2')
         | n1 == n2 && p1' == p2' -> Right v1
       (TyAppV f1 x1, TyAppV f2 x2) -> do

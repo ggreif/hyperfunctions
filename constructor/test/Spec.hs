@@ -71,90 +71,101 @@ cases =
     )
   , ( "single nullary data"
     , "data Bool : *0 { True : Bool; False : Bool }"
-    , Prog u
+    , let boolP = Path [PsProgDecl 0]
+      in Prog u
         [ DataDecl u "Bool" [] (Star u 0)
-            [ CtorDecl u "True"  (Var u "Bool")
-            , CtorDecl u "False" (Var u "Bool")
+            [ CtorDecl u "True"  (TyConRef u "Bool" boolP)
+            , CtorDecl u "False" (TyConRef u "Bool" boolP)
             ]
         ]
     )
   , ( "Nat with arrow"
     , "data Nat : *0 { Z : Nat; S : Nat -> Nat }"
-    , Prog u
+    , let natP = Path [PsProgDecl 0]
+      in Prog u
         [ DataDecl u "Nat" [] (Star u 0)
-            [ CtorDecl u "Z" (Var u "Nat")
-            , CtorDecl u "S" (Arr u (Var u "Nat") (Var u "Nat"))
+            [ CtorDecl u "Z" (TyConRef u "Nat" natP)
+            , CtorDecl u "S" (Arr u (TyConRef u "Nat" natP) (TyConRef u "Nat" natP))
             ]
         ]
     )
   , ( "nested data"
     , "data Type : *1 { Constr : Type; data Ty2 : Type { Foo : Ty2 } }"
-    , Prog u
+    , let typeP = Path [PsProgDecl 0]
+          ty2P  = Path [PsProgDecl 0, PsDeclIdx 1]
+      in Prog u
         [ DataDecl u "Type" [] (Star u 1)
-            [ CtorDecl u "Constr" (Var u "Type")
-            , DataDecl u "Ty2" [] (Var u "Type")
-                [ CtorDecl u "Foo" (Var u "Ty2")
+            [ CtorDecl u "Constr" (TyConRef u "Type" typeP)
+            , DataDecl u "Ty2" [] (TyConRef u "Type" typeP)
+                [ CtorDecl u "Foo" (TyConRef u "Ty2" ty2P)
                 ]
             ]
         ]
     )
   , ( "right-assoc arrow"
     , "data X : *0 { F : X -> X -> X }"
-    , Prog u
+    , let xP = Path [PsProgDecl 0]
+      in Prog u
         [ DataDecl u "X" [] (Star u 0)
-            [ CtorDecl u "F" (Arr u (Var u "X") (Arr u (Var u "X") (Var u "X")))
+            [ CtorDecl u "F" (Arr u (TyConRef u "X" xP)
+                               (Arr u (TyConRef u "X" xP) (TyConRef u "X" xP)))
             ]
         ]
     )
   , ( "polymorphic universe — \8704l. *l"
     , "data Foo : \8704l. *l { c : Foo }"
     , let pBinder = Path [PsProgDecl 0, PsDataAnn]
+          fooP    = Path [PsProgDecl 0]
       in Prog u
         [ DataDecl u "Foo" []
             (ForallLv u "l" pBinder (StarVar u "l" pBinder 0))
-            [ CtorDecl u "c" (Var u "Foo")
+            [ CtorDecl u "c" (TyConRef u "Foo" fooP)
             ]
         ]
     )
   , ( "polymorphic universe with offset — \8704l. *(l + 2)"
     , "data Bar : \8704l. *(l + 2) { d : Bar }"
     , let pBinder = Path [PsProgDecl 0, PsDataAnn]
+          barP    = Path [PsProgDecl 0]
       in Prog u
         [ DataDecl u "Bar" []
             (ForallLv u "l" pBinder (StarVar u "l" pBinder 2))
-            [ CtorDecl u "d" (Var u "Bar")
+            [ CtorDecl u "d" (TyConRef u "Bar" barP)
             ]
         ]
     )
   , ( "polymorphic universe — keyword 'forall'"
     , "data Q : forall l . *(l + 1) { q : Q }"
     , let pBinder = Path [PsProgDecl 0, PsDataAnn]
+          qP      = Path [PsProgDecl 0]
       in Prog u
         [ DataDecl u "Q" []
             (ForallLv u "l" pBinder (StarVar u "l" pBinder 1))
-            [ CtorDecl u "q" (Var u "Q")
+            [ CtorDecl u "q" (TyConRef u "Q" qP)
             ]
         ]
     )
   , ( "parametric data — data List a : *0 { Nil : List a }"
     , "data List a : *0 { Nil : List a }"
-    , let pa = Path [PsProgDecl 0, PsDataParam 0]
+    , let pa    = Path [PsProgDecl 0, PsDataParam 0]
+          listP = Path [PsProgDecl 0]
       in Prog u
         [ DataDecl u "List" ["a"] (Star u 0)
             [ CtorDecl u "Nil"
-                (App u (Var u "List") (TyParamRef u "a" pa))
+                (App u (TyConRef u "List" listP) (TyParamRef u "a" pa))
             ]
         ]
     )
   , ( "parametric data with arrow ctor — data List a : *0 { Cons : a -> List a -> List a }"
     , "data List a : *0 { Cons : a -> List a -> List a }"
-    , let pa = Path [PsProgDecl 0, PsDataParam 0]
+    , let pa    = Path [PsProgDecl 0, PsDataParam 0]
+          listP = Path [PsProgDecl 0]
       in Prog u
         [ DataDecl u "List" ["a"] (Star u 0)
             [ CtorDecl u "Cons"
                 (Arr u (TyParamRef u "a" pa)
-                  (Arr u (App u (Var u "List") (TyParamRef u "a" pa))
-                          (App u (Var u "List") (TyParamRef u "a" pa))))
+                  (Arr u (App u (TyConRef u "List" listP) (TyParamRef u "a" pa))
+                          (App u (TyConRef u "List" listP) (TyParamRef u "a" pa))))
             ]
         ]
     )

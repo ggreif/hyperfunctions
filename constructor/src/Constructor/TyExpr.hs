@@ -26,26 +26,28 @@ import Constructor.Syntax (Name)
 import Data.Text (Text)
 import qualified Data.Text as T
 
--- | Value-level types.  Type-variable identity is by 'Path' — the
---   parser supplies the binder's path so two distinct parameter
---   declarations with the same surface name are distinguishable
---   (the Stern-Gerlach reading: paths get fine-structure that the
---   surface name doesn't see).
+-- | Value-level types.  Both type variables and type constructors
+--   are identified by their declaration 'Path' (in addition to their
+--   surface name, which is kept for display): the parser hands a
+--   resolved binder path at every use site.  For nullary binders
+--   the use-path collapses to the def-path \(x^0 = 1\); for
+--   higher-kinded uses the path machinery extends naturally to
+--   address instantiation freshness.
 data TyExpr
-  = TyVar  !Name !Path            -- ^ type variable: surface name + binder path
-  | TyCon  !Name                  -- ^ nullary type-constructor reference
+  = TyVar  !Name !Path            -- ^ type variable; identified by binder path
+  | TyCon  !Name !Path            -- ^ nullary type constructor; identified by decl path
   | TyApp  !TyExpr !TyExpr        -- ^ type application: @f x@
   | TyArr  !TyExpr !TyExpr        -- ^ function type: @a -> b@
   | TyUniv !Lv                    -- ^ universe at the given level
   deriving (Eq, Ord, Show)
 
 -- | Compact pretty representation, useful in tests + error messages.
---   Drops the path; users see only the surface name.
+--   Drops paths; users see only surface names.
 prettyTy :: TyExpr -> Text
 prettyTy = go
   where
     go (TyVar n _)     = n
-    go (TyCon n)       = n
+    go (TyCon n _)     = n
     go (TyApp f x)     = goAtom f <> " " <> goAtom x
     go (TyArr a b)     = goAtom a <> " -> " <> go b
     go (TyUniv l)      = "*" <> T.pack (show l)

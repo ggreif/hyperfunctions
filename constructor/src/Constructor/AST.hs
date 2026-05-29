@@ -28,6 +28,7 @@ data Tree (a :: Sort -> Type) (s :: Sort) where
   StarVar  :: a 'SExpr -> Name -> Path -> Word -> Tree a 'SExpr
   App      :: a 'SExpr -> Tree a 'SExpr -> Tree a 'SExpr -> Tree a 'SExpr
   TyParamRef :: a 'SExpr -> Name -> Path -> Tree a 'SExpr
+  TyConRef   :: a 'SExpr -> Name -> Path -> Tree a 'SExpr
 
 deriving instance (forall s. Show (a s)) => Show (Tree a t)
 deriving instance (forall s. Eq   (a s)) => Eq   (Tree a t)
@@ -43,3 +44,4 @@ instance Lang Tree where
   starVar    = StarVar
   app        = App
   tyParamRef = TyParamRef
+  tyConRef   = TyConRef

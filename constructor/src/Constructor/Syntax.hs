@@ -53,6 +53,17 @@ class Lang (r :: (Sort -> Type) -> Sort -> Type) where
   tyParamRef :: a 'SExpr -> Name -> Path -> r a 'SExpr
   tyParamRef = error "Lang.tyParamRef: type-parameter resolution not supported by this carrier"
 
+  -- | Reference to a type constructor introduced by a 'data'
+  --   declaration.  Distinct from 'var' for the same reason
+  --   'tyParamRef' is: the parser has resolved the surface name to
+  --   the @Path@ of the introducing @data@ declaration.  For nullary
+  --   tycons the use-path collapses to the def-path (use-paths
+  --   identified with def-path by transitivity — \(x^0 = 1\)); for
+  --   higher-kinded tycons the use-path will additionally address
+  --   instantiation freshness (a later commit).
+  tyConRef :: a 'SExpr -> Name -> Path -> r a 'SExpr
+  tyConRef = error "Lang.tyConRef: type-constructor resolution not supported by this carrier"
+
   -- | Level-binder introduction: @∀l. body@.  The @Name@ is the
   --   binder's surface name (for display); the @Path@ is its
   --   syntactic identity (replaces the counter-based fresh id).

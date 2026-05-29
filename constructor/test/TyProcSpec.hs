@@ -14,45 +14,61 @@ import Constructor.Tinf (TyErr (..))
 import Constructor.TyExpr (TyExpr (..))
 import Constructor.TyProc (meet, procToTy, tyToProc)
 
+-- | Stand-in def-paths for the named tycons under test.  Mirrors what
+--   the parser would emit if these were declared at the given
+--   top-level positions.
+natP, boolP, intP, listP, maybeP :: Path
+natP   = Path [PsProgDecl 0]
+boolP  = Path [PsProgDecl 1]
+intP   = Path [PsProgDecl 2]
+listP  = Path [PsProgDecl 3]
+maybeP = Path [PsProgDecl 4]
+
 tests :: [(String, IO Bool)]
 tests =
-  [ ( "meet: TyCon ≡ TyCon (same)"
+  [ ( "meet: TyCon ≡ TyCon (same name, same path)"
     , expectOK
-        (TyCon "Nat")
-        (TyCon "Nat")
-        (TyCon "Nat")
+        (TyCon "Nat" natP)
+        (TyCon "Nat" natP)
+        (TyCon "Nat" natP)
     )
-  , ( "meet: TyCon ≢ TyCon (different)"
+  , ( "meet: TyCon ≢ TyCon (different name)"
     , expectMismatch
-        (TyCon "Nat")
-        (TyCon "Bool")
+        (TyCon "Nat" natP)
+        (TyCon "Bool" boolP)
+    )
+  , ( "meet: TyCon ≢ TyCon (same name, different paths) — \
+       \def-path Stern-Gerlach"
+    , let p1 = Path [PsProgDecl 0]
+          p2 = Path [PsProgDecl 1]
+      in expectMismatch (TyCon "Bool" p1) (TyCon "Bool" p2)
     )
   , ( "meet: TyArr ≡ TyArr — congruent children"
     , expectOK
-        (TyArr (TyCon "Nat") (TyCon "Bool"))
-        (TyArr (TyCon "Nat") (TyCon "Bool"))
-        (TyArr (TyCon "Nat") (TyCon "Bool"))
+        (TyArr (TyCon "Nat" natP) (TyCon "Bool" boolP))
+        (TyArr (TyCon "Nat" natP) (TyCon "Bool" boolP))
+        (TyArr (TyCon "Nat" natP) (TyCon "Bool" boolP))
     )
   , ( "meet: TyArr ≢ TyArr — argument mismatch"
     , expectMismatch
-        (TyArr (TyCon "Nat") (TyCon "Bool"))
-        (TyArr (TyCon "Int") (TyCon "Bool"))
+        (TyArr (TyCon "Nat" natP) (TyCon "Bool" boolP))
+        (TyArr (TyCon "Int" intP) (TyCon "Bool" boolP))
     )
   , ( "meet: TyArr ≢ TyArr — result mismatch"
     , expectMismatch
-        (TyArr (TyCon "Nat") (TyCon "Bool"))
-        (TyArr (TyCon "Nat") (TyCon "Int"))
+        (TyArr (TyCon "Nat" natP) (TyCon "Bool" boolP))
+        (TyArr (TyCon "Nat" natP) (TyCon "Int" intP))
     )
   , ( "meet: TyApp ≡ TyApp — congruent children"
     , expectOK
-        (TyApp (TyCon "List") (TyCon "Nat"))
-        (TyApp (TyCon "List") (TyCon "Nat"))
-        (TyApp (TyCon "List") (TyCon "Nat"))
+        (TyApp (TyCon "List" listP) (TyCon "Nat" natP))
+        (TyApp (TyCon "List" listP) (TyCon "Nat" natP))
+        (TyApp (TyCon "List" listP) (TyCon "Nat" natP))
     )
   , ( "meet: TyApp ≢ TyApp — different constructor"
     , expectMismatch
-        (TyApp (TyCon "List") (TyCon "Nat"))
-        (TyApp (TyCon "Maybe") (TyCon "Nat"))
+        (TyApp (TyCon "List" listP) (TyCon "Nat" natP))
+        (TyApp (TyCon "Maybe" maybeP) (TyCon "Nat" natP))
     )
   , ( "meet: TyVar ≡ TyVar — same name, same path (Stern-Gerlach equal)"
     , let pa = Path [PsProgDecl 0, PsDataParam 0]
@@ -65,8 +81,8 @@ tests =
     )
   , ( "meet: head mismatch — TyArr vs TyApp"
     , expectMismatch
-        (TyArr (TyCon "Nat") (TyCon "Bool"))
-        (TyApp (TyCon "List") (TyCon "Nat"))
+        (TyArr (TyCon "Nat" natP) (TyCon "Bool" boolP))
+        (TyApp (TyCon "List" listP) (TyCon "Nat" natP))
     )
   ]
 

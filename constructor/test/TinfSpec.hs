@@ -18,33 +18,41 @@ import Text.Megaparsec (errorBundlePretty)
 param0Path :: Int -> Path
 param0Path n = Path [PsProgDecl n, PsDataParam 0]
 
+-- | Def-path of the @nth@ top-level declaration — what 'tyConRef'
+--   resolves to for that declaration's surface name.
+tcPath :: Int -> Path
+tcPath n = Path [PsProgDecl n]
+
 tests :: [(String, IO Bool)]
 tests =
   [ ( "Tinf: empty program"
     , expectOK "" Map.empty Map.empty
     )
   , ( "Tinf: data Bool : *0 { True : Bool; False : Bool }"
-    , expectOK "data Bool : *0 { True : Bool; False : Bool }"
-        (Map.fromList [("Bool", 0)])
-        (Map.fromList [("True", TyCon "Bool"), ("False", TyCon "Bool")])
+    , let boolP = tcPath 0
+      in expectOK "data Bool : *0 { True : Bool; False : Bool }"
+           (Map.fromList [("Bool", 0)])
+           (Map.fromList [("True", TyCon "Bool" boolP), ("False", TyCon "Bool" boolP)])
     )
   , ( "Tinf: data Nat : *0 { Z : Nat; S : Nat -> Nat }"
-    , expectOK "data Nat : *0 { Z : Nat; S : Nat -> Nat }"
-        (Map.fromList [("Nat", 0)])
-        (Map.fromList
-          [ ("Z", TyCon "Nat")
-          , ("S", TyArr (TyCon "Nat") (TyCon "Nat"))
-          ])
+    , let natP = tcPath 0
+      in expectOK "data Nat : *0 { Z : Nat; S : Nat -> Nat }"
+           (Map.fromList [("Nat", 0)])
+           (Map.fromList
+             [ ("Z", TyCon "Nat" natP)
+             , ("S", TyArr (TyCon "Nat" natP) (TyCon "Nat" natP))
+             ])
     )
   , ( "Tinf: parametric data — data List a : *0 { Nil : List a; Cons : a -> List a -> List a }"
-    , let pa = param0Path 0
+    , let pa     = param0Path 0
+          listP  = tcPath 0
       in expectOK "data List a : *0 { Nil : List a; Cons : a -> List a -> List a }"
            (Map.fromList [("List", 1)])
            (Map.fromList
-             [ ("Nil", TyApp (TyCon "List") (TyVar "a" pa))
+             [ ("Nil", TyApp (TyCon "List" listP) (TyVar "a" pa))
              , ("Cons", TyArr (TyVar "a" pa)
-                          (TyArr (TyApp (TyCon "List") (TyVar "a" pa))
-                                 (TyApp (TyCon "List") (TyVar "a" pa))))
+                          (TyArr (TyApp (TyCon "List" listP) (TyVar "a" pa))
+                                 (TyApp (TyCon "List" listP) (TyVar "a" pa))))
              ])
     )
   , ( "Tinf: parameter goes out of scope after data body"
@@ -60,23 +68,27 @@ tests =
         (TyDuplicateType "Bool")
     )
   , ( "Tinf: cross-decl reference — data NatList : *0 { mk : List Nat }"
-    , let pa = param0Path 1  -- 'a' is param 0 of the 2nd top-level decl (List)
+    , let pa       = param0Path 1
+          natP     = tcPath 0
+          listP    = tcPath 1
       in expectOK "data Nat : *0 { Z : Nat }; data List a : *0 { Nil : List a }; data NatList : *0 { mk : List Nat }"
            (Map.fromList [("Nat", 0), ("List", 1), ("NatList", 0)])
            (Map.fromList
-             [ ("Z",   TyCon "Nat")
-             , ("Nil", TyApp (TyCon "List") (TyVar "a" pa))
-             , ("mk",  TyApp (TyCon "List") (TyCon "Nat"))
+             [ ("Z",   TyCon "Nat" natP)
+             , ("Nil", TyApp (TyCon "List" listP) (TyVar "a" pa))
+             , ("mk",  TyApp (TyCon "List" listP) (TyCon "Nat" natP))
              ])
     )
   , ( "Tinf: distinct parameter paths — two 'a's are different vars (Stern-Gerlach)"
-    , let pa1 = param0Path 0
-          pa2 = param0Path 1
+    , let pa1   = param0Path 0
+          pa2   = param0Path 1
+          boxP  = tcPath 0
+          bagP  = tcPath 1
       in expectOK "data Box a : *0 { mk : a -> Box a }; data Bag a : *0 { mk2 : a -> Bag a }"
            (Map.fromList [("Box", 1), ("Bag", 1)])
            (Map.fromList
-             [ ("mk",  TyArr (TyVar "a" pa1) (TyApp (TyCon "Box") (TyVar "a" pa1)))
-             , ("mk2", TyArr (TyVar "a" pa2) (TyApp (TyCon "Bag") (TyVar "a" pa2)))
+             [ ("mk",  TyArr (TyVar "a" pa1) (TyApp (TyCon "Box" boxP) (TyVar "a" pa1)))
+             , ("mk2", TyArr (TyVar "a" pa2) (TyApp (TyCon "Bag" bagP) (TyVar "a" pa2)))
              ])
     )
   ]

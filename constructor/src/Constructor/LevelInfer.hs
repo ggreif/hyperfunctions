@@ -126,6 +126,11 @@ instance Lang Lvl where
     Just p  -> Right (p, env)
     Nothing -> Left (Unbound x)
 
+  -- Level inference ignores the def-path supplied by the parser;
+  -- name-based lookup suffices because the level of a binder is
+  -- determined by its declaration regardless of where it lives.
+  tyConRef ann n _path = var ann n
+
   star _ann w = Lvl $ \env -> do
     let (p, sheet1) = freshPlace (envSheet env)
     sheet2 <- pin mergeLv p (starLevel w) sheet1

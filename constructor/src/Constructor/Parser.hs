@@ -38,25 +38,30 @@ import qualified Text.Megaparsec.Char.Lexer as L
 type Parser = Parsec Void Text
 type RawTree s = Tree (Const ()) s
 
--- | Binders threaded through the grammar — level-variable binders
---   (from @∀l.@) and type-parameter binders (from @data Foo a@).
---   Disjoint surface-name namespaces but threaded together for
---   convenience.
+-- | Binders threaded through the grammar — three disjoint surface-name
+--   namespaces: level-variable binders (from @∀l.@), type-parameter
+--   binders (from @data Foo a@), and type-constructor binders (from
+--   @data Foo … @).
 data Binders = Binders
   { lvBinders :: !(Map Name Path)
     -- ^ '∀l.'-bound names → their binder path.
   , tyBinders :: !(Map Name Path)
     -- ^ Data-type-parameter names → their parameter-binding path.
+  , tcBinders :: !(Map Name Path)
+    -- ^ Type-constructor names → their data-declaration path.
   }
 
 emptyBinders :: Binders
-emptyBinders = Binders Map.empty Map.empty
+emptyBinders = Binders Map.empty Map.empty Map.empty
 
 extendLv :: Name -> Path -> Binders -> Binders
 extendLv n p b = b { lvBinders = Map.insert n p (lvBinders b) }
 
 extendTys :: [(Name, Path)] -> Binders -> Binders
 extendTys ps b = b { tyBinders = foldr (\(n, p) -> Map.insert n p) (tyBinders b) ps }
+
+extendTc :: Name -> Path -> Binders -> Binders
+extendTc n p b = b { tcBinders = Map.insert n p (tcBinders b) }
 
 -- Whitespace + line/block comments.
 sc :: (MonadParsec Void Text m) => m ()
@@ -81,22 +86,27 @@ identifier = lexeme . try $ do
   where
     isAlphaNumOrUnder c = isAlphaNum c || c == '_' || c == '\''
 
--- | Parse a list of grammar elements separated by @sep@, passing each
---   one its sibling index via the supplied parser builder.  Used to
---   give each top-level / inner declaration its own path step.
-sepEndByIndexed
-  :: MonadParsec e s mm => (Int -> mm a) -> mm b -> mm [a]
-sepEndByIndexed mk sep = go 0
+-- | Parse a list of grammar elements separated by @sep@, threading
+--   an accumulator from each element to the next so that later
+--   siblings see binders introduced by earlier ones (in particular,
+--   each @data X@ declaration adds @X@ to the type-constructor
+--   namespace before subsequent siblings are parsed).  Each element
+--   is given its sibling index for path construction.
+sepEndByIndexedAcc
+  :: MonadParsec e s mm => (Int -> acc -> mm (a, acc)) -> mm b -> acc -> mm ([a], acc)
+sepEndByIndexedAcc mk sep = go 0
   where
-    go i = do
-      mx <- optional (try (mk i))
+    go i acc = do
+      mx <- optional (try (mk i acc))
       case mx of
-        Nothing -> pure []
-        Just x  -> do
+        Nothing       -> pure ([], acc)
+        Just (x, acc') -> do
           msep <- optional sep
           case msep of
-            Nothing -> pure [x]
-            Just _  -> (x :) <$> go (i + 1)
+            Nothing -> pure ([x], acc')
+            Just _  -> do
+              (xs, acc'') <- go (i + 1) acc'
+              pure (x : xs, acc'')
 
 -- ----------------------------------------------------------------------
 -- Expression-level parsers.
@@ -136,14 +146,21 @@ atom
 atom path binders = choice
   [ universe path binders
   , do
-      n   <- identifier
+      n <- identifier
+      -- Resolution order: type parameters shadow tycons in scope; an
+      -- unresolved name falls through to 'var' so the elaborator can
+      -- still surface 'TyUnbound'.
       case Map.lookup n (tyBinders binders) of
         Just paramPath -> do
           ann <- freshExprAnn
           pure (tyParamRef ann n paramPath)
-        Nothing -> do
-          ann <- freshExprAnn
-          pure (var ann n)
+        Nothing -> case Map.lookup n (tcBinders binders) of
+          Just declPath -> do
+            ann <- freshExprAnn
+            pure (tyConRef ann n declPath)
+          Nothing -> do
+            ann <- freshExprAnn
+            pure (var ann n)
   , between (symbol "(") (symbol ")") (expr (extendPath PsParens path) binders)
   ]
 
@@ -197,9 +214,13 @@ application path binders = do
 -- Declaration-level parsers.
 -- ----------------------------------------------------------------------
 
+-- | Parse one declaration.  Returns the parsed value along with the
+--   updated 'Binders' that subsequent siblings should see — in
+--   particular, 'dataD' adds itself to 'tcBinders' so that following
+--   constructor types and data declarations can reference it.
 decl
   :: (Lang r, HasAnn a m, MonadParsec Void Text m, MonadFail m)
-  => Path -> Binders -> m (r a 'SDecl)
+  => Path -> Binders -> m (r a 'SDecl, Binders)
 decl path binders = dataD <|> ctorD
   where
     dataD = do
@@ -209,34 +230,42 @@ decl path binders = dataD <|> ctorD
       void (symbol ":")
       e   <- expr (extendPath PsDataAnn path) binders
       -- Inside the data body, the outer ∀-scope does NOT carry over,
-      -- but the data's own type parameters DO — they're in scope over
-      -- every constructor's type.  Each parameter's def-path is
-      -- @PsDataParam i@ off the data-declaration path.
-      let paramPaths  = zipWith (\i p -> (p, extendPath (PsDataParam i) path))
-                                [0 ..] params
-          bodyBinders = extendTys paramPaths emptyBinders
-      ds  <- between (symbol "{") (symbol "}") $
-               sepEndByIndexed
-                 (\i -> decl (extendPath (PsDeclIdx i) path) bodyBinders)
-                 (symbol ";")
+      -- but: the data's own type parameters DO (scoped over each
+      -- constructor's type), the data binder itself DOES (so
+      -- constructors can mention the type they construct, and so
+      -- nested data can reference it), and the outer tcBinders DO
+      -- (top-level tycons remain visible inside nested bodies).
+      let paramPaths   = zipWith (\i p -> (p, extendPath (PsDataParam i) path))
+                                 [0 ..] params
+          bodyBinders0 = binders { lvBinders = Map.empty }
+          bodyBinders  = extendTc n path (extendTys paramPaths bodyBinders0)
+      (ds, _)  <- between (symbol "{") (symbol "}") $
+                    sepEndByIndexedAcc
+                      (\i bs -> decl (extendPath (PsDeclIdx i) path) bs)
+                      (symbol ";")
+                      bodyBinders
       ann <- freshDeclAnn
-      pure (dataDecl ann n params e ds)
+      -- Add ourselves to tcBinders for siblings (forward-only
+      -- references — later siblings see, earlier ones don't).
+      let nextBinders = extendTc n path binders
+      pure (dataDecl ann n params e ds, nextBinders)
 
     ctorD = do
       n   <- identifier
       void (symbol ":")
       e   <- expr (extendPath PsCtorTy path) binders
       ann <- freshDeclAnn
-      pure (ctorDecl ann n e)
+      pure (ctorDecl ann n e, binders)
 
 program
   :: (Lang r, HasAnn a m, MonadParsec Void Text m, MonadFail m)
   => m (r a 'SProg)
 program = do
   sc
-  ds  <- sepEndByIndexed
-           (\i -> decl (extendPath (PsProgDecl i) emptyPath) emptyBinders)
-           (symbol ";")
+  (ds, _) <- sepEndByIndexedAcc
+               (\i bs -> decl (extendPath (PsProgDecl i) emptyPath) bs)
+               (symbol ";")
+               emptyBinders
   ann <- freshProgAnn
   eof
   pure (prog ann ds)

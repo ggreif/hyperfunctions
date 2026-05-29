@@ -116,6 +116,10 @@ instance Lang HfLvl where
     Just p  -> Right (p, env)
     Nothing -> Left (Unbound x)
 
+  -- Level inference ignores the parser's def-path; treat tycon
+  -- references identically to plain name references.
+  tyConRef ann n _path = var ann n
+
   star _ann w = HfLvl $ \env -> Right (fromLv (starLevel w), env)
 
   arr _ann a b = HfLvl $ \env -> do
