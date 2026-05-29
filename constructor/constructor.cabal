@@ -24,6 +24,8 @@ library
     Constructor.Level
     Constructor.Sheet
     Constructor.LevelInfer
+    Constructor.HyperLite
+    Constructor.HfLvl
     Constructor.Syntax
     Constructor.AST
     Constructor.Parser

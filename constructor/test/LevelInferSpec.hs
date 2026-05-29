@@ -3,6 +3,7 @@
 
 module LevelInferSpec (tests) where
 
+import Constructor.HfLvl (HfLvl, inferProgramHf)
 import Constructor.Level (Lv (..), starLevel)
 import Constructor.LevelInfer (LevelMap, Lvl, LvErr (..), inferProgram)
 import Constructor.Parser (parseProgram)
@@ -69,7 +70,32 @@ tests =
         , ("True",   lv 0), ("False", lv 0)
         ]
     )
+  , ("Hyper carrier parity — Lvl == HfLvl on Nat"
+    , parityLvlHf "data Nat : *0 { Z : Nat; S : Nat -> Nat }"
+        [("Nat", lv 1), ("Z", lv 0), ("S", lv 0)]
+    )
   ]
+
+-- | Run the same source through both the classical 'Lvl' carrier and the
+--   hyperfunction-backed 'HfLvl' carrier, then check that both agree with
+--   the expected level map.  One regression suffices as a warm-up — the
+--   hyperfunction encoding adds no power for flat levels, so the result
+--   *must* be identical bit-for-bit.
+parityLvlHf :: Text -> [(Text, Lv)] -> IO Bool
+parityLvlHf src want = do
+  let wantMap = Map.fromList want
+      lvlR = case parseProgram @Lvl @(Const ()) "<parity>" src of
+        Left e  -> Left (errorBundlePretty e)
+        Right p -> either (Left . show) Right (inferProgram p)
+      hfR = case parseProgram @HfLvl @(Const ()) "<parity>" src of
+        Left e  -> Left (errorBundlePretty e)
+        Right p -> either (Left . show) Right (inferProgramHf p)
+  case (lvlR, hfR) of
+    (Right a, Right b) | a == b && a == wantMap -> pure True
+    _ -> reportFail $
+           "Lvl:  " <> show lvlR <> "\n    " <>
+           "HfLvl: " <> show hfR  <> "\n    " <>
+           "want:  " <> show wantMap
 
 expectOK :: Text -> [(Text, Lv)] -> IO Bool
 expectOK src want = case infer src of
