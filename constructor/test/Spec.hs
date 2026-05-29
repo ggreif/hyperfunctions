@@ -11,6 +11,7 @@ import Constructor.Sort (Sort (..))
 import qualified HypTinfSpec
 import qualified LevelInferSpec
 import qualified TinfSpec
+import qualified TyProcSpec
 import Data.Functor.Const (Const (..))
 import Data.Text (Text)
 import System.Exit (exitFailure, exitSuccess)
@@ -33,9 +34,12 @@ main = do
   putStrLn "type inference:"
   tinfOK <- mapM runInfer TinfSpec.tests
   putStrLn ""
+  putStrLn "TyProc.meet apparatus:"
+  meetOK <- mapM runInfer TyProcSpec.tests
+  putStrLn ""
   putStrLn "B-side type-inference parity:"
   hypTinfOK <- mapM runInfer HypTinfSpec.tests
-  if and (parseOK ++ inferOK ++ tinfOK ++ hypTinfOK) then exitSuccess else exitFailure
+  if and (parseOK ++ inferOK ++ tinfOK ++ meetOK ++ hypTinfOK) then exitSuccess else exitFailure
   where
     runInfer (name, go) = do
       ok <- go

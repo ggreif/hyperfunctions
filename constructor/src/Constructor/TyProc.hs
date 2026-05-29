@@ -25,12 +25,15 @@ module Constructor.TyProc
   , TyProc
   , tyToProc
   , procToTy
+  , viewToTy
+  , meet
   ) where
 
 import Constructor.HyperLite (Hyper, hPure, hRun)
 import Constructor.Level (Lv)
 import Constructor.Path (Path)
 import Constructor.Syntax (Name)
+import Constructor.Tinf (TyErr (..))
 import Constructor.TyExpr (TyExpr (..))
 
 -- | One-layer unfolding of a type.  Children of compound shapes are
@@ -75,13 +78,61 @@ tyToProc = hPure . oneLayer
 --   only once metavariable unification arrives and intermediate
 --   states are observable from the algebra).
 procToTy :: TyProc -> TyExpr
-procToTy p = viewToTy (hRun p)
+procToTy = viewToTy . hRun
+
+-- | Project a 'TyView' to its syntactic 'TyExpr', recursing on
+--   children via 'procToTy'.  Useful when handling a view directly
+--   (e.g. in error reporting from 'meet') without going via 'hRun'.
+viewToTy :: TyView -> TyExpr
+viewToTy (TyConV n)    = TyCon n
+viewToTy (TyVarV n pa) = TyVar n pa
+viewToTy (TyAppV f x)  = TyApp (procToTy f) (procToTy x)
+viewToTy (TyArrV a b)  = TyArr (procToTy a) (procToTy b)
+viewToTy (TyUnivV l)   = TyUniv l
+viewToTy (TyMetaV _ _) =
+  error "Constructor.TyProc.viewToTy: unresolved metavariable \
+        \(expected only post-commit-5)"
+
+-- | Structural unification on type-processes.
+--
+--   For commit 5 this handles the *concrete-concrete* fragment of
+--   Robinson unification: matching heads recurse into their children;
+--   mismatched heads return 'TyMismatch'.  Metavariable resolution
+--   (@TyMetaV@) is intentionally deferred — within a single data
+--   declaration the parser already syntactically equates all uses of
+--   the same binder via 'tyParamRef', so the algebra has no customer
+--   for meta unification yet.  Once multi-site instantiation (commit
+--   6+) introduces per-use fresh α-cells, 'meet' grows the redirect
+--   case the design notes describe; the *encoding choice* — redirect
+--   over constant, to preserve unification traces — is recorded in
+--   PLAN.md, not enforced here.
+--
+--   The carrier itself (`HypTinf`) does not yet invoke 'meet' — there
+--   is no expression-level grammar feature whose well-formedness
+--   forces unification.  This module ships the apparatus; the
+--   customer lands in a later commit.
+meet :: TyProc -> TyProc -> Either TyErr TyProc
+meet p1 p2 = hPure <$> meetView (hRun p1) (hRun p2)
   where
-    viewToTy (TyConV n)    = TyCon n
-    viewToTy (TyVarV n pa) = TyVar n pa
-    viewToTy (TyAppV f x)  = TyApp (procToTy f) (procToTy x)
-    viewToTy (TyArrV a b)  = TyArr (procToTy a) (procToTy b)
-    viewToTy (TyUnivV l)   = TyUniv l
-    viewToTy (TyMetaV _ _) =
-      error "Constructor.TyProc.procToTy: unresolved metavariable \
-            \(expected only post-commit-5)"
+    meetView v1 v2 = case (v1, v2) of
+      (TyConV n1, TyConV n2)
+        | n1 == n2 -> Right v1
+      (TyVarV n1 p1', TyVarV n2 p2')
+        | n1 == n2 && p1' == p2' -> Right v1
+      (TyAppV f1 x1, TyAppV f2 x2) -> do
+        f3 <- meet f1 f2
+        x3 <- meet x1 x2
+        Right (TyAppV f3 x3)
+      (TyArrV a1 b1, TyArrV a2 b2) -> do
+        a3 <- meet a1 a2
+        b3 <- meet b1 b2
+        Right (TyArrV a3 b3)
+      (TyUnivV l1, TyUnivV l2)
+        | l1 == l2 -> Right v1
+      (TyMetaV _ _, _) ->
+        error "Constructor.TyProc.meet: metavariable unification \
+              \deferred to a later commit"
+      (_, TyMetaV _ _) ->
+        error "Constructor.TyProc.meet: metavariable unification \
+              \deferred to a later commit"
+      _ -> Left (TyMismatch (viewToTy v1) (viewToTy v2))

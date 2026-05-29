@@ -349,11 +349,40 @@ commit 4:
    `π₁`-flavoured trace the memory file talks about starts being
    visible: two unifications of the same pair α ≡ β via different
    routes leave behind two distinct peer-callback compositions.
+
+   **Encoding decision: redirect, not constant.**  When `meet α
+   concrete` resolves a meta, the post-resolution α is *not*
+   `hPure concreteView` (which discards how α became concrete);
+   it is `Hyper (\peer -> invoke concretePeer peer)` — a redirect
+   that traces through to the concrete one at `hRun` time.  Under
+   extraction the two produce the same `TyView` (UIP holds for
+   first-order unification), but the redirect form preserves the
+   chain `α → β → γ → concrete` as a walkable structure.
+
+   The git analogy is exact: constant is a squash (right final
+   answer, history compressed to a point); redirect is a merge
+   commit (one indirection per rewire, history preserved for any
+   consumer that wants to look).  The trace is what commit 4 is
+   (4.) below depends on.
+
+   Commit-5 scope: the *apparatus* — pure `meet :: TyProc ->
+   TyProc -> Either TyErr TyProc` over concrete-concrete pairs,
+   with structural recursion into compound shapes (`TyAppV`,
+   `TyArrV`).  Metavariable resolution defers to commit 6 because
+   the carrier has no expression-level customer yet — within a
+   single data decl, all `tyParamRef`s for one binder are already
+   syntactically equal.  Direct tests in `TyProcSpec` exercise
+   `meet` without a carrier path.
 2. **Multi-site fresh-α.**  Each use of `Nil :: List a` allocates a
    process at identity `(binder-path-of-a, use-path)`.  Two uses of
    `Nil` in `data D : *0 { nilNat : List Nat; nilBool : List Bool }`
    produce two non-identified α-processes; unification with the
    context determines each independently.
+
+   This is the first place where the per-use fresh-α apparatus
+   has a customer.  Until multi-site instantiation arrives, the
+   Stern-Gerlach paths from commit 3 already do all the
+   distinguishing the algebra needs.
 3. **Occurs check + termination.**  Standard guards translated into
    the algebra.  CCS-bisimulation-style finiteness arguments are the
    theoretical framing; the implementation is the conventional
@@ -365,6 +394,32 @@ commit 4:
    we'd start touching HITs proper — coherence between paths, not
    just identification.  The apparatus is in place; whether anything
    useful at our scale exploits it is open.
+
+### Decoration shape at the end of the arc
+
+Both `Tinf` and `HypTinf` currently lack the impredicative
+`r TypAnnot s` slot that `HypTc` has for the level layer
+(`r LvAnnot s`).  Two reasons this is *not* an oversight to retrofit
+identically across A and B:
+
+- For A, the slot would carry per-node `TyExpr` — and `Tinf`'s
+  carrier value is already `TyExpr`.  Adding the slot duplicates
+  the carrier into a separate annotation channel.  Useful for
+  downstream consumers (codegen, pretty-printer, error reporter)
+  that want "the parsed program plus its types per node" as one
+  polymorphic value.
+- For B, the slot is **structurally redundant**.  A `TyProc`
+  IS a `Lang`-shaped thing valued in `TyView`; the carrier value
+  at each `SExpr` is *already* the decorated-by-its-own-type form.
+  Adding an impredicative `r TypAnnot s` would duplicate the web
+  into an annotation channel for no information gain.
+
+End-of-arc decision: **each architecture decorates the way that's
+natural to it** (the "(α)" choice from the design conversation).  A
+gets a syntactic `TypAnnot 'SExpr = TyExpr` and the impredicative
+slot; B exposes the `TyProc` web directly to downstream consumers.
+Symmetry-for-its-own-sake would obscure the structural difference
+the A/B split exists to expose.
 
 ### Why these commits, in this order
 

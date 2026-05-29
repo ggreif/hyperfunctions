@@ -66,6 +66,12 @@ data TyErr
   = TyUnbound Name
   | TyDuplicateType Name
   | TyDuplicateCtor Name
+  | TyMismatch TyExpr TyExpr
+    -- ^ Robinson-style unification failure: two types with
+    --   incompatible structural heads.  Produced by
+    --   "Constructor.TyProc".'meet'; not yet produced by 'Tinf'
+    --   directly (the A-side has no unification customer at
+    --   commit-5 scope).
   deriving (Eq, Show)
 
 data TyResult = TyResult

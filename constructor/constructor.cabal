@@ -60,6 +60,7 @@ test-suite constructor-test
   other-modules:
     LevelInferSpec
     TinfSpec
+    TyProcSpec
     HypTinfSpec
   build-depends:
     , base
