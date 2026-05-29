@@ -9,10 +9,20 @@
 --   'tyToProc' and call `meet` pointwise.
 module TyProcSpec (tests) where
 
+import Constructor.HyperLite (hPure)
 import Constructor.Path (Path (..), PathStep (..))
 import Constructor.Tinf (TyErr (..))
 import Constructor.TyExpr (TyExpr (..))
-import Constructor.TyProc (meet, procToTy, tyToProc)
+import Constructor.TyProc
+  ( Subst
+  , TyProc
+  , TyView (..)
+  , emptySubst
+  , materialize
+  , meet
+  , mkMeta
+  , tyToProc
+  )
 
 -- | Stand-in def-paths for the named tycons under test.  Mirrors what
 --   the parser would emit if these were declared at the given
@@ -78,28 +88,131 @@ tests =
         (TyArr (TyCon "Nat" natP) (TyCon "Bool" boolP))
         (TyApp (TyCon "List" listP) (TyCon "Nat" natP))
     )
+
+    -- --- Metavariable apparatus ---------------------------------------
+  , ( "meet (meta ≡ concrete): subst binds the meta"
+    , let bp = Path [PsProgDecl 0, PsDataParam 0]
+          up = Path [PsProgDecl 3]
+          meta = mkMeta bp up
+          target = TyCon "Nat" natP
+      in expectMeetThenMaterialize
+           emptySubst meta (tyToProc target)
+           meta target
+    )
+  , ( "meet (concrete ≡ meta): symmetric — subst binds the meta"
+    , let bp = Path [PsProgDecl 0, PsDataParam 0]
+          up = Path [PsProgDecl 3]
+          meta = mkMeta bp up
+          target = TyCon "Bool" boolP
+      in expectMeetThenMaterialize
+           emptySubst (tyToProc target) meta
+           meta target
+    )
+  , ( "meet (meta1 ≡ meta2): one redirects to the other"
+    , let bp = Path [PsProgDecl 0, PsDataParam 0]
+          m1 = mkMeta bp (Path [PsProgDecl 3])
+          m2 = mkMeta bp (Path [PsProgDecl 4])
+      in do
+        case meet emptySubst m1 m2 of
+          Left err -> reportFail $ "meet failed: " <> show err
+          Right s -> case materialize s m1 of
+            -- Both metas remain unresolved structurally — the chain
+            -- m1 → m2 leads to an unbound m2.  Materialize surfaces
+            -- TyUnresolvedMeta for m2; binding either tip resolves
+            -- the whole chain (the redirect property the design
+            -- requires).
+            Left (TyUnresolvedMeta _ _) -> pure True
+            Left err -> reportFail $
+              "expected unresolved redirect chain, got error " <> show err
+            Right got -> reportFail $
+              "expected unresolved redirect chain, got resolved " <> show got
+    )
+  , ( "redirect chain: meet m1 m2; meet m2 concrete; materialize m1 → concrete"
+    , let bp = Path [PsProgDecl 0, PsDataParam 0]
+          m1 = mkMeta bp (Path [PsProgDecl 3])
+          m2 = mkMeta bp (Path [PsProgDecl 4])
+          c  = tyToProc (TyCon "Bool" boolP)
+      in do
+        case meet emptySubst m1 m2 of
+          Left err -> reportFail $ "first meet failed: " <> show err
+          Right s1 -> case meet s1 m2 c of
+            Left err -> reportFail $ "second meet failed: " <> show err
+            Right s2 -> case materialize s2 m1 of
+              Right got
+                | got == TyCon "Bool" boolP -> pure True
+                | otherwise -> reportFail $
+                    "expected TyCon \"Bool\" boolP, got " <> show got
+              Left err -> reportFail $
+                "materialize after chain failed: " <> show err
+    )
+  , ( "conflict: meet m Bool then meet m Int → TyMismatch"
+    , let bp = Path [PsProgDecl 0, PsDataParam 0]
+          m  = mkMeta bp (Path [PsProgDecl 3])
+          b  = tyToProc (TyCon "Bool" boolP)
+          i  = tyToProc (TyCon "Int" intP)
+      in do
+        case meet emptySubst m b of
+          Left err -> reportFail $ "first meet failed: " <> show err
+          Right s1 -> case meet s1 m i of
+            Left (TyMismatch _ _) -> pure True
+            Left err -> reportFail $
+              "expected TyMismatch, got error " <> show err
+            Right _ -> reportFail
+              "expected TyMismatch, got success"
+    )
+  , ( "compound: meet (List m) (List Nat) propagates m := Nat"
+    , let bp      = Path [PsProgDecl 0, PsDataParam 0]
+          up      = Path [PsProgDecl 3]
+          m       = mkMeta bp up
+          listM   = hPure (TyAppV (tyToProc (TyCon "List" listP)) m)
+          listNat = tyToProc (TyApp (TyCon "List" listP) (TyCon "Nat" natP))
+      in do
+        case meet emptySubst listM listNat of
+          Left err -> reportFail $ "meet failed: " <> show err
+          Right s -> case materialize s m of
+            Right got
+              | got == TyCon "Nat" natP -> pure True
+              | otherwise -> reportFail $
+                  "expected TyCon \"Nat\" natP, got " <> show got
+            Left err -> reportFail $
+              "materialize failed: " <> show err
+    )
   ]
 
--- | Build two 'TyProc's from 'TyExpr's, unify them, and check the
---   extracted result against the expected type.
+-- | Build two 'TyProc's from 'TyExpr's, unify them under
+--   'emptySubst', and check the extracted result against the
+--   expected type.
 expectOK :: TyExpr -> TyExpr -> TyExpr -> IO Bool
 expectOK t1 t2 want =
-  case meet (tyToProc t1) (tyToProc t2) of
+  case meet emptySubst (tyToProc t1) (tyToProc t2) of
     Left err -> reportFail $ "meet failed: " <> show err
-    Right p  ->
-      let got = procToTy p
-      in if got == want
-           then pure True
-           else reportFail $
-             "expected " <> show want <> "\n  got " <> show got
+    Right s -> case materialize s (tyToProc t1) of
+      Left err -> reportFail $ "materialize failed: " <> show err
+      Right got
+        | got == want -> pure True
+        | otherwise -> reportFail $
+            "expected " <> show want <> "\n  got " <> show got
 
 expectMismatch :: TyExpr -> TyExpr -> IO Bool
-expectMismatch t1 t2 = case meet (tyToProc t1) (tyToProc t2) of
+expectMismatch t1 t2 = case meet emptySubst (tyToProc t1) (tyToProc t2) of
   Left (TyMismatch _ _) -> pure True
   Left err -> reportFail $
     "expected TyMismatch, got " <> show err
-  Right p -> reportFail $
-    "expected TyMismatch, got success: " <> show (procToTy p)
+  Right _ -> reportFail "expected TyMismatch, got success"
+
+-- | Run a 'meet' from an explicit pre-state, then 'materialize' a
+--   nominated process, and check the result.
+expectMeetThenMaterialize
+  :: Subst -> TyProc -> TyProc -> TyProc -> TyExpr -> IO Bool
+expectMeetThenMaterialize s p1 p2 probe want =
+  case meet s p1 p2 of
+    Left err -> reportFail $ "meet failed: " <> show err
+    Right s' -> case materialize s' probe of
+      Left err -> reportFail $ "materialize failed: " <> show err
+      Right got
+        | got == want -> pure True
+        | otherwise -> reportFail $
+            "expected " <> show want <> "\n  got " <> show got
 
 reportFail :: String -> IO Bool
 reportFail msg = putStrLn ("    " <> msg) >> pure False

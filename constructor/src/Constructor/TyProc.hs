@@ -26,7 +26,13 @@ module Constructor.TyProc
   , tyToProc
   , procToTy
   , viewToTy
+    -- * Metavariables and unification
+  , MetaId (..)
+  , Subst
+  , emptySubst
+  , mkMeta
   , meet
+  , materialize
   ) where
 
 import Constructor.HyperLite (Hyper, hPure, hRun)
@@ -35,6 +41,8 @@ import Constructor.Path (Path)
 import Constructor.Syntax (Name)
 import Constructor.Tinf (TyErr (..))
 import Constructor.TyExpr (TyExpr (..))
+import Data.Map.Strict (Map)
+import qualified Data.Map.Strict as Map
 
 -- | One-layer unfolding of a type.  Children of compound shapes are
 --   'TyProc's by recursion, so unfolding cost is paid lazily as the
@@ -45,10 +53,34 @@ data TyView
   | TyAppV  !TyProc !TyProc    -- ^ type-level application
   | TyArrV  !TyProc !TyProc    -- ^ function type
   | TyUnivV !Lv                -- ^ universe at a level
-  | TyMetaV !Path !Path        -- ^ fresh metavariable; @(def-path, use-path)@
-                               --   identity.  Inert in commit 4 — present
-                               --   so a later commit's unifier doesn't
-                               --   reshape the algebra.
+  | TyMetaV !MetaId            -- ^ fresh metavariable allocated at a parametric
+                               --   tycon use-site.
+
+-- | Identity of a metavariable allocated at a parametric tycon
+--   use-site.  The first 'Path' is the parameter binder's def-path
+--   (e.g. @[…List…, PsDataParam 0]@ for List's 0th parameter); the
+--   second is the application path-as-a-whole (so two distinct
+--   syntactic uses of @List Nat@ vs @List Bool@ produce metas with
+--   distinct use-paths and hence distinct identities).
+data MetaId = MetaId !Path !Path
+  deriving (Eq, Ord, Show)
+
+-- | A substitution from metavariables to their currently-bound
+--   'TyView'.  Bound views may themselves mention other metas — the
+--   redirect encoding from PLAN.md: lookups chase the chain through
+--   'resolveSubst' / 'materialize'.  No @Map MetaId TyProc@ because
+--   only the *one-layer view* a meta has settled on matters; further
+--   resolution recurses.
+type Subst = Map MetaId TyView
+
+emptySubst :: Subst
+emptySubst = Map.empty
+
+-- | Construct a metavariable cell at the given @(binder, use)@ path
+--   pair.  The cell is initially free — its identity is the
+--   'MetaId'; whether it has been bound is consulted via 'Subst'.
+mkMeta :: Path -> Path -> TyProc
+mkMeta binderPath usePath = hPure (TyMetaV (MetaId binderPath usePath))
 
 -- | A type-process: a hyperfunction that, when self-applied via
 --   'hRun', yields its 'TyView'.  Identifications between two
@@ -89,50 +121,65 @@ viewToTy (TyVarV n pa) = TyVar n pa
 viewToTy (TyAppV f x)  = TyApp (procToTy f) (procToTy x)
 viewToTy (TyArrV a b)  = TyArr (procToTy a) (procToTy b)
 viewToTy (TyUnivV l)   = TyUniv l
-viewToTy (TyMetaV _ _) =
-  error "Constructor.TyProc.viewToTy: unresolved metavariable \
-        \(expected only after a later commit lands meta resolution)"
+viewToTy (TyMetaV _)   =
+  error "Constructor.TyProc.viewToTy: unresolved metavariable; \
+        \use 'materialize' with the carrier's 'Subst' instead"
 
--- | Structural unification on type-processes.
+-- | Resolve a 'TyView' against the current 'Subst': if it's a bound
+--   metavariable, follow the redirect chain until a non-meta view or
+--   an unbound meta surfaces.
+resolveView :: Subst -> TyView -> TyView
+resolveView s v0 = case v0 of
+  TyMetaV mid
+    | Just v <- Map.lookup mid s -> resolveView s v
+  _ -> v0
+
+-- | Structural unification on type-processes, threaded through a
+--   'Subst' of metavariable bindings.
 --
---   For commit 5 this handles the *concrete-concrete* fragment of
---   Robinson unification: matching heads recurse into their children;
---   mismatched heads return 'TyMismatch'.  Metavariable resolution
---   (@TyMetaV@) is intentionally deferred — within a single data
---   declaration the parser already syntactically equates all uses of
---   the same binder via 'tyParamRef', so the algebra has no customer
---   for meta unification yet.  Once multi-site instantiation (commit
---   6+) introduces per-use fresh α-cells, 'meet' grows the redirect
---   case the design notes describe; the *encoding choice* — redirect
---   over constant, to preserve unification traces — is recorded in
---   PLAN.md, not enforced here.
+--   * Concrete ≡ concrete: matching heads recurse into their
+--     children; mismatched heads return 'TyMismatch'.
+--   * Meta ≡ anything: extends 'Subst' with the binding @meta := v@.
+--     The redirect encoding from PLAN.md: the bound view may
+--     itself mention other metas; 'meet' does not eagerly resolve
+--     the chain.  Subsequent 'materialize' (or recursive 'meet')
+--     chases through.
+--   * Meta ≡ same meta: no-op (the binding is already implicit).
 --
---   The carrier itself (`HypTinf`) does not yet invoke 'meet' — there
---   is no expression-level grammar feature whose well-formedness
---   forces unification.  This module ships the apparatus; the
---   customer lands in a later commit.
-meet :: TyProc -> TyProc -> Either TyErr TyProc
-meet p1 p2 = hPure <$> meetView (hRun p1) (hRun p2)
+--   No occurs check yet; cyclic metas would loop 'materialize'.  A
+--   later commit lands the standard guard.
+meet :: Subst -> TyProc -> TyProc -> Either TyErr Subst
+meet s p1 p2 = meetView s (resolveView s (hRun p1)) (resolveView s (hRun p2))
   where
-    meetView v1 v2 = case (v1, v2) of
+    meetView s' v1 v2 = case (v1, v2) of
+      (TyMetaV m1, TyMetaV m2)
+        | m1 == m2  -> Right s'
+        | otherwise -> Right (Map.insert m1 (TyMetaV m2) s')
+      (TyMetaV m, v) -> Right (Map.insert m v s')
+      (v, TyMetaV m) -> Right (Map.insert m v s')
       (TyConV n1 p1', TyConV n2 p2')
-        | n1 == n2 && p1' == p2' -> Right v1
+        | n1 == n2 && p1' == p2' -> Right s'
       (TyVarV n1 p1', TyVarV n2 p2')
-        | n1 == n2 && p1' == p2' -> Right v1
+        | n1 == n2 && p1' == p2' -> Right s'
       (TyAppV f1 x1, TyAppV f2 x2) -> do
-        f3 <- meet f1 f2
-        x3 <- meet x1 x2
-        Right (TyAppV f3 x3)
+        s1 <- meet s' f1 f2
+        meet s1 x1 x2
       (TyArrV a1 b1, TyArrV a2 b2) -> do
-        a3 <- meet a1 a2
-        b3 <- meet b1 b2
-        Right (TyArrV a3 b3)
+        s1 <- meet s' a1 a2
+        meet s1 b1 b2
       (TyUnivV l1, TyUnivV l2)
-        | l1 == l2 -> Right v1
-      (TyMetaV _ _, _) ->
-        error "Constructor.TyProc.meet: metavariable unification \
-              \deferred to a later commit"
-      (_, TyMetaV _ _) ->
-        error "Constructor.TyProc.meet: metavariable unification \
-              \deferred to a later commit"
+        | l1 == l2 -> Right s'
       _ -> Left (TyMismatch (viewToTy v1) (viewToTy v2))
+
+-- | Walk a 'TyProc' web under a 'Subst', producing a syntactic
+--   'TyExpr'.  Bound metavariables are followed through the
+--   substitution; unbound metavariables produce 'TyUnresolvedMeta'.
+materialize :: Subst -> TyProc -> Either TyErr TyExpr
+materialize s p = materializeView (resolveView s (hRun p))
+  where
+    materializeView (TyConV n pa) = Right (TyCon n pa)
+    materializeView (TyVarV n pa) = Right (TyVar n pa)
+    materializeView (TyAppV f x)  = TyApp <$> materialize s f <*> materialize s x
+    materializeView (TyArrV a b)  = TyArr <$> materialize s a <*> materialize s b
+    materializeView (TyUnivV l)   = Right (TyUniv l)
+    materializeView (TyMetaV (MetaId bp up)) = Left (TyUnresolvedMeta bp up)

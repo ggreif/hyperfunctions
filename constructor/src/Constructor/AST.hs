@@ -26,7 +26,7 @@ data Tree (a :: Sort -> Type) (s :: Sort) where
   Arr      :: a 'SExpr -> Tree a 'SExpr -> Tree a 'SExpr -> Tree a 'SExpr
   ForallLv :: a 'SExpr -> Name -> Path -> Tree a 'SExpr -> Tree a 'SExpr
   StarVar  :: a 'SExpr -> Name -> Path -> Word -> Tree a 'SExpr
-  App      :: a 'SExpr -> Tree a 'SExpr -> Tree a 'SExpr -> Tree a 'SExpr
+  App      :: a 'SExpr -> Path -> Tree a 'SExpr -> Tree a 'SExpr -> Tree a 'SExpr
   TyParamRef :: a 'SExpr -> Name -> Path -> Tree a 'SExpr
   TyConRef   :: a 'SExpr -> Name -> Path -> Tree a 'SExpr
 

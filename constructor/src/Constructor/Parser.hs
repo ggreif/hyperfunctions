@@ -197,7 +197,11 @@ arrowExpr path binders = do
     pure (arr ann a b)
 
 -- | Left-associative juxtaposition for type-level application:
---   @f x y z@ parses to @app (app (app f x) y) z@.
+--   @f x y z@ parses to @app (app (app f x) y) z@.  Every nested
+--   'App' built by this fold shares the same 'Path' — namely the
+--   path of the application as a whole — so carriers that allocate
+--   fresh metavariables at parametric tycon use-sites address them
+--   uniformly within one syntactic application.
 application
   :: (Lang r, HasAnn a m, MonadParsec Void Text m, MonadFail m)
   => Path -> Binders -> m (r a 'SExpr)
@@ -208,7 +212,7 @@ application path binders = do
   where
     apply1 f x = do
       ann <- freshExprAnn
-      pure (app ann f x)
+      pure (app ann path f x)
 
 -- ----------------------------------------------------------------------
 -- Declaration-level parsers.

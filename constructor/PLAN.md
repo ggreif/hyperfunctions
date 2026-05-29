@@ -338,62 +338,112 @@ Commit 4's scope (the **carrier+apparatus** middle ground):
 - Parity tests: `HypTinf` vs `Tinf` on the existing corpus must agree
   modulo extraction.  Plus the Stern-Gerlach test in process form.
 
-### Commits 5+ — exercising the algebra
+### Commit 5 (landed) — `meet` apparatus, concrete-only
 
-The genuine workout for the hyperfunction architecture sits past
-commit 4:
+Pure structural unification on type-processes for the concrete-
+concrete fragment.  Matching heads (`TyConV`, `TyVarV`, `TyAppV`,
+`TyArrV`, `TyUnivV`) recurse into their children; mismatched heads
+return `TyMismatch`.  Direct unit tests in `TyProcSpec` exercise the
+algebra without a carrier path.
 
-1. **Metavariables and Robinson unification.**  `meet` learns to
-   handle `α ≡ τ` by *rewiring* α's process to defer to τ's peer,
-   not by writing to a side-channel.  This is where the
-   `π₁`-flavoured trace the memory file talks about starts being
-   visible: two unifications of the same pair α ≡ β via different
-   routes leave behind two distinct peer-callback compositions.
+The `TyMetaV` parking slot reserved in commit 4 stays unbuilt in
+commit 5; the customer for metavariable unification doesn't arrive
+until commit 6, when parametric tycon applications start allocating
+fresh metas.
 
-   **Encoding decision: redirect, not constant.**  When `meet α
-   concrete` resolves a meta, the post-resolution α is *not*
-   `hPure concreteView` (which discards how α became concrete);
-   it is `Hyper (\peer -> invoke concretePeer peer)` — a redirect
-   that traces through to the concrete one at `hRun` time.  Under
-   extraction the two produce the same `TyView` (UIP holds for
-   first-order unification), but the redirect form preserves the
-   chain `α → β → γ → concrete` as a walkable structure.
+### Commit 5.5 (landed) — def-path identity for `TyCon`
 
-   The git analogy is exact: constant is a squash (right final
-   answer, history compressed to a point); redirect is a merge
-   commit (one indirection per rewire, history preserved for any
-   consumer that wants to look).  The trace is what commit 4 is
-   (4.) below depends on.
+The Stern-Gerlach binder discipline now applies uniformly to type
+constructors (alongside type parameters and `∀l.`-binders).  For
+nullary tycons the use-path collapses to the def-path \(x^0 = 1\);
+for higher-kinded uses (commit 6) the use-path becomes load-bearing
+as the address for fresh α-cells.
 
-   Commit-5 scope: the *apparatus* — pure `meet :: TyProc ->
-   TyProc -> Either TyErr TyProc` over concrete-concrete pairs,
-   with structural recursion into compound shapes (`TyAppV`,
-   `TyArrV`).  Metavariable resolution defers to commit 6 because
-   the carrier has no expression-level customer yet — within a
-   single data decl, all `tyParamRef`s for one binder are already
-   syntactically equal.  Direct tests in `TyProcSpec` exercise
-   `meet` without a carrier path.
-2. **Multi-site fresh-α.**  Each use of `Nil :: List a` allocates a
-   process at identity `(binder-path-of-a, use-path)`.  Two uses of
-   `Nil` in `data D : *0 { nilNat : List Nat; nilBool : List Bool }`
-   produce two non-identified α-processes; unification with the
-   context determines each independently.
+### Commit 6 (landed) — metavariables, redirect-encoded `meet`,
+### parametric instantiation customer
 
-   This is the first place where the per-use fresh-α apparatus
-   has a customer.  Until multi-site instantiation arrives, the
-   Stern-Gerlach paths from commit 3 already do all the
-   distinguishing the algebra needs.
-3. **Occurs check + termination.**  Standard guards translated into
+The genuine algebraic workout.  Three load-bearing pieces:
+
+1. **Metavariables as identified cells.**  `TyView` activates its
+   `TyMetaV` constructor, now carrying a `MetaId = MetaId !Path
+   !Path` (binder-path × use-path).  The first 'Path' is the
+   parameter binder's def-position (`extendPath (PsDataParam i)
+   declPath`); the second is the application-as-a-whole's syntactic
+   path, supplied to `Lang.app` by the parser.  Two distinct
+   `List Nat` and `List Bool` use-sites produce metas with distinct
+   identities; same-position uses share identity.
+
+2. **Redirect-encoded substitution.**  `meet` is now Subst-threaded:
+
+   ```haskell
+   meet :: Subst -> TyProc -> TyProc -> Either TyErr Subst
+   ```
+
+   When `meet α concrete` resolves a meta, the binding lands in the
+   `Subst` as `α ↦ concreteView` — and that view may itself mention
+   other metas.  `meet` does **not** eagerly chase chains; subsequent
+   `materialize` (or further `meet` calls) traverse through.  The
+   encoding is the *redirect* one from the design conversation —
+   git's merge-commit, not squash; one indirection per rewire,
+   history walkable.  The `π₁`-flavoured trace the memory file
+   describes is now an observable property: two unifications of the
+   same pair α ≡ β via different routes leave distinct chains.
+
+   `Subst = Map MetaId TyView`; `emptySubst = Map.empty`.  No occurs
+   check yet — cyclic metas would loop `materialize`.  A later
+   commit adds the standard guard.
+
+3. **Parametric instantiation in `HypTinf.app`.**  The first carrier
+   customer for `meet`.  When elaborating a type-level application
+   whose head is a parametric tycon, the carrier:
+
+   - walks the function-position spine of the application,
+     counting how many arguments have already been consumed
+     (depth);
+   - looks up the tycon's arity;
+   - allocates a fresh meta at `(extendPath (PsDataParam depth)
+     declPath, appPath)` — Stern-Gerlach addressing across both the
+     parameter binder and the use site;
+   - calls `meet` against the supplied argument's process,
+     extending the carrier's `Subst`.
+
+   Arity violations surface as `TyArityMismatch`.  Non-tycon heads
+   (e.g. an unresolved free variable) flow through untouched.
+
+   `HypTinfResult` now exposes the accumulated `Subst`;
+   `hypTinfCtorTypes :: HypTinfResult -> Either TyErr (Map Name
+   TyExpr)` calls `materialize` per ctor.  Parity with `Tinf` holds
+   because under-`materialize` extraction produces the same
+   syntactic types — the algebraic difference is in *what's
+   recorded* (B carries the substitution; A doesn't).
+
+The `Lang.app` signature gained a `Path` argument to carry the
+application's path-as-a-whole.  Every nested `App` within one
+source-level application shares this path — different applications
+at different syntactic positions get different paths, supplying the
+fresh-α addressing that multi-site distinction depends on.
+
+### Commits 7+ — what's still on the table
+
+1. **Occurs check + termination.**  Standard guards translated into
    the algebra.  CCS-bisimulation-style finiteness arguments are the
    theoretical framing; the implementation is the conventional
-   first-order check on the underlying `TyView` graph.
-4. **Higher-cell observation (speculative).**  When the *same* α ≡ β
+   first-order check on the underlying `TyView` graph + `Subst`.
+
+2. **Higher-cell observation (speculative).**  When the *same* α ≡ β
    gets identified through two routes, the two hyperfunction-traces
    produce identical `TyView`s under extraction (UIP for first-order
    unification) but differ as morphisms in the web.  This is where
    we'd start touching HITs proper — coherence between paths, not
    just identification.  The apparatus is in place; whether anything
    useful at our scale exploits it is open.
+
+3. **End-of-arc decoration.**  When downstream consumers (codegen,
+   pretty-printer, error reporter) want "the parsed program plus its
+   types per node," add the impredicative `r TypAnnot s` slot on the
+   A side (`TypAnnot 'SExpr = TyExpr`).  The B side exposes the
+   `TyProc` web directly — see "Decoration shape at the end of the
+   arc" below.
 
 ### Decoration shape at the end of the arc
 

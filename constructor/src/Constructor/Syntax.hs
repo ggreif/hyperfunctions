@@ -39,10 +39,14 @@ class Lang (r :: (Sort -> Type) -> Sort -> Type) where
   var      :: a 'SExpr -> Name -> r a 'SExpr
   star     :: a 'SExpr -> Word -> r a 'SExpr
   arr      :: a 'SExpr -> r a 'SExpr -> r a 'SExpr -> r a 'SExpr
-  -- | Type-level application: @f x@.  Left-associative
-  --   juxtaposition at the surface; @f x y@ parses to @app (app f x) y@.
-  --   Has an error default for carriers that don't (yet) support it.
-  app      :: a 'SExpr -> r a 'SExpr -> r a 'SExpr -> r a 'SExpr
+  -- | Type-level application: @f x@.  Left-associative juxtaposition
+  --   at the surface; @f x y@ parses to @app (app f x) y@ — every
+  --   nested @App@ within a single source-level application shares
+  --   the same 'Path', namely the path of the application as a
+  --   whole.  Carriers performing parametric instantiation use that
+  --   path as the use-site address for fresh metavariables; carriers
+  --   that don't may ignore it.
+  app      :: a 'SExpr -> Path -> r a 'SExpr -> r a 'SExpr -> r a 'SExpr
   app = error "Lang.app: application not supported by this carrier"
 
   -- | Reference to a type parameter introduced by a 'data' declaration.

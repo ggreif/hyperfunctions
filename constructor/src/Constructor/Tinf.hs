@@ -37,6 +37,7 @@ module Constructor.Tinf
   ) where
 
 import Constructor.Level (Lv (..), starLevel)
+import Constructor.Path (Path)
 import Constructor.Sort (Sort (..))
 import Constructor.Syntax (Lang (..), Name)
 import Constructor.TyExpr (TyExpr (..))
@@ -70,8 +71,15 @@ data TyErr
     -- ^ Robinson-style unification failure: two types with
     --   incompatible structural heads.  Produced by
     --   "Constructor.TyProc".'meet'; not yet produced by 'Tinf'
-    --   directly (the A-side has no unification customer at
-    --   commit-5 scope).
+    --   directly (the A-side has no unification customer).
+  | TyUnresolvedMeta !Path !Path
+    -- ^ A metavariable (binder-path × use-path) survived to the
+    --   materialisation phase without being bound.  Caller error —
+    --   the substitution either didn't see the relevant 'meet' or
+    --   the carrier failed to drive unification to completion.
+  | TyArityMismatch !Name !Int !Int
+    -- ^ @TyArityMismatch tycon arity supplied@.  A parametric tycon
+    --   received the wrong number of arguments at a use site.
   deriving (Eq, Show)
 
 data TyResult = TyResult
@@ -142,7 +150,9 @@ instance Lang Tinf where
     (vb, env2) <- runTinf b env1
     pure (TyVExpr (TyArr (tyExprOf va) (tyExprOf vb)), env2)
 
-  app _ann f x = Tinf $ \env -> do
+  -- A side does not yet perform parametric instantiation, so the
+  -- application path is ignored at this layer.
+  app _ann _path f x = Tinf $ \env -> do
     (vf, env1) <- runTinf f env
     (vx, env2) <- runTinf x env1
     pure (TyVExpr (TyApp (tyExprOf vf) (tyExprOf vx)), env2)

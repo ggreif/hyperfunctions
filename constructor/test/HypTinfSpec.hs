@@ -66,15 +66,17 @@ parity name src = (name, go)
             let dataA = tyResultDataTypes rA
                 ctorA = tyResultCtors rA
                 dataB = hypTinfDataTypes rB
-                ctorB = hypTinfCtorTypes rB
-            in if dataA == dataB && ctorA == ctorB
-                 then pure True
-                 else reportFail $
-                   "results disagree:\n" <>
-                   "  A dataTypes: " <> show dataA <> "\n" <>
-                   "  B dataTypes: " <> show dataB <> "\n" <>
-                   "  A ctors:     " <> show ctorA <> "\n" <>
-                   "  B ctors:     " <> show ctorB
+            in case hypTinfCtorTypes rB of
+              Left err -> reportFail $
+                "B failed to materialize ctor types: " <> show err
+              Right ctorB
+                | dataA == dataB && ctorA == ctorB -> pure True
+                | otherwise -> reportFail $
+                    "results disagree:\n" <>
+                    "  A dataTypes: " <> show dataA <> "\n" <>
+                    "  B dataTypes: " <> show dataB <> "\n" <>
+                    "  A ctors:     " <> show ctorA <> "\n" <>
+                    "  B ctors:     " <> show ctorB
 
 reportFail :: String -> IO Bool
 reportFail msg = putStrLn ("    " <> msg) >> pure False

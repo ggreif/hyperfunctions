@@ -149,34 +149,38 @@ cases =
     , "data List a : *0 { Nil : List a }"
     , let pa    = Path [PsProgDecl 0, PsDataParam 0]
           listP = Path [PsProgDecl 0]
+          ap    = Path [PsProgDecl 0, PsDeclIdx 0, PsCtorTy, PsArrL]
       in Prog u
         [ DataDecl u "List" ["a"] (Star u 0)
             [ CtorDecl u "Nil"
-                (App u (TyConRef u "List" listP) (TyParamRef u "a" pa))
+                (App u ap (TyConRef u "List" listP) (TyParamRef u "a" pa))
             ]
         ]
     )
   , ( "parametric data with arrow ctor — data List a : *0 { Cons : a -> List a -> List a }"
     , "data List a : *0 { Cons : a -> List a -> List a }"
-    , let pa    = Path [PsProgDecl 0, PsDataParam 0]
-          listP = Path [PsProgDecl 0]
+    , let pa     = Path [PsProgDecl 0, PsDataParam 0]
+          listP  = Path [PsProgDecl 0]
+          appL   = Path [PsProgDecl 0, PsDeclIdx 0, PsCtorTy, PsArrR, PsArrL]
+          appR   = Path [PsProgDecl 0, PsDeclIdx 0, PsCtorTy, PsArrR, PsArrR, PsArrL]
       in Prog u
         [ DataDecl u "List" ["a"] (Star u 0)
             [ CtorDecl u "Cons"
                 (Arr u (TyParamRef u "a" pa)
-                  (Arr u (App u (TyConRef u "List" listP) (TyParamRef u "a" pa))
-                          (App u (TyConRef u "List" listP) (TyParamRef u "a" pa))))
+                  (Arr u (App u appL (TyConRef u "List" listP) (TyParamRef u "a" pa))
+                          (App u appR (TyConRef u "List" listP) (TyParamRef u "a" pa))))
             ]
         ]
     )
   , ( "application — three-arg left-assoc f x y z = ((f x) y) z"
     , "data D : *0 { c : f x y z }"
-    , Prog u
+    , let ap = Path [PsProgDecl 0, PsDeclIdx 0, PsCtorTy, PsArrL]
+      in Prog u
         [ DataDecl u "D" [] (Star u 0)
             [ CtorDecl u "c"
-                (App u
-                  (App u
-                    (App u (Var u "f") (Var u "x"))
+                (App u ap
+                  (App u ap
+                    (App u ap (Var u "f") (Var u "x"))
                     (Var u "y"))
                   (Var u "z"))
             ]

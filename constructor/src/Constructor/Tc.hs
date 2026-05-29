@@ -103,7 +103,7 @@ instance Lang Discard where
   arr _ _ _          = Discard ()
   forallLv _ _ _ _   = Discard ()
   starVar _ _ _ _    = Discard ()
-  app _ _ _          = Discard ()
+  app _ _ _ _        = Discard ()
 
 -- | Analysis only: specialise the polymorphic term at 'Discard' and
 --   discard it.

@@ -28,12 +28,21 @@ module Constructor.HypTinf
   , hypTinfCtorTypes
   ) where
 
-import Constructor.HyperLite (hPure)
+import Constructor.HyperLite (hPure, hRun)
 import Constructor.Level (Lv (..), starLevel)
+import Constructor.Path (Path, PathStep (..), extendPath)
 import Constructor.Sort (Sort (..))
 import Constructor.Syntax (Lang (..), Name)
 import Constructor.TyExpr (TyExpr)
-import Constructor.TyProc (TyProc, TyView (..), procToTy)
+import Constructor.TyProc
+  ( Subst
+  , TyProc
+  , TyView (..)
+  , emptySubst
+  , materialize
+  , meet
+  , mkMeta
+  )
 import Constructor.Tinf (TyErr (..))
 import Data.Kind (Type)
 import Data.Map.Strict (Map)
@@ -47,25 +56,31 @@ data HypTinfVal (s :: Sort) where
   HypTinfDecl :: !(Maybe (Name, TyProc))       -> HypTinfVal 'SDecl
   HypTinfProg ::                                  HypTinfVal 'SProg
 
--- | No 'Show' — 'TyProc' is a hyperfunction, hence a function value.
+-- | No 'Show' — 'TyProc' / 'Subst' contain function values.
 data HypTinfEnv = HypTinfEnv
   { hypEnvDataTypes :: !(Map Name Int)
   , hypEnvCtors     :: !(Map Name TyProc)
+  , hypEnvSubst     :: !Subst
   }
 
 emptyHypTinfEnv :: HypTinfEnv
-emptyHypTinfEnv = HypTinfEnv Map.empty Map.empty
+emptyHypTinfEnv = HypTinfEnv Map.empty Map.empty emptySubst
 
 data HypTinfResult = HypTinfResult
   { hypTinfDataTypes :: !(Map Name Int)
   , hypTinfCtors     :: !(Map Name TyProc)
+  , hypTinfSubst     :: !Subst
   }
 
--- | Extract a 'Map Name TyExpr' from a 'HypTinfResult' by unfolding
---   each constructor's type-process.  The B-side analog of
---   @tyResultCtors@.
-hypTinfCtorTypes :: HypTinfResult -> Map Name TyExpr
-hypTinfCtorTypes = Map.map procToTy . hypTinfCtors
+-- | Extract a 'Map Name TyExpr' from a 'HypTinfResult' by
+--   materialising each constructor's type-process under the result's
+--   substitution.  The B-side analog of @tyResultCtors@.  Returns
+--   'Left' if any ctor's process retained an unresolved meta — for
+--   well-formed input that only happens if commit-6's parametric
+--   instantiation didn't fully constrain the metas (occurs check or
+--   missing customer).
+hypTinfCtorTypes :: HypTinfResult -> Either TyErr (Map Name TyExpr)
+hypTinfCtorTypes r = traverse (materialize (hypTinfSubst r)) (hypTinfCtors r)
 
 -- | The type-inference carrier.  Phantom in the user-supplied annotation.
 newtype HypTinf (a :: Sort -> Type) (s :: Sort) = HypTinf
@@ -74,7 +89,7 @@ newtype HypTinf (a :: Sort -> Type) (s :: Sort) = HypTinf
 hypTinfProgram :: HypTinf a 'SProg -> Either TyErr HypTinfResult
 hypTinfProgram p = do
   (_, env) <- runHypTinf p emptyHypTinfEnv
-  pure (HypTinfResult (hypEnvDataTypes env) (hypEnvCtors env))
+  pure (HypTinfResult (hypEnvDataTypes env) (hypEnvCtors env) (hypEnvSubst env))
 
 -- | Project the 'TyProc' out of an 'SExpr' carrier value.
 exprProc :: HypTinfVal 'SExpr -> TyProc
@@ -85,6 +100,37 @@ threadDecls []     env = Right env
 threadDecls (d:ds) env = do
   (_, env1) <- runHypTinf d env
   threadDecls ds env1
+
+-- | Walk the function-position spine of an application, returning
+--   the eventual tycon head (its name + decl-path) and how many
+--   arguments have already been consumed before this app step.
+--   Yields 'Nothing' for the head if the spine doesn't bottom out
+--   in a 'TyConV' (e.g. a free var or future grammar feature).
+spineHead :: TyProc -> (Maybe (Name, Path), Int)
+spineHead p = go (hRun p) 0
+  where
+    go (TyConV n declP) depth = (Just (n, declP), depth)
+    go (TyAppV g _)     depth = go (hRun g) (depth + 1)
+    go _                _     = (Nothing, 0)
+
+-- | Allocate the meta for the next parameter of a parametric tycon
+--   and unify it with the argument.  No-op for non-tycon heads (the
+--   carrier just constructs 'TyAppV'); 'TyArityMismatch' if the
+--   spine has already consumed all of the tycon's parameters.
+instantiateOne
+  :: Path -> TyProc -> TyProc -> HypTinfEnv -> Either TyErr HypTinfEnv
+instantiateOne appPath procF procX env = case spineHead procF of
+  (Just (name, declP), depth) -> case Map.lookup name (hypEnvDataTypes env) of
+    Just arity
+      | depth >= arity -> Left (TyArityMismatch name arity (depth + 1))
+      | otherwise ->
+          let metaBinderPath = extendPath (PsDataParam depth) declP
+              metaProc       = mkMeta metaBinderPath appPath
+          in do
+            subst' <- meet (hypEnvSubst env) metaProc procX
+            Right env { hypEnvSubst = subst' }
+    Nothing -> Right env  -- parser already validated the tycon exists
+  (Nothing, _) -> Right env
 
 instance Lang HypTinf where
   prog _ann ds = HypTinf $ \env -> do
@@ -130,10 +176,21 @@ instance Lang HypTinf where
     (vb, env2) <- runHypTinf b env1
     pure (HypTinfExpr (hPure (TyArrV (exprProc va) (exprProc vb))), env2)
 
-  app _ann f x = HypTinf $ \env -> do
+  -- Parametric instantiation customer for 'meet': inspect the
+  -- function spine — if it terminates in a parametric tycon, allocate
+  -- a fresh metavariable addressed by (parameter-binder-path, this
+  -- application's path) and unify it with the supplied argument.
+  -- The resulting Subst extension records what each parameter at
+  -- each use site has been bound to.  Non-tycon heads (e.g. an
+  -- unresolved free variable in a future grammar feature) flow
+  -- through untouched.
+  app _ann appPath f x = HypTinf $ \env -> do
     (vf, env1) <- runHypTinf f env
     (vx, env2) <- runHypTinf x env1
-    pure (HypTinfExpr (hPure (TyAppV (exprProc vf) (exprProc vx))), env2)
+    let procF = exprProc vf
+        procX = exprProc vx
+    env3 <- instantiateOne appPath procF procX env2
+    pure (HypTinfExpr (hPure (TyAppV procF procX)), env3)
 
   forallLv _ann _name _path body = HypTinf $ runHypTinf body
 
