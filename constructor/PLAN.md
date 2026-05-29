@@ -423,57 +423,180 @@ source-level application shares this path — different applications
 at different syntactic positions get different paths, supplying the
 fresh-α addressing that multi-site distinction depends on.
 
-### Commits 7+ — what's still on the table
+### Commits 7+ — the Tower arc
 
-1. **Occurs check + termination.**  Standard guards translated into
-   the algebra.  CCS-bisimulation-style finiteness arguments are the
-   theoretical framing; the implementation is the conventional
-   first-order check on the underlying `TyView` graph + `Subst`.
+The natural continuation isn't an occurs check or a decoration
+retrofit; it's a substantive shift in *what the carrier value
+represents*.  The current `TyProc` describes a node's type at one
+rung above it.  The Tower is the same idea taken **coinductively all
+the way up**: each carrier value exposes not just the type of its
+source node but its entire upward typing tower — type, kind,
+super-kind, and so on, as codata.
 
-2. **Higher-cell observation (speculative).**  When the *same* α ≡ β
-   gets identified through two routes, the two hyperfunction-traces
-   produce identical `TyView`s under extraction (UIP for first-order
-   unification) but differ as morphisms in the web.  This is where
-   we'd start touching HITs proper — coherence between paths, not
-   just identification.  The apparatus is in place; whether anything
-   useful at our scale exploits it is open.
+#### The deck-group reading
 
-3. **End-of-arc decoration.**  When downstream consumers (codegen,
-   pretty-printer, error reporter) want "the parsed program plus its
-   types per node," add an impredicative @r TypAnnot s@ slot on the
-   A side, where the planned annotation kind would satisfy
-   @TypAnnot \'SExpr ~ TyExpr@.  The B side exposes the `TyProc` web
-   directly — see "Decoration shape at the end of the arc" below.
-   *(@TypAnnot@ is a forward-looking design name; no such type
-   exists in the source yet.)*
+Three kinds of cell in the cover, with sharply different algebraic
+properties:
 
-### Decoration shape at the end of the arc
+| generator | what it moves | algebraic shape |
+|---|---|---|
+| `S` (level successor on `Lv`)             | the level-coordinate | partial bijection — `S^{-1}` works at every interior point, fails only at zero |
+| horizontal `data`-decl directions (`List`, `Maybe`, `Pair`, …) | within a rung | groupoid morphisms — invertible via fresh-metavariable allocation; the existing `meet` / Subst machinery is exactly the path-tracing in this groupoid |
+| `:` (the typing colon)                    | between rungs        | directed morphism — `:^{-1}` is *totally* lossy (the fibre over any type is the set of all its inhabitants); no canonical retract anywhere |
 
-Both `Tinf` and `HypTinf` currently lack the impredicative
-"polymorphic decorated term" slot that `HypTc` has for the level
-layer (`r LvAnnot s`, where `LvAnnot` is the existing per-node
-`Lv` annotation kind in `Constructor.Tc`).  Two reasons this is
-*not* an oversight to retrofit identically across A and B:
+`S` and `:` agree only along the universe-ladder spine
+`*0 : *1 : *2 : …` where the cover entries happen to be the level
+counters themselves; off-spine, `S = level ∘ (:)` is just the
+projection of `:` onto the level coordinate.  The genuinely directed
+cell is `:`; `S` is its image under a projection that forgets
+everything except how many rungs were crossed.
 
-- For A, the slot would carry per-node `TyExpr` — and `Tinf`'s
-  carrier value is already `TyExpr`.  Adding the slot duplicates
-  the carrier into a separate annotation channel.  Useful for
-  downstream consumers (codegen, pretty-printer, error reporter)
-  that want "the parsed program plus its types per node" as one
-  polymorphic value.
-- For B, the slot is **structurally redundant**.  A `TyProc`
-  IS a `Lang`-shaped thing valued in `TyView`; the carrier value
-  at each `SExpr` is *already* the decorated-by-its-own-type form.
-  Adding a separate annotation channel would duplicate the web
-  for no information gain.
+The horizontals plus `S^{-1}` live in the **groupoid** part of the
+covering space (∞-groupoid / plain π₁).  `:` lives in the
+**directed** part (∞-category / directed π₁ — Riehl–Shulman's
+ambient).  The two glue together to form a directed ∞-category;
+that is the operational realisation of the directed-HoTT thread the
+memory file talks about.
 
-End-of-arc decision: **each architecture decorates the way that's
-natural to it** (the "(α)" choice from the design conversation).  A
-would gain a future `TypAnnot` annotation kind carrying `TyExpr` per
-@\'SExpr@ node, plus the impredicative slot; B exposes the `TyProc`
-web directly to downstream consumers.  Symmetry-for-its-own-sake
-would obscure the structural difference the A/B split exists to
-expose.
+#### Compressibility, not concentration
+
+Earlier framing claimed information "concentrates at low rungs."
+That's wrong as stated — universe-polymorphic `data` can populate
+every rung as densely as you like.  The correct invariant is
+**stabilisation modulo parametricity**: after a finite application
+of `:` the Tower's shape becomes representable in finite data —
+either a plain successor stream (monomorphic terms) or a finite
+parametric form in some level variable (`∀l.`-polymorphic terms).
+Codata with a finite generator.  This is what makes the tower
+representable at all; it's not "the upper rungs are trivial" but
+"the productive program generating them is finite."
+
+#### Coalgebraic tail-then-head as the unifying story
+
+Standard type inference is **catamorphic**: build up from leaves
+toward root via fold.  Tower inference is **anamorphic** on the
+vertical axis: fix the tail (the stable, finite-generator
+representable part), then unfold downward to constrain the head
+(the actual term we want to check).
+
+In this dialect:
+
+- **Kind inference** = unfold one rung downward.  "What's the type
+  of this type" is the unfold step that produces the next-lower
+  view given the rung above.
+- **Super-kind inference** = the same unfold step indexed one rung
+  higher.
+- **Universe polymorphism** = a parametrically-finite tail whose
+  rungs are functions of a free level variable.
+- **Type checking** at any rung = catamorphic recursion at that
+  rung's horizontal structure, anamorphic step to the rung above.
+
+The whole upward stack is one coalgebra; current `Tinf` /
+`HypTinf` are the bottom-rung specialisation.
+
+Why hyperfunctions are the right substrate for this: hyperfunctions
+are *both* fold and unfold-capable — `Category`/`ana`/`cata`
+instances on `Hyper a b` give us the bidirectional algebra out of
+the box.  A's `TyExpr` is a finite tree; it cannot represent the
+tail of a tower in parametric-finite-generator form without bolting
+on a separate side-channel (which is exactly what today's level
+layer *is* — A's bolt-on for the vertical axis).  B's Tower carries
+the productive generator inline.  This is where the hyperfunction
+encoding earns its keep over a stateful Robinson-with-substitution.
+
+#### Tower encoding (option β)
+
+The pragmatic middle ground between thin (`Hyper TyView TyView`
+with implicit advance via repeated `hRun`) and fully self-typed
+(`Tower ≅ Hyper Tower Tower`, Lambek-style):
+
+```haskell
+-- sketch
+data Tower = Tower
+  { horizontal :: !TyView   -- groupoid-flavoured layer:
+                            -- parametric structure, subject to `meet`
+                            -- and metavariable allocation
+  , vertical   :: !Tower    -- directed `:` step upward, lazily
+                            -- (codata); never inverted, never
+                            -- subject to symmetric unification
+  }
+```
+
+The two slots have **different equational theories**: horizontal
+unification is groupoid-coherent (UIP-ish, metavariable-invertible);
+vertical unification is directed (subtyping/coercion-flavoured, no
+canonical inversion).  Conflating them would lose information that
+the design depends on.
+
+#### The four-commit Tower arc
+
+1. **`Tower` lift + parity scaffold.**  Introduce `Tower` per (β).
+   Lift the existing level-layer's `Lv`-per-node info into vertical
+   rungs of a per-term Tower; lift `TyProc` into the horizontal
+   slot.  New module `Constructor.Tower`; no carrier changes yet.
+   Parity tests verify "extract first-rung-view from a Tower
+   matches today's `procToTy` output."
+
+2. **Coalgebraic `infer` step.**  One unfold of the Tower's
+   vertical given the horizontal — the elementary kind-inference
+   move.  Re-applied, it's super-kind inference.  This is the
+   commit where "kind inference" becomes a real notion in the
+   codebase: not as a separate pass, but as a coalgebraic step
+   re-indexable by rung.
+
+3. **Tower-aware `meet`.**  Unification splits along the axis:
+   groupoid-style on the horizontal (today's `meet`, lifted),
+   directed/subtyping-style on the vertical.  The occurs check
+   folds naturally in here (vertical unification of cyclic
+   substitutions).  This is where A genuinely cannot follow —
+   it can't represent the vertical without bolting on the level
+   layer separately.
+
+4. **`HypTwr` carrier.**  New `Lang` instance emitting Towers in
+   place of `TyProc`s, paralleling `HypTinf`.  Existing parity
+   tests against `Tinf` continue to hold for the horizontal slot;
+   B-only tests exercise tower-specific behaviour (kind
+   inference, universe-polymorphic codata, directed `:`
+   coercions).
+
+The end-of-arc decoration question dissolves: B's Tower is the
+decoration — each `SExpr` carrier value *is* the decorated
+form, recursively all the way up.  A would need a parallel
+non-codata structure to keep up; we'd defer that until a downstream
+consumer actually demands the A-side analog.
+
+#### Non-spine cycles: deferred
+
+`data Weird : Weird` looks self-referential but is, in our system,
+just universe-polymorphism shorthand: `data Weird : ∀l. *l { … }`,
+with the annotation `: Weird` standing for `: Weird{l+1}`.  Each
+instance climbs the ladder.  Our existing `∀l.` machinery handles
+this already.
+
+The *genuinely* non-stratified case — monomorphic `Weird : Weird`
+forming a `:`-cycle (the Type : Type / Girard's paradox territory) —
+is **not** in scope for the Tower arc.  It would require switching
+`Lv` from inductive `ℕ`-shaped to coinductive (productive but
+possibly cyclic) and accepting the loss of consistency-as-a-logic
+in exchange for cyclic self-typing as a programming construct.
+That's a separate design knob, orthogonal to the Tower work.
+
+#### Connection to opetopes / globes
+
+Finster's coinductive globular composition (and opetopic
+generalisations) is the *dual* growth direction to ours: their
+tower goes dimension-up (k-cells → (k+1)-cells); ours goes
+typing-up (rung-n → rung-(n+1)).  Both are coalgebraic on the same
+`Hyper`-style algebra; both have "infinite tower with finite
+productive generator" as the canonical representation.  If we ever
+combined the two — directed ∞-categorical types where each rung of
+the typing tower has its own higher-cell structure — opetopes
+supply the cell shapes, hyperfunctions supply the unfolding
+mechanism, and our `:`-vs-horizontal axis split tells you which
+cells are directed and which are groupoid.
+
+That's the full directed-HoTT operational picture; the Tower arc
+above is its tractable first step.
 
 ### Why these commits, in this order
 
