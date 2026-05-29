@@ -32,7 +32,7 @@ module Constructor.HypTc
   ) where
 
 import Constructor.HyperLite (Hyper, hPure, hRun)
-import Constructor.Level (Lv (..), starLevel)
+import Constructor.Level (Lv (..), addOffset, starLevel)
 import Constructor.LevelInfer (LevelMap, LvErr (..))
 import Constructor.Sort (Sort (..))
 import Constructor.Syntax (Lang (..), Name)
@@ -57,12 +57,14 @@ hypExprProc :: HypVal 'SExpr -> LvProc
 hypExprProc (HypVExpr p) = p
 
 data HypEnv = HypEnv
-  { hypEnvNames  :: !(Map Name LvProc)
-  , hypEnvParent :: !(Maybe LvProc)
+  { hypEnvNames     :: !(Map Name LvProc)
+  , hypEnvParent    :: !(Maybe LvProc)
+  , hypEnvLvBinders :: !(Map Name Int)
+  , hypEnvNextLVar  :: !Int
   }
 
 emptyHypEnv :: HypEnv
-emptyHypEnv = HypEnv Map.empty Nothing
+emptyHypEnv = HypEnv Map.empty Nothing Map.empty 0
 
 -- | Solver-facing analysis result.  Just the bound-name → type-process
 --   map; no Sheet to consult.  Levels are obtained by self-applying
@@ -180,6 +182,27 @@ instance Lang HypTc where
         -- the path from procA to procB is the no-op.
         let lv = lvA
         in Right (HypVExpr procA, env2, arr (LvAExpr lv) polyA polyB)
+
+  forallLv _ann n body = HypTc $ \env -> do
+    -- Allocate fresh LVar; bind in scope; run body; restore binder map.
+    let i = hypEnvNextLVar env
+        env1 = env { hypEnvNextLVar  = i + 1
+                   , hypEnvLvBinders = Map.insert n i (hypEnvLvBinders env)
+                   }
+    (bv, env2, polyBody) <- runHypTc body env1
+    let procBody = hypExprProc bv
+        lv = hRun procBody
+    pure ( HypVExpr procBody
+         , env2 { hypEnvLvBinders = hypEnvLvBinders env }
+         , forallLv (LvAExpr lv) n polyBody
+         )
+
+  starVar _ann n offset = HypTc $ \env -> case Map.lookup n (hypEnvLvBinders env) of
+    Just i  ->
+      let lv = addOffset (LVar i) offset
+          proc = hPure lv
+      in Right (HypVExpr proc, env, starVar (LvAExpr lv) n offset)
+    Nothing -> Left (Unbound n)
 
 -- ----------------------------------------------------------------------
 -- Solver: invoke each name's hyperfunction to extract its level.

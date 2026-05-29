@@ -103,6 +103,9 @@ tests =
     , polyDataLvl "data Foo : \8704l. *(l + 2) { c : Foo -> Foo }"
         [("Foo", S (LVar 0)), ("c", LVar 0)]
     )
+  , ("Polymorphic — A vs B parity on \8704l. *(l + 2)"
+    , parityPolyAB "data Foo : \8704l. *(l + 2) { c : Foo -> Foo }"
+    )
   ]
 
 -- | Run the same source through both the classical 'Lvl' carrier and the
@@ -197,6 +200,22 @@ polyDataLvl src want = do
         | otherwise -> reportFail $
             "level map mismatch\n  want: " <> show wantMap <>
             "\n  got:  " <> show got
+
+-- | A vs B parity on a polymorphic source: 'Lvl' and 'HfLvl' must
+--   produce identical 'LevelMap's, including the 'LVar' references.
+parityPolyAB :: Text -> IO Bool
+parityPolyAB src = do
+  let lvlR = case parseProgram @Lvl @(Const ()) "<parity-poly>" src of
+        Left e  -> Left (errorBundlePretty e)
+        Right p -> either (Left . show) Right (inferProgram p)
+      hfR = case parseProgram @HfLvl @(Const ()) "<parity-poly>" src of
+        Left e  -> Left (errorBundlePretty e)
+        Right p -> either (Left . show) Right (inferProgramHf p)
+  case (lvlR, hfR) of
+    (Right a, Right b) | a == b -> pure True
+    _ -> reportFail $
+           "Lvl:   " <> show lvlR <> "\n    " <>
+           "HfLvl: " <> show hfR
 
 -- | Demonstrate 'tcRunWith' producing a 'Tree' decorated with 'LvAnnot'.
 --   Pattern-matches the resulting Tree against the expected structure +

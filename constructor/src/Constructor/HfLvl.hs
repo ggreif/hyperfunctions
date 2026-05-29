@@ -23,7 +23,7 @@ module Constructor.HfLvl
   ) where
 
 import Constructor.HyperLite (Hyper, hPure, hRun)
-import Constructor.Level (Lv (..), starLevel)
+import Constructor.Level (Lv (..), addOffset, starLevel)
 import Constructor.LevelInfer (LevelMap, LvErr (..))
 import Constructor.Sort (Sort (..))
 import Constructor.Syntax (Lang (..), Name)
@@ -41,12 +41,14 @@ extract :: LvProc -> Lv
 extract = hRun
 
 data Env = Env
-  { envNames  :: !(Map Name LvProc)
-  , envParent :: !(Maybe LvProc)
+  { envNames     :: !(Map Name LvProc)
+  , envParent    :: !(Maybe LvProc)
+  , envLvBinders :: !(Map Name Int)
+  , envNextLVar  :: !Int
   }
 
 emptyEnv :: Env
-emptyEnv = Env Map.empty Nothing
+emptyEnv = Env Map.empty Nothing Map.empty 0
 
 type family HfOut (s :: Sort) :: Type where
   HfOut 'SProg = LevelMap
@@ -123,3 +125,15 @@ instance Lang HfLvl where
     (pb, env2) <- runHfLvl b env1
     procR <- unifyProcs pa pb
     pure (procR, env2)
+
+  forallLv _ann n body = HfLvl $ \env -> do
+    let i = envNextLVar env
+        env1 = env { envNextLVar  = i + 1
+                   , envLvBinders = Map.insert n i (envLvBinders env)
+                   }
+    (procBody, env2) <- runHfLvl body env1
+    pure (procBody, env2 { envLvBinders = envLvBinders env })
+
+  starVar _ann n offset = HfLvl $ \env -> case Map.lookup n (envLvBinders env) of
+    Just i  -> Right (fromLv (addOffset (LVar i) offset), env)
+    Nothing -> Left (Unbound n)
