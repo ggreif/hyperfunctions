@@ -1,0 +1,51 @@
+# Tomorrow's queue: simple-minded Wasm codegen + the 5 bullets
+
+Queued for the v0.3.0 dev cycle.
+
+## Wasm codegen with Scott encoding
+
+Worth noting up front: Scott encoding is *value-level* (closures
++ dispatch), so the rank-N quantifications evaporate at codegen —
+Wasm just sees "build a closure, call it with branches".
+
+Hard parts likely:
+
+- **Closure representation.**  Scott ctor functions capture their
+  args; need a heap layout (struct with function-pointer + captured-
+  arg slots) or function-table dispatch.
+- **The @-binder Build / DPS-fixpoint.**  The destination-passing-
+  style allocation we filed under the Motoko TRMC pointer fits Wasm
+  cleanly: allocate the cell first, then plumb its address.  Scott +
+  DPS is actually *more* natural in Wasm than in Haskell.
+- **Existentials erase.**  Wasm doesn't see types at all, so
+  `Pack m` and `Pack Int` are indistinguishable bit patterns.  The
+  Haskell-side `<existential>` placeholder becomes "we lose the type,
+  but the runtime value survives intact" — easier in Wasm.
+- **Refining GADTs erase too.**  The indexed-elim
+  `forall (x :: K -> Type)` is type-level only.  Wasm just sees the
+  Scott dispatch table.
+
+## Five queued bullets (from PLAN.md's "still ahead" list)
+
+1. `@`-binders for Build (cyclic data via DPS)
+2. λ + value-level function application
+3. Non-regular nested data in Scott
+4. Refining GADT *with* existentials (Refl `a ~ a` shape)
+5. Specialised lint carrier for duplicate-binder discipline
+
+## Suggested ordering for tomorrow
+
+The 5 bullets + Wasm pair well: implementing **λ** and
+**at-binder-for-Build** are prerequisites that naturally land
+before Wasm codegen has anything interesting to do beyond
+constants and ctors.
+
+1. **λ + value-level function application** — substrate everything
+   else needs.
+2. **at-binder for Build** — DPS cyclic-data demo, the "look how
+   strict evaluation handles cycles" punchline.
+3. **Wasm codegen** of Scott — leverages 1 and 2 directly.
+4. **Non-regular nested data** + **Refl with existentials** as
+   they fit.
+5. **Lint carrier** for duplicate binders — parallel, independent
+   of the above.
