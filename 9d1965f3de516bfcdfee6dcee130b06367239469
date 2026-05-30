@@ -1,0 +1,42 @@
+# Ωmegator — name for the language we are designing
+
+## Origin
+
+The pun lands on every level:
+
+- **Ω-mega + gator**: Ωmega lineage explicit, with a predatory
+  edge — *eats* typing levels rather than just inhabiting them.
+- **Visual**: `Ω` reads as a gaping jaw at a glance — fitting for
+  something that consumes a tower a rung at a time.
+- **Image**: a level-cover (the fish) sliding into the cover's
+  deck transformation (the gator's mouth) — the covering map's
+  fibre is what gets eaten on each chomp.
+
+## Algebraic fit
+
+The covering-space algebra we have been building is exactly a
+level-devouring machinery:
+
+- `predLv (LVar p) = LVar p` is the fixpoint at which the chomping
+  settles — the level coordinate's stable tail in self-stratified
+  data.
+- Self-towering data (`Weird : Weird`, `Iso : Iso`, `Swap : Swap`,
+  `Mirror : ∀l. *l`) are the genus that chomp themselves into
+  existence — fundament-witness ↔ all-rung presence.
+- The Build/Dissect duality (refinement-as-hyperfunction-
+  transformation; `meet` driving forward at assembly time,
+  backward at pattern-match time) is the bite-and-swallow rhythm.
+
+## Style convention
+
+Always written **Ωmegator** with the actual Greek letter Ω — never
+spelled out as "Omegator".  The Ω is half the joke and half the
+heritage (Ωmega being Tim Sheard's GADT-and-typing-levels
+laboratory whose tradition we are working in).
+
+## Filed here
+
+Posterity record: this was the working name as of the Build-side
+ctor-typing commit (9d1965f).  No file-level adoption yet — code
+still says `constructor` / `Constructor.*`.  If the name sticks,
+that rename is a separate arc.
