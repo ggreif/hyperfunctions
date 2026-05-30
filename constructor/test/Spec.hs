@@ -9,6 +9,7 @@ import Constructor.Parser (parseProgram)
 import Constructor.Path (Path (..), PathStep (..))
 import Constructor.Sort (Sort (..))
 import qualified HypTinfSpec
+import qualified HypTwrSpec
 import qualified LevelInferSpec
 import qualified TinfSpec
 import qualified TowerSpec
@@ -43,7 +44,10 @@ main = do
   putStrLn ""
   putStrLn "Tower scaffold:"
   towerOK <- mapM runInfer TowerSpec.tests
-  if and (parseOK ++ inferOK ++ tinfOK ++ meetOK ++ hypTinfOK ++ towerOK) then exitSuccess else exitFailure
+  putStrLn ""
+  putStrLn "HypTwr (Tower carrier) parity:"
+  hypTwrOK <- mapM runInfer HypTwrSpec.tests
+  if and (parseOK ++ inferOK ++ tinfOK ++ meetOK ++ hypTinfOK ++ towerOK ++ hypTwrOK) then exitSuccess else exitFailure
   where
     runInfer (name, go) = do
       ok <- go

@@ -33,6 +33,7 @@ library
     Constructor.Tinf
     Constructor.TyProc
     Constructor.HypTinf
+    Constructor.HypTwr
     Constructor.Tower
     Constructor.Syntax
     Constructor.AST

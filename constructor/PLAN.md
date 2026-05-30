@@ -566,12 +566,41 @@ the design depends on.
    metas today, but a tower-aware occurs check will need to close
    that loop.
 
-4. **`HypTwr` carrier.**  New `Lang` instance emitting Towers in
-   place of `TyProc`s, paralleling `HypTinf`.  Existing parity
-   tests against `Tinf` continue to hold for the horizontal slot;
-   B-only tests exercise tower-specific behaviour (kind
-   inference, universe-polymorphic codata, directed `:`
-   coercions).
+4. **`HypTwr` carrier (landed).**  New `Lang` instance whose `SExpr`
+   carrier value is a 'Tower' directly (rather than a 'TyProc' with
+   tower computed on demand).  Parallel sibling of `HypTinf`; the
+   `HypLinf → HypTwr` pipeline replicates the `HypLinf → HypTinf`
+   shape.  Each method emits a fully-formed up-tower whose vertical
+   is generated coinductively by 'kindOf' from the env's kind
+   annotations.  `HypTwrSpec` carries parity tests against `HypTinf`
+   on the metavariable-free corpus — both extract the same ctor
+   types and data-arity maps.  For commit-4 scope the
+   parametric-meta customer that 'HypTinf.app' runs (allocate a
+   meta per parametric tycon position, unify with the supplied
+   argument, record in 'Subst') is intentionally omitted; the
+   horizontal shape extracts identically on the corpus and the meta
+   layer can be retrofitted alongside the future tower-aware
+   occurs check.
+
+#### Beyond the four-commit arc
+
+The arc proper is now complete.  Two follow-ups sit at the seam:
+
+- **Stratified self-typing — `data Weird : Weird` and kin.**  The
+  parser already accepts the syntax; the parametric-tail termination
+  criterion in `meetTowers` does not yet stabilise (it only knows
+  the `*n` collapse).  Adding a level offset to 'TyConV' and
+  generalising the base case to "same name, same path, equal
+  offset-stream" closes the case.  The deck-shift slot already
+  sitting on `Place` (in `Sheet.hs`) is the A-side analog of this
+  data shape — it's been there since v0 anticipating the move.
+
+- **Meta-aware vertical regeneration.**  When a metavariable
+  resolves at rung *n* during `meetTowers`, the towers' verticals
+  for rung *n+1* onward are stale.  Today no kind-check path
+  threads metas through, but the tower-aware occurs check (and any
+  meta-touching subtyping along the directed `:`-arrow) needs the
+  loop closed.
 
 The end-of-arc decoration question dissolves: B's Tower is the
 decoration — each `SExpr` carrier value *is* the decorated
