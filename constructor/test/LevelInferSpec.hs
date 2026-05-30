@@ -109,6 +109,37 @@ tests =
   , ("Polymorphic — A vs B parity on \8704l. *(l + 2)"
     , parityPolyAB "data Foo : \8704l. *(l + 2) { c : Foo -> Foo }"
     )
+  , ("HypLinf — data Weird : Weird (stratified self-typing)"
+    , -- B-side-only (A's 'Lvl' / 'Tc' have no fixpoint at 'predLv
+      -- (LVar _)' and would reject).  HypLinf accepts via:
+      --   * pre-bind of @n@ to @hPure (LVar declPath)@ before
+      --     elaborating the kind annotation (so the inner
+      --     'tyConRef "Weird"' looks up something rather than
+      --     failing 'Unbound');
+      --   * 'predLv (LVar p) = Just (LVar p)' — the level
+      --     coordinate's fixpoint at parametric levels.
+      -- Expected level map: both Weird and Level0 at LVar
+      -- weirdPath (the data and its sole ctor are at the same
+      -- parametric level; the offset distinguishing them lives in
+      -- 'TyConV's deck-shift slot in the Tower, not in 'Lv').
+      let weirdP = Path [PsProgDecl 0]
+          src    = "data Weird : Weird { Level0 : Weird }"
+          want   = Map.fromList
+                     [ ("Weird",  LVar weirdP)
+                     , ("Level0", LVar weirdP)
+                     ]
+          got = case parseProgram @HypLinf @(Const ()) "<weird>" src of
+            Left e  -> Left (errorBundlePretty e)
+            Right p -> either (Left . show) Right
+                              (hypLinfProgram p >>= solveLevelsHypLinf)
+      in case got of
+        Right lm | lm == want -> pure True
+        Right lm -> reportFail $
+          "Weird level map mismatch:\n  want: " <> show want <>
+          "\n  got:  " <> show lm
+        Left e -> reportFail $
+          "expected HypLinf to accept Weird : Weird, got error: " <> e
+    )
   ]
 
 -- | Run the same source through both the classical 'Lvl' carrier and the

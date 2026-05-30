@@ -40,6 +40,15 @@ tests =
       "data Nat : *0 { Z : Nat }; data List a : *0 { Nil : List a }; data NatList : *0 { mk : List Nat }"
   , parity "HypTwr parity: nested data — Type/Constr/Ty2/Foo"
       "data Type : *1 { Constr : Type; data Ty2 : Type { Foo : Ty2 } }"
+    -- End-to-end @data Weird : Weird@ through the full pipeline:
+    -- parser → HypLinf (with pre-bind for self-reference and the
+    -- 'predLv (LVar p) = Just (LVar p)' fixpoint) → HypTinf /
+    -- HypTwr.  Both type-inference carriers must accept and produce
+    -- @Level0 : Weird@ as the extracted ctor; both must agree.
+    -- This is the test that demonstrates the level-layer +
+    -- Tower-layer accommodations close the loop end-to-end.
+  , parity "HypTwr parity: data Weird : Weird (stratified self-typing)"
+      "data Weird : Weird { Level0 : Weird }"
   ]
 
 -- | Run the same source through HypTinf and HypTwr (both behind

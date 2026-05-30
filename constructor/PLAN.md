@@ -586,8 +586,8 @@ the design depends on.
 
 The arc proper is now complete.  Two follow-ups sit at the seam:
 
-- **Stratified self-typing — `data Weird : Weird` (Tower layer
-  landed; level-layer end-to-end pending).**  'TyConV' grew a deck-
+- **Stratified self-typing — `data Weird : Weird` (landed
+  end-to-end).**  'TyConV' grew a deck-
   shift offset `!Lv`; 'kindOf' on a TyConV whose env-bound kind
   annotation is itself (modulo Name + Path) bumps the offset by one
   instead of recursing, giving productive codata up the rungs.
@@ -595,22 +595,32 @@ The arc proper is now complete.  Two follow-ups sit at the seam:
   case (same Name, Path, and offset → success).  Tower-layer
   tests in 'TowerSpec' build a Weird-tower under a synthetic
   KindEnv and verify both productive climbing and immediate
-  termination on identical towers.  End-to-end through HypLinf is
-  still blocked: HypLinf rejects 'data Weird : Weird' at level
-  elaboration because the name isn't in scope while its own kind
-  annotation is being elaborated, and `predLv (LVar _) = Nothing`
-  has no fixpoint for `n = predLv n`.  Two related accommodations
-  unblock end-to-end:
-    - HypLinf.dataDecl pre-binds `n` (to a tentative LVar declPath)
-      before elaborating the kind annotation, so the self-reference
-      can resolve.
-    - `predLv (LVar p)` returns `Just (LVar p)` (the LVar is its
-      own predecessor — the level coordinate is fully parametric),
-      letting `data Weird : Weird` settle at a level-polymorphic
-      level rather than failing 'DataAnnotationTooLow'.
+  termination on identical towers.  End-to-end through HypLinf now works: two accommodations land
+  the loop closed.
+    - 'HypLinf.dataDecl' pre-binds @n@ to @hPure (LVar declPath)@
+      before elaborating the kind annotation, so the inner
+      'tyConRef "Weird"' looks up its own def-path-keyed parametric
+      level instead of failing 'Unbound'.  Duplicate-detection
+      moved upfront (preserves the bind-time duplicate check
+      semantics).
+    - 'predLv (LVar p) = Just (LVar p)' — the level coordinate's
+      fixpoint at parametric levels.  The @n = predLv n@ equation
+      that self-referential kind annotations impose has 'LVar' as
+      its fixpoint, matching the user's "implicit @l@" framing.
+      Existing @S^k (LVar p)@ paths unchanged (the 'S' rule still
+      strips one layer); only the bare-LVar case fires for pure
+      self-stratification.
+  Three end-to-end tests in 'LevelInferSpec' / 'HypTwrSpec':
+    - 'HypLinf' accepts the program; both 'Weird' and 'Level0'
+      land at @LVar weirdPath@.
+    - The full pipeline 'parser → HypLinf → HypTinf' extracts
+      'Level0 : Weird'.
+    - The full pipeline 'parser → HypLinf → HypTwr' agrees on
+      the same extraction.
   The deck-shift slot already sitting on 'Place' in 'Sheet.hs' is
   the A-side analog of the TyConV offset — present since v0
-  anticipating exactly this move.
+  anticipating exactly this move (though now permanently dormant
+  given A's deprecation).
 
 - **Tower-aware occurs check (landed).**  Two layers:
     - **Structural occurs in 'TyProc.meet'.**  Before binding @m

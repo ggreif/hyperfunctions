@@ -108,8 +108,18 @@ hypLinfRunWith p = do
 predLv :: Lv -> Maybe Lv
 predLv Z        = Nothing
 predLv (S n)    = Just n
-predLv (LVar _) = Nothing   -- polymorphic levels: unsupported here; forallLv's
-                            -- error default will fire first in practice
+predLv (LVar p) = Just (LVar p)
+  -- ^ A level variable is its own predecessor: at the parametric
+  -- level coordinate the @n = predLv n@ equation has 'LVar' as
+  -- fixpoint.  This is what makes the stratified @data Weird :
+  -- Weird@ shape navigable through the level layer — Weird's
+  -- level is universe-polymorphic, fixed at its def-path 'LVar',
+  -- and predLv reflects that "the rung above Weird is at the
+  -- same level coordinate" (the offset lives in 'TyConV's
+  -- deck-shift slot, not in 'Lv').  For @S^k (LVar p)@ inputs
+  -- (level-polymorphic with concrete offset), the @S@ rule
+  -- strips one layer as usual; the bare-LVar case only fires for
+  -- pure self-stratification.
 
 bind :: Name -> LvProc -> HypLinfEnv -> Either LvErr HypLinfEnv
 bind n p env
@@ -133,12 +143,31 @@ instance Lang HypLinf where
     pure (HypLinfProg, env', prog LvAProg ts)
 
   dataDecl _ann declPath n params e ds = HypLinf $ \env -> do
-    (ev, env1, polyE) <- runHypLinf e env
+    -- Duplicate check (was the work 'bind' did after elaboration —
+    -- now performed up front so the pre-binding can shadow safely
+    -- without clobbering an outer same-named decl).
+    case Map.lookup n (hypLinfEnvNames env) of
+      Just _  -> Left (Duplicate n)
+      Nothing -> Right ()
+    -- Pre-bind the data name to a tentative 'LVar declPath' before
+    -- elaborating the kind annotation.  This makes self-referential
+    -- kinds (@data Weird : Weird@) navigable: the inner 'tyConRef'
+    -- looks up "Weird" and finds the parametric level, rather than
+    -- failing with 'Unbound'.  For non-self-referential decls the
+    -- tentative binding is overwritten by the real one below.
+    let tentativeProcN = hPure (LVar declPath)
+        preEnv = env { hypLinfEnvNames =
+                         Map.insert n tentativeProcN (hypLinfEnvNames env) }
+    (ev, env1, polyE) <- runHypLinf e preEnv
     let procE = hypLinfExprProc ev
         le    = hRun procE
     ln <- maybe (Left (DataAnnotationTooLow n le)) Right (predLv le)
     let procN = hPure ln
-    env2 <- bind n procN (env1 { hypLinfEnvParent = Just procN })
+        -- Overwrite the tentative binding with the real one.
+        env2 = env1
+          { hypLinfEnvNames  = Map.insert n procN (hypLinfEnvNames env1)
+          , hypLinfEnvParent = Just procN
+          }
     -- Bind each parameter to the data's level for the body's scope.
     -- Save the prior binding for each param name so it doesn't leak
     -- out after the body — different decls reuse the same surface
