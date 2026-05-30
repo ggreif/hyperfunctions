@@ -8,6 +8,7 @@ import Constructor.AST (Tree (..))
 import Constructor.Parser (parseProgram)
 import Constructor.Path (Path (..), PathStep (..))
 import Constructor.Sort (Sort (..))
+import qualified AxiomsSpec
 import qualified GadtSpec
 import qualified HypTinfSpec
 import qualified HypTwrSpec
@@ -51,7 +52,12 @@ main = do
   putStrLn ""
   putStrLn "GADT sketches:"
   gadtOK <- mapM runInfer GadtSpec.tests
-  if and (parseOK ++ inferOK ++ tinfOK ++ meetOK ++ hypTinfOK ++ towerOK ++ hypTwrOK ++ gadtOK) then exitSuccess else exitFailure
+  putStrLn ""
+  putStrLn "Build → Dissect → Build axioms:"
+  axiomsOK <- mapM runInfer AxiomsSpec.tests
+  if and (parseOK ++ inferOK ++ tinfOK ++ meetOK ++ hypTinfOK ++ towerOK ++ hypTwrOK ++ gadtOK ++ axiomsOK)
+    then exitSuccess
+    else exitFailure
   where
     runInfer (name, go) = do
       ok <- go
