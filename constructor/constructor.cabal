@@ -38,6 +38,7 @@ library
     Constructor.Syntax
     Constructor.AST
     Constructor.Parser
+    Constructor.Hs
   build-depends:
     , base        >= 4.18 && < 5
     , containers  >= 0.6  && < 0.9
@@ -68,9 +69,12 @@ test-suite constructor-test
     TowerSpec
     GadtSpec
     AxiomsSpec
+    HsSpec
   build-depends:
     , base
     , constructor
     , containers
     , megaparsec
+    , process
+    , temporary
     , text

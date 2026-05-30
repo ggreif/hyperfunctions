@@ -10,6 +10,7 @@ import Constructor.Path (Path (..), PathStep (..))
 import Constructor.Sort (Sort (..))
 import qualified AxiomsSpec
 import qualified GadtSpec
+import qualified HsSpec
 import qualified HypTinfSpec
 import qualified HypTwrSpec
 import qualified LevelInferSpec
@@ -55,7 +56,10 @@ main = do
   putStrLn ""
   putStrLn "Build → Dissect → Build axioms:"
   axiomsOK <- mapM runInfer AxiomsSpec.tests
-  if and (parseOK ++ inferOK ++ tinfOK ++ meetOK ++ hypTinfOK ++ towerOK ++ hypTwrOK ++ gadtOK ++ axiomsOK)
+  putStrLn ""
+  putStrLn "Haskell codegen (runghc oracle):"
+  hsOK <- mapM runInfer HsSpec.tests
+  if and (parseOK ++ inferOK ++ tinfOK ++ meetOK ++ hypTinfOK ++ towerOK ++ hypTwrOK ++ gadtOK ++ axiomsOK ++ hsOK)
     then exitSuccess
     else exitFailure
   where
