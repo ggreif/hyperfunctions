@@ -1490,3 +1490,108 @@ What's still ahead:
 - Lambda-encoding fixpoint vs heap-cell fixpoint divergence
 - Specialised lint carrier for duplicate-binder discipline
 - Refining GADT *with existentials* (a~b shape; Refl ctor)
+
+## Open question: `S n⋮` shorthand and the suspension closure rule
+
+Currently the canonical `Nat` declaration writes the recursive
+ctor as `S : n -> S n` (an arrow), explicit in domain and
+codomain.  Tempting shorthand:
+
+```
+data Nat⋮ { Z⋮; S n⋮ }
+```
+
+mirroring the way `Z⋮` already works for nullary ctors.  The
+intuition: `S` saturated with `n` has singleton type `S n`, so
+the `⋮`-mark on the saturated term `S n` *is* the type-level
+shadow — same operation as `Z⋮`.
+
+### The inference rule it forces
+
+For this to type-check, the parser/typer must adopt:
+
+> In a self-towered declaration `data X⋮ { … }`, free variables
+> in constructor positions default to type `X`.
+
+For `data Nat⋮ { Z⋮; S n⋮ }`, this gives `n :: Nat` directly.
+Same rule also rescues the long form `S : n -> S n` (today's
+syntax doesn't actually annotate `n`; it relies on the same
+default).
+
+### Tied to the (γ)-suspension framing
+
+The `⋮` mark is the syntactic realisation of *suspension*
+(per the calling-convention-as-(γ) git-note on `38d9ed6`):
+"pinch the term's vertical column into a name at one dimension
+below."  The result is a type.
+
+The inference rule "free variables default to the type being
+declared" is exactly *what makes the suspension legal* — it
+ensures the column being suspended is closed (every free
+variable already lives in `X`), so nothing escapes when we
+collapse the column into a name.  Without that closure,
+suspension would manufacture a type that mentions free
+variables of unknown origin.
+
+### Where the shorthand breaks
+
+The closure rule is only sound for **regular non-parametric
+non-refining** data.  Three failure modes:
+
+1. **Non-regular nested data.**
+   `data Bush a⋮ { Nil⋮; Cons a (Bush (Bush a))⋮ }` — the
+   `Bush (Bush a)` argument must be written explicitly; the
+   default rule would (wrongly) replace it with `Bush a`.
+
+2. **Parametric data.**
+   `data List a⋮ { Nil⋮; Cons a (List a)⋮ }` — the parameter
+   `a` is a *parameter*, not a recursive position.  Plausibly
+   fine if the rule is split: "free occurrences in the head =
+   parameter; free occurrences in ctor positions = recursive
+   slot defaulting to `X` instantiated at the parameters."
+
+3. **Refining GADTs.**
+   `data Fin n⋮ { FZ : Fin (S n)⋮; FS : Fin n -> Fin (S n)⋮ }`
+   — `n` is the *index*, with type `Nat`, not `Fin`.  The
+   default rule is exactly wrong here.  Needs either a header
+   that introduces `n : Nat`, or a separate annotation
+   mechanism.
+
+### Why this matters
+
+Cases 1-3 above are precisely the cases where the value-rung
+↔ type-rung **iso doesn't hold uniformly**.  Non-regular and
+refining GADTs both have constructors whose type-rung shape
+*diverges* from their value-rung shape.  So the shorthand-vs-
+explicit choice tracks something deeper: it's the syntactic
+marker for whether the data declaration's DataKinds promotion
+is *automatic* (regular: shorthand) or *requires explicit
+annotation* (non-regular / refining: long form).
+
+This connects directly to `Constructor.Scott`'s three regimes
+(non-parametric / non-refining parametric / refining
+parametric).  The shorthand works exactly where the
+**non-parametric** regime applies.  The other two regimes
+already need explicit annotations for their own reasons; the
+parser could reuse those annotations to permit the shorthand
+on the recursive-slot positions while keeping indices /
+non-regular slots explicit.
+
+### Action items (needs more thought)
+
+- Decide whether to formalise the closure rule and admit
+  `data Nat⋮ { Z⋮; S n⋮ }` as parser sugar.
+- If yes: extend to parametric (rule 2) by splitting
+  parameter-vs-recursive-position semantics; reject the
+  shorthand for non-regular / refining (rules 1, 3) with a
+  clear diagnostic pointing to long form.
+- Investigate whether the same closure rule scales to the
+  *parameter*-position annotations needed by `Fin`, or whether
+  refining GADTs need a separate header (`data Fin (n : Nat)⋮
+  { … }` style).
+- Consider whether `⋮` should attach to the *type* (head) or
+  to *each constructor* (or both, redundantly) — current
+  notation does both, which is workable but worth revisiting.
+- Cross-reference: this is one piece of the broader self-tower
+  / (γ) / suspension story documented in the `38d9ed6` git-note;
+  any shorthand decision should keep that framing consistent.
