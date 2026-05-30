@@ -59,6 +59,7 @@ import Constructor.TyProc
   , TyView (..)
   , emptySubst
   , materialize
+  , resolveView
   )
 import Data.Kind (Type)
 import Data.Map.Strict (Map)
@@ -121,6 +122,56 @@ leafTower env v = towerOfView (hypTwrEnvSubst env) (hypTwrEnvKindEnv env) v
 exprTower :: HypTwrVal 'SExpr -> Tower
 exprTower (HypTwrExpr t) = t
 
+-- | Saturation check for a constructor declaration.  Peels arrows
+--   from the ctor's annotation to find its /result/ type, then
+--   peels application to find the result's head and arity.
+--
+--   The result must be a @'TyConV' h _ _@ applied to some number
+--   of arguments.  Acceptance rules:
+--
+--     * @h == parentName@: arity must equal the parent's arity.
+--       This is the GADT shape (@FZ : Fin Z@, @FS : Fin n -> Fin
+--       (S n)@ — each ctor's result is the parent applied to
+--       exactly its declared parameters).
+--
+--     * @h /= parentName@: accepted only when the parent has arity
+--       0.  This is the singleton-family relaxation (Swap-style:
+--       @data Swap : Swap { Left : Right; Right : Left }@) — when
+--       the parent has no parameters, sibling-as-result is the
+--       covering-space-equivalent shape.  Real GADTs (arity ≥ 1)
+--       must point at the parent.
+--
+--     * Non-'TyConV' result (e.g., result is a parameter
+--       'TyVarV', or a universe 'TyUnivV'): rejected
+--       unconditionally — the shape doesn't identify a data type.
+--
+--   Skipped entirely when there's no enclosing parent (top-level
+--   'ctorDecl' which the AST currently rejects elsewhere).
+checkSaturation :: HypTwrEnv -> Name -> Tower -> Either TyErr ()
+checkSaturation env ctorName tower = case hypTwrEnvParent env of
+  Nothing -> Right ()
+  Just (parentName, _parentPath) ->
+    let subst    = hypTwrEnvSubst env
+        peelArr v = case v of
+          TyArrV _aProc bProc -> peelArr (resolveView subst (hRun bProc))
+          _ -> v
+        peelApp v n = case v of
+          TyAppV fProc _ -> peelApp (resolveView subst (hRun fProc)) (n + 1)
+          _ -> (v, n)
+        ctorView          = resolveView subst (hRun (horizontal tower))
+        resultView        = peelArr ctorView
+        (headView, nargs) = peelApp resultView 0
+        parentArity       = maybe 0 id (Map.lookup parentName (hypTwrEnvDataTypes env))
+    in case headView of
+         TyConV h _ _
+           | h == parentName ->
+               if nargs == parentArity
+                 then Right ()
+                 else Left (TyCtorWrongArity ctorName parentName parentArity nargs)
+           | parentArity == 0 -> Right ()
+           | otherwise        -> Left (TyCtorWrongHead ctorName parentName h)
+         _ -> Left (TyCtorBadResult ctorName)
+
 threadDecls :: [HypTwr a 'SDecl] -> HypTwrEnv -> Either TyErr HypTwrEnv
 threadDecls []     env = Right env
 threadDecls (d:ds) env = do
@@ -170,10 +221,11 @@ instance Lang HypTwr where
     let tower = exprTower val
     case Map.lookup name (hypTwrEnvCtors env1) of
       Just _  -> Left (TyDuplicateCtor name)
-      Nothing ->
+      Nothing -> do
+        checkSaturation env1 name tower
         let env2 = env1
               { hypTwrEnvCtors = Map.insert name tower (hypTwrEnvCtors env1) }
-        in Right (HypTwrDecl (Just (name, tower)), env2)
+        Right (HypTwrDecl (Just (name, tower)), env2)
 
   -- Parser owns tycon resolution; bare 'var' is only reached for
   -- genuinely unbound names.

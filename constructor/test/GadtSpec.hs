@@ -38,6 +38,7 @@ import Constructor.HypLinf (HypLinf, hypLinfRunWith)
 import Constructor.HypTwr (HypTwr, HypTwrResult (..), hypTwrCtorTypes, hypTwrProgram)
 import Constructor.LevelInfer (LvErr (..))
 import Constructor.Parser (parseProgram)
+import Constructor.Tinf (TyErr (..))
 import Data.Functor.Const (Const (..))
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
@@ -227,6 +228,37 @@ tests =
   -- family case (every member self-towers); unsound for mixed
   -- concrete-leveled forward refs (which the user can sidestep by
   -- reordering, since those don't actually need mutual).
+    -- --- Saturation checks (HypTwr.ctorDecl) -----------------------
+    --
+    -- Each ctor's annotation must peel — via arrows then app spine
+    -- — to a result headed by the parent tycon with the right
+    -- arity.  Three failure shapes; singleton-family parents
+    -- (arity 0) are exempt from the head check.
+  , rejectsAtType
+      "Saturation: bad result (ctor result is a parameter, not a tycon)"
+      -- Lifted to the kind level so the level layer doesn't reject
+      -- first: Foo's annotation @*1@ gives Foo level 2, the @(a :
+      -- *1)@ binds @a@ at level 2 (= Foo's level), and @c : a@
+      -- then has @lt = 2 = lp@.  Level layer passes; saturation
+      -- rejects because the result is a 'TyVarV', not a 'TyConV'.
+      "data Foo (a : *1) : *1 { c : a }"
+      (TyCtorBadResult "c")
+  , rejectsAtType
+      "Saturation: wrong head (ctor of Foo (arity 1) returns Nat)"
+      -- @d : Foo Z -> Nat@ — result is @Nat@, a different tycon.
+      -- With parent arity 1, the singleton-family relaxation
+      -- doesn't apply; rejected with 'TyCtorWrongHead'.
+      "data Nat : *0 { Z : Nat; S : Nat -> Nat };\
+      \data Foo (a : Nat) : *0 { c : Foo Z; d : Foo Z -> Nat }"
+      (TyCtorWrongHead "d" "Foo" "Nat")
+  , rejectsAtType
+      "Saturation: wrong arity (Foo of arity 1 supplied 0)"
+      -- @d : Foo@ — result is the parent name but applied to zero
+      -- args, mismatching the declared arity of 1.
+      "data Nat : *0 { Z : Nat; S : Nat -> Nat };\
+      \data Foo (a : Nat) : *0 { c : Foo Z; d : Foo }"
+      (TyCtorWrongArity "d" "Foo" 1 0)
+
   , accepts "GADT sketch: Iso singleton via separate type decls"
       ("data One : Iso { OneCtor : One };\
        \data Two : Iso { TwoCtor : Two };\
@@ -334,6 +366,26 @@ rejectsAtLevel name src wantErr = (name, go)
         Right _ -> fail_ $
           "expected level rejection (" <> show wantErr
           <> "), but program elaborated"
+
+-- | Helper: parse + level OK, expect a specific 'TyErr' from the
+--   HypTwr (Tower) layer.  Used for saturation-style rejections
+--   that are not level-layer concerns.
+rejectsAtType :: String -> Text -> TyErr -> (String, IO Bool)
+rejectsAtType name src wantErr = (name, go)
+  where
+    go = case parseProgram @HypLinf @(Const ()) name src of
+      Left e -> fail_ $ "parse error (test setup): " <> errorBundlePretty e
+      Right pHypLinf -> case hypLinfRunWith @HypTwr pHypLinf of
+        Left lv -> fail_ $ "expected type rejection but level layer failed: " <> show lv
+        Right (_, pTwr) -> case hypTwrProgram pTwr of
+          Left ty
+            | ty == wantErr -> pure True
+            | otherwise -> fail_ $
+                "type error mismatch:\n  want: " <> show wantErr
+                <> "\n  got:  " <> show ty
+          Right _ -> fail_ $
+            "expected type rejection (" <> show wantErr
+            <> "), but program elaborated"
 
 fail_ :: String -> IO Bool
 fail_ msg = putStrLn ("    " <> msg) >> pure False

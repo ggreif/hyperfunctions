@@ -95,6 +95,24 @@ data TyErr
     --   shape that pure structural occurs misses (the meta is
     --   horizontally absent at rung 0 but vertically reachable via
     --   'kindOf').
+  | TyCtorBadResult !Name
+    -- ^ A constructor's annotation peels (under arrows) to a result
+    --   type that isn't headed by any type-constructor.  E.g.,
+    --   @c : T -> a@ where @a@ is a parameter (so the result is
+    --   a 'TyVarV'), or @c : T -> *0@ (the result is 'TyUnivV').
+    --   The shape doesn't identify which data the ctor belongs to.
+  | TyCtorWrongHead !Name !Name !Name
+    -- ^ @TyCtorWrongHead ctor expectedParent actualHead@.  A ctor
+    --   inside @data D ...@ has a result headed by a different
+    --   tycon (e.g., @c : T -> Bool@ inside @data D@).  Enforced
+    --   only when @D@ has arity ≥ 1; for nullary parents the
+    --   singleton-family pattern (Swap-style: @Left : Right@) is
+    --   accepted by relaxation.
+  | TyCtorWrongArity !Name !Name !Int !Int
+    -- ^ @TyCtorWrongArity ctor parent expected supplied@.  A ctor
+    --   inside @data D (p1 : K1) ... (pn : Kn)@ has result @D@
+    --   applied to a wrong number of arguments — e.g., @c : T ->
+    --   D@ inside @data D (a : *0)@ (expected 1, supplied 0).
   deriving (Eq, Show)
 
 data TyResult = TyResult
