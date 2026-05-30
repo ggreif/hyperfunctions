@@ -1252,3 +1252,241 @@ Rejected today (saturation):
 | pattern binder leaking past arm | `TyUnbound` |
 
 119 tests green.
+
+## Type-checking arc + Hs codegen + Scott codegen
+
+### Build → Dissect → Build axioms — landed (436d428, 0c5da75, 0cb3603)
+
+`AxiomsSpec` formalises round-trip identity as the load-bearing
+sanity check.  Each test parses a `let rt = case … { … }`,
+runs it through HypTwr, materialises the binder's tower
+through the final `Subst`, and pretty-compares against an
+expected type string.  This is the literal *"Built can be
+Dissected and rebuilt to the same type"* invariant.
+
+Suite:
+- Bool round-trip (`case T { T -> T; F -> F }` → `Bool`)
+- Nat round-trip (`case S Z { Z -> Z; S n -> S n }` → `Nat`)
+- Fin refining (`case FS FZ { FZ -> FZ; FS m -> FS m }` → `Fin (S Z)`)
+- Expr typed-AST (`case Lit { Lit -> Lit }` → `Expr T`)
+- Coverage (every Bool-ctor has an arm)
+- Weird-class (Weird, Iso-cute, Swap, Mirror) — singleton
+  self-towering round-trips, Swap's annotation twist
+  (`Left : Right`) preserved in the result type
+- Existential round-trip (`case Pack T { Pack x -> Pack x }` →
+  `Foo` — the existential `m` hidden, instantiated to Bool
+  internally, invisible at the surface)
+
+### Saturation check — landed (c04c7fe)
+
+`HypTwr.ctorDecl` peels each ctor's annotation through arrows
+and app-spine to check the result is `Parent <args>` with the
+right arity:
+- `TyCtorBadResult` — non-TyConV result (param ref, universe)
+- `TyCtorWrongHead` — head ≠ parent (only when arity ≥ 1; the
+  singleton-family Swap relaxation accepts any TyConV head)
+- `TyCtorWrongArity` — head matches parent, wrong arg count
+
+### CtorSig — landed (25a3e00)
+
+Per-ctor signature extraction: `inputs` (the captured arg
+types in order) and `refinements` (one per parent param —
+the substitution a Dissect arm applies to the scrutinee's
+indices).  Available via `extractCtorSig` for downstream
+pattern-matching consumers.
+
+### Build-side typing — landed (947ae05, 9d1965f)
+
+HypTwr's value-level carrier elaborates real types in Build
+mode:
+
+- `valDecl` stores body's tower for subsequent decls.
+- `valVar` in Build looks up the binder's tower.
+- `valCtor` in Build: instantiate parent param TyVarVs to fresh
+  metas at the use site (`collectTyVars` + `mkFreshSubst` +
+  `substTyVarsInProc`); meet each arg's tower against the
+  substituted `ctorInput`; result tower is
+  `Parent <substituted refinements>`.
+- `case_` meets all arm-body towers pairwise so the case
+  agrees on a common result type — heterogeneous bodies
+  surface as `TyMismatch`.
+
+`TyProc.meet`'s error path switched to `viewToTySoft` so
+`TyMismatch` can render meta-containing views without
+crashing.
+
+### Dissect-side refinement — landed (a4c992b)
+
+The load-bearing GADT machinery:
+
+- `case_` plumbs scrutinee tower into env (`hypTwrEnvScrutTy`).
+- `arm` flips env to ElabDissect for the pattern, computes
+  pattern's matched type via the same `elabCtorApp` Build
+  uses (with valCtor Dissect getting the same instantiation
+  treatment), then meets pat-tower against scrut-tower.
+  Success → reachable, body elaborated under refined Subst;
+  failure → unreachable, body skipped, pre-pat Subst restored.
+- `case_` filters reachable arms (`HypTwrSArm (Just t)`) and
+  pairwise-meets their body towers.
+
+The Fin round-trip becomes a genuine refinement-correctness
+check: FZ arm clashes (`Fin Z` ≠ `Fin (S Z)`), gets filtered;
+FS m arm refines `m ↦ Z` and the rebuilt `FS m` types at
+`Fin (S m) = Fin (S Z)` — same as the scrutinee.
+
+### `@`-binders for Dissect — landed (b92d862, 5622b90)
+
+`Lang.valAt` (Dissect-only signature) — at-pattern
+`name@<inner>` binds `name` to the matched value while
+dissecting via the inner pattern.  The at-binder's matched
+type IS the inner's; binders inside the inner are in scope
+alongside `name` in the arm body.
+
+Precedence rule: **application binds tighter than `@`** (the
+inverse of Haskell's wart), so `y@FS m` parses as
+`y@(FS m)` — no parens needed.  Both `dissectHead` (top
+level) and `nullaryDissect` (atom level) implement this
+uniformly; arg-level `Foo (y@Bar) a` requires parens to
+override the greedy `@`.
+
+Three @-axiom round-trips in AxiomsSpec exercise it:
+- Iso: `y@One -> y` carries the matched value through
+- Nat: `S y@S n -> y` — y is the inner `S n` (not the
+  outer scrutinee)
+- Fin: `y@FS m -> y` — the y, after Dissect refinement,
+  has type `Fin (S Z)`, *not* `Fin (S m)`
+
+The duplicate-binder lint (rejecting `y@(Foo y)` shadows)
+lives in a future specialised carrier, not HypTwr —
+per the user's pointer about separation of concerns.
+
+### Hs carrier — landed (9d0ece6)
+
+Pipeline: `parseProgram @Hs` → `renderHs` → `runghc` →
+pin stdout.  GHC is the oracle: every program that
+elaborates in Ωmegator and emits valid Haskell here must
+typecheck under GHC's discipline and produce the same
+logical value.
+
+Emission rules:
+- Every data emits GADT-style `data X (a :: K) where ...`
+  with standalone `deriving Show`.
+- `NoImplicitPrelude` + selective `import Prelude (IO,
+  print, Show)` frees Ωmegator-declared names (`Bool`,
+  `True`, `False`, ...) from Prelude clash.
+- Ωmegator's greedy `@` becomes Haskell's tight `@` with
+  inner parens.  Bridges the precedence asymmetry at the
+  carrier boundary.
+
+GHC's `-Winaccessible-code` warnings on FZ-shape arms
+independently confirm Ωmegator's Dissect refinement — same
+observation, different reporter.
+
+### Scott carrier — landed (0137059, 58dde46, a69acfd, 90a0cb4)
+
+End-to-end Scott-encoding codegen.  Three regimes coexist:
+
+**1. Non-parametric (Bool, Iso, Nat, ∃-Pack)** — regular Scott:
+
+    newtype Bool' = Bool' { unBool' :: forall x.
+                                       (() -> x) -> (() -> x)
+                                       -> x }
+    t = Bool' $ \b0 _ -> b0 ()
+
+Plus a paired `data Bool = T | F deriving Show` for
+DataKinds-promotion (when the data is used as a kind in
+another type's parameter).  Skipped when ctors carry
+existentials — those'd need `ExistentialQuantification` +
+GADT syntax for the regular data form, and aren't useful as
+kinds anyway.
+
+**2. Non-refining parametric (Maybe-style)** — regular Scott with
+type variables threaded through the newtype:
+
+    newtype Maybe' (a :: Type) = Maybe' { unMaybe' ::
+                                          forall x.
+                                          (() -> x) -> (a -> x)
+                                          -> x }
+
+No HKT `forall (x :: K -> Type)` needed — `a` is just a
+Haskell type variable.
+
+**3. Refining parametric (Fin, Expr)** — *indexed* eliminator:
+
+    newtype Fin' (n :: Nat) = Fin'
+      { unFin' :: forall (x :: Nat -> Type).
+                  (() -> x Z)
+               -> (forall n. Fin' n -> x (S n))
+               -> x n
+      }
+
+The `forall n.` inside the FS branch is what makes refinement
+honest: each elim site picks an `x`, and each branch lands at
+the refined index `x ResultIndex`.  Parent params used in the
+ctor's signature become per-use foralls in the branch type
+(collected via `envTyParamSeen` / `envCurrentParams`).
+
+DataKinds is the lift: emit `data Nat = Z | S Nat` /alongside/
+the Scott `newtype Nat'`.  `tyConRef` position-dependent —
+in *kind* context (the `K` in `(n : K)`) drops the tick to
+reference the Haskell data; in *type* context keeps the tick
+for the Scott newtype.  Ctors stay unticked uniformly
+(DataKinds-promoted at kind, Scott function at value).
+
+ScottSpec round-trips, all via `runghc`:
+- Bool swap → "F"
+- Iso One rotates → "Two"
+- Nat predecessor → "Z"
+- ∃-Pack round-trip → "(Pack <existential>)"
+- Maybe parametric → "(Just <unrecognised a>)"
+- Fin refining GADT → "(FS FZ)"
+
+GHC accepts the rank-3 quantification (Scott's outer
+`forall x`, refining branch's inner `forall n`, ctor function's
+top-level `forall n` at e.g. `fS`) without explicit type
+applications — type inference handles every case.
+
+### Tagging + release
+
+- `v0.0.0` at the pre-Ωmegator origin tip (07056ed)
+- `v0.1.0` after the real-refining-GADTs arc (0c5da75)
+- `0.2.0` dev cycle opened — `@`-binders, Hs codegen, Scott
+  carrier all landed here
+
+### Three git-notes on origin
+
+- 07056ed (galaxy-brain)
+- 78f00f4 (Iso-revelation)
+- c94550d (typing-tower-glyph `⋮`)
+- 49525c3 (ctor-propagation as fundament-witness at parser layer)
+- 9d1965f (**Ωmegator** name origin + algebraic fit)
+
+### Status snapshot, end of 0.2.0 cycle so far
+
+141 tests green.  All AxiomsSpec round-trips pass with
+literal type-equality checks.  GHC and `runghc` serve as
+oracles for both Hs and Scott codegen.
+
+What's reachable end-to-end (parser → HypTwr → either
+materialisation, Hs codegen, or Scott codegen):
+
+| program | works in |
+|---|---|
+| every shape from the previous snapshot | HypTwr |
+| `case T { T -> F; F -> T }` and friends | HypTwr, Hs, Scott |
+| `case S Z { Z -> Z; S n -> n }` (binder) | HypTwr, Hs, Scott |
+| `case FS FZ { FZ -> FZ; FS m -> FS m }` (refining GADT) | HypTwr, Hs, Scott |
+| `case T { y@T -> y; … }` (@-binder) | HypTwr, Hs |
+| `case Pack T { Pack x -> Pack x }` (existential) | HypTwr, Hs, Scott |
+| `case Just T { … }` (parametric non-refining) | HypTwr, Hs, Scott (via Maybe) |
+
+What's still ahead:
+- `@`-binders for Build (cyclic data via DPS; Motoko TRMC pointer)
+- `λ` and value-level function application
+- Codegen for the @-binder shapes in Scott (currently Hs only)
+- Non-regular nested data (Nest-style) in Scott — encoding
+  regime is in place, just needs an Ωmegator example that
+  parses through
+- Lambda-encoding fixpoint vs heap-cell fixpoint divergence
+- Specialised lint carrier for duplicate-binder discipline
+- Refining GADT *with existentials* (a~b shape; Refl ctor)
