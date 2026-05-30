@@ -184,6 +184,49 @@ tests =
       \let rt = case Cup { Cup -> Cup; Fridge -> Fridge; Plate -> Plate }"
       [("rt", "Cup")]
 
+    -- --- @-pattern round-trips: genuine identity through dissect -----
+    --
+    -- The earlier round-trips smuggle a rebuild past the dissect:
+    -- @case One { One -> One; ... }@ matches a value of type
+    -- @One@ and then /builds a fresh One/ on the body side — no
+    -- "part" flows through the bridge.  @-binders fix this: the
+    -- body returns the at-bound name, which IS the scrutinee's
+    -- matched value (modulo the type-level representation).
+    -- Dissect → bind → carry over → identity-rebuild.
+
+  , roundTripVia "@-round-trip: case One { y@One -> y; y@Two -> y; y@Three -> y }"
+      -- Each arm's pattern @y\@<ctor>@ binds the matched value
+      -- to @y@; the body returns @y@ rather than synthesising
+      -- a fresh ctor.  For scrut @One@ only the first arm is
+      -- reachable; @y@ binds at @One@, body returns @One@.
+      "data Iso : Iso { One : One; Two : Two; Three : Three };\
+      \let rt = case One { y@One -> y; y@Two -> y; y@Three -> y }"
+      [("rt", "One")]
+
+  , roundTripVia "@-round-trip: Nat with at-binder on S-arm"
+      -- The @S y\@(S n) -> y@-shape: matches a Nat that's a
+      -- successor of a successor; binds @y@ to the inner
+      -- @S n@ (a Nat); body returns @y@.  For scrut
+      -- @S (S Z)@ the second arm is reachable; @y@ is the
+      -- /inner/ @S Z@ — not the whole scrutinee — and the
+      -- result type is Nat.
+      "data Nat : *0 { Z : Nat; S : Nat -> Nat };\
+      \let rt = case S (S Z) { Z -> Z; S y@(S n) -> y; S Z -> Z }"
+      [("rt", "Nat")]
+
+  , roundTripVia "@-round-trip: Fin refinement via at-bound whole"
+      -- Genuine refining-GADT round-trip via at-binder.  Scrut
+      -- @FS FZ : Fin (S Z)@; arm @y\@(FS m) -> y@ binds @y@
+      -- to the matched value, which has type @Fin (S Z)@
+      -- (after Dissect-side refinement unifies the pattern's
+      -- @Fin (S α)@ with the scrutinee's @Fin (S Z)@).  Body
+      -- returns @y@, a real "carry the dissected value across"
+      -- (no rebuild from parts).
+      "data Nat : *0 { Z : Nat; S : Nat -> Nat };\
+      \data Fin (n : Nat) : *0 { FZ : Fin Z; FS : Fin n -> Fin (S n) };\
+      \let rt = case FS FZ { y@FZ -> y; y@(FS m) -> y }"
+      [("rt", "Fin (S Z)")]
+
     -- --- Existential round-trips -------------------------------------
     --
     -- A ctor whose argument-side carries an existentially-bound

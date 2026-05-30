@@ -670,3 +670,19 @@ instance Lang HypTwr where
                   , hypTwrEnvMode    = savedMode
                   }
             Right (HypTwrSArm (Just bodyTower), env3)
+
+  -- @-binder in Dissect: bind 'name' at the inner pattern's
+  -- matched type, leave the at-binder's outward type to be the
+  -- inner's (it's exactly the same matched value, just also
+  -- named).  Inner is elaborated first so its sub-binders are
+  -- already in scope when we add @name@.  Duplicate-binder
+  -- discipline (rejecting @name\@(Foo name)@ shadows or
+  -- repeated names across siblings) lives in a separate lint
+  -- carrier, not here.
+  valAt _ann name _binderPath inner = HypTwr $ \env -> do
+    (innerVal, env1) <- runHypTwr inner env
+    let innerTower = sValTower innerVal
+        env2 = env1
+          { hypTwrEnvValVars =
+              Map.insert name innerTower (hypTwrEnvValVars env1) }
+    Right (HypTwrSVal innerTower, env2)

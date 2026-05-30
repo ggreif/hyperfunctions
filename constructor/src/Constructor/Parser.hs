@@ -552,7 +552,8 @@ dissect
   :: (Lang r, HasAnn a m, MonadParsec Void Text m, MonadFail m)
   => Path -> Binders -> m (r a ('SVal 'Dissect), Binders)
 dissect path binders =
-      wildDissect path binders
+      try (between (symbol "(") (symbol ")") (dissect path binders))
+  <|> wildDissect path binders
   <|> dissectHead path binders
 
 wildDissect
@@ -568,16 +569,34 @@ dissectHead
   => Path -> Binders -> m (r a ('SVal 'Dissect), Binders)
 dissectHead path binders = do
   name <- identifier
-  case Map.lookup name (valCtors binders) of
-    Just _ctorDefPath -> do
-      (args, binders') <- dissectArgs path binders 0
-      ann  <- freshDissectAnn
-      pure (valCtor ann name path args, binders')
-    Nothing -> do
+  -- @-pattern: an identifier followed by '@' captures the whole
+  -- matched value (under name) while also dissecting the inner
+  -- pattern.  '@' binds tighter than ctor-application: in
+  -- @y@Foo a b@ the inner pattern is the full @Foo a b@ — the
+  -- inner sub-parser runs the standard 'dissect' grammar, so
+  -- ctor args after the inner head are consumed there.
+  isAt <- optional (symbol "@")
+  case isAt of
+    Just _ -> do
+      let innerPath = extendPath PsAtInner path
+      (inner, binders1) <- dissect innerPath binders
       ann <- freshDissectAnn
-      let binderPath = path
-          binders'   = extendValVar name binderPath binders
-      pure (valVar ann name binderPath, binders')
+      -- Bind @name@ at the at-binder's outer position only
+      -- AFTER the inner is parsed, so @name@ doesn't shadow
+      -- itself inside the inner sub-pattern.
+      let binders2 = extendValVar name path binders1
+      pure (valAt ann name path inner, binders2)
+    Nothing ->
+      case Map.lookup name (valCtors binders) of
+        Just _ctorDefPath -> do
+          (args, binders') <- dissectArgs path binders 0
+          ann  <- freshDissectAnn
+          pure (valCtor ann name path args, binders')
+        Nothing -> do
+          ann <- freshDissectAnn
+          let binderPath = path
+              binders'   = extendValVar name binderPath binders
+          pure (valVar ann name binderPath, binders')
 
 dissectArgs
   :: (Lang r, HasAnn a m, MonadParsec Void Text m, MonadFail m)
@@ -603,15 +622,27 @@ nullaryDissect
   => Path -> Binders -> m (r a ('SVal 'Dissect), Binders)
 nullaryDissect path binders = do
   name <- identifier
-  case Map.lookup name (valCtors binders) of
-    Just _ctorDefPath -> do
+  -- @-pattern works at atom level too — the inner is restricted
+  -- to a 'dissectAtom' so ctor application inside the inner
+  -- needs parens (which 'dissectAtom' handles).
+  isAt <- optional (symbol "@")
+  case isAt of
+    Just _ -> do
+      let innerPath = extendPath PsAtInner path
+      (inner, binders1) <- dissectAtom innerPath binders
       ann <- freshDissectAnn
-      pure (valCtor ann name path [], binders)
-    Nothing -> do
-      ann <- freshDissectAnn
-      let binderPath = path
-          binders'   = extendValVar name binderPath binders
-      pure (valVar ann name binderPath, binders')
+      let binders2 = extendValVar name path binders1
+      pure (valAt ann name path inner, binders2)
+    Nothing ->
+      case Map.lookup name (valCtors binders) of
+        Just _ctorDefPath -> do
+          ann <- freshDissectAnn
+          pure (valCtor ann name path [], binders)
+        Nothing -> do
+          ann <- freshDissectAnn
+          let binderPath = path
+              binders'   = extendValVar name binderPath binders
+          pure (valVar ann name binderPath, binders')
 
 -- ----------------------------------------------------------------------
 -- Declaration-level parsers.

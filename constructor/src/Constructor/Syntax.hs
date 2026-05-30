@@ -195,6 +195,32 @@ class Lang (r :: (Sort -> Type) -> Sort -> Type) where
   arm :: a 'SArm -> r a ('SVal 'Dissect) -> r a ('SVal 'Build) -> r a 'SArm
   arm = error "Lang.arm: match arms not supported by this carrier"
 
+  -- | At-pattern @name\@<inner>@: in 'Dissect' mode, binds @name@
+  --   to the matched value /while also/ dissecting the inner
+  --   pattern.  The at-binder's matched type IS the inner
+  --   pattern's matched type — at-binders don't constrain the
+  --   shape, the inner pattern does.  Binders introduced inside
+  --   @\<inner>@ are in scope alongside @name@ in the arm body.
+  --
+  --   Dissect-only by signature for now.  An eventual Build-mode
+  --   variant @name\@<rhs>@ would express a single-name fixpoint
+  --   for cyclic-data construction (the user's TRMC pointer
+  --   suggests destination-passing-style allocation as the
+  --   implementation path); when that lands, generalise the
+  --   signature to be mode-polymorphic.
+  --
+  --   Duplicate-binder lint (rejecting @name\@(Foo name)@-shape
+  --   shadowing or repeated @name@ across siblings) is /not/
+  --   this carrier's job — that's a specialised scope/lint
+  --   carrier's concern.
+  valAt
+    :: a ('SVal 'Dissect)
+    -> Name
+    -> Path
+    -> r a ('SVal 'Dissect)
+    -> r a ('SVal 'Dissect)
+  valAt = error "Lang.valAt: at-patterns not supported by this carrier"
+
 -- | Annotation provider in an applicative monad @m@.  The parser is
 --   written generically against 'HasAnn', so it can produce trees at
 --   any annotation regime without further refactoring.

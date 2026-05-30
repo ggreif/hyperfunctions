@@ -44,6 +44,12 @@ data PathStep
   | PsArmBody          -- ^ the body (RHS of @->@) of one arm.
   | PsCtorAppArg !Int  -- ^ the nth argument of a value-level ctor
                        --   application (Build or Dissect mode).
+  | PsAtInner          -- ^ the inner pattern of an @-binder
+                       --   @name\@<pat>@: 'PsAtInner' steps from
+                       --   the outer at-position to its sub-pattern
+                       --   so binders inside the inner get fresh
+                       --   identities even when the at-binder
+                       --   sits at the outer position itself.
   deriving (Eq, Ord, Show)
 
 -- | A path from the root of the program to a particular grammar

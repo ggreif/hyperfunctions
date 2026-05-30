@@ -37,6 +37,7 @@ data Tree (a :: Sort -> Type) (s :: Sort) where
   ValCtor    :: a ('SVal m) -> Name -> Path -> [Tree a ('SVal m)] -> Tree a ('SVal m)
   Case       :: a ('SVal 'Build) -> Tree a ('SVal 'Build) -> [Tree a 'SArm] -> Tree a ('SVal 'Build)
   Arm        :: a 'SArm -> Tree a ('SVal 'Dissect) -> Tree a ('SVal 'Build) -> Tree a 'SArm
+  ValAt      :: a ('SVal 'Dissect) -> Name -> Path -> Tree a ('SVal 'Dissect) -> Tree a ('SVal 'Dissect)
 
 deriving instance (forall s. Show (a s)) => Show (Tree a t)
 deriving instance (forall s. Eq   (a s)) => Eq   (Tree a t)
@@ -60,3 +61,4 @@ instance Lang Tree where
   valCtor    = ValCtor
   case_      = Case
   arm        = Arm
+  valAt      = ValAt
