@@ -1,77 +1,149 @@
-# Calling convention as hyperfunction (reading the Kidney/Wu paper)
+# Calling convention as hyperfunction — actually as (γ)
 
-Reading "Hyperfunctions: Communicating Continuations" surfaced
-a framing that fits directly onto the Wasm codegen queued for
-0.3.0: a calling convention IS a hyperfunction.
+Reading "Hyperfunctions: Communicating Continuations" (Kidney/Wu)
+surfaced a framing for the Wasm codegen queued in 0.3.0: a
+calling convention is a hyperfunction.  A second reading,
+filtered through our existing Tower work, sharpens the claim:
+**a calling convention is not a Hyper but a (γ)** — the
+tower-flavoured hyperfunction we kept circling back to.
 
-## The protocol shape
+## Layer 1: the lateral slice
 
 A calling convention is a contract between caller and callee.
-Each side knows its own half:
+Each side knows its half:
 
-- **Caller**: pre-call (push args, save caller-saved regs)
-  + post-call (pop, restore, consume result).
-- **Callee**: prologue (save callee-saved, frame setup)
-  + body + epilogue (place result, restore).
+- **Caller** : pre-call (push args, save caller-saved regs)
+              + post-call (pop, restore, consume result).
+- **Callee** : prologue (save callee-saved, frame setup)
+              + body + epilogue (place result, restore).
 
-Crucially each side's behaviour is a *function of the other's*.
-The caller emits "if you do X with my args, I'll do Y with your
-result"; the callee emits "if you give me args of shape A, I'll
-hand you a result of shape B."  That two-way functional
-dependence is exactly:
+Each side's behaviour is a function of the other's.  That
+two-way functional dependence is exactly:
 
 ```
 Hyper a b = Hyper { invoke :: Hyper b a -> b }
 ```
 
-- Caller : `Hyper Args Result`
-- Callee : `Hyper Result Args` (the dual)
-- `invoke` against each other = run the protocol
+- Caller : Hyper Args Result
+- Callee : Hyper Result Args
+- `invoke` against each other = run the protocol.
+- Prologue/epilogue pair = `invoke` and its settling step.
 
-Self-application = actually executing the call.  The
-prologue/epilogue pair is the hyperfunction's `invoke` and its
-settling step.
+This is Kidney/Wu's hyperfunction directly.
 
-## Why this matters for our Wasm codegen
+## Layer 2: the vertical column — (γ)
 
-Scott-encoded ctors are already continuation-receivers: each
-branch the elim passes IS a continuation the value will pick
-and thread its captured args through.  So Scott values are
-hyperfunctions already, just dressed up as Haskell newtypes.
+But protocols *compose vertically* too:
 
-When we emit Scott to Wasm:
+- Currying: result is itself a callable closure → another
+  protocol one rung up.
+- CPS: caller hands a continuation that itself runs another
+  protocol.
+- Coercion / kind-indexed dispatch: argument's *kind* matters,
+  not just its representation.
 
-- Each ctor's branches become Wasm continuations (function
-  refs / table indices).
-- The elim's dispatch IS the calling convention dance —
-  caller hands branches, callee picks one and invokes with
-  captured args.
+For each of these the lateral Hyper is one rung; the *stack of
+rungs* is the column.  Our Tower codata captures it:
 
-This means the Wasm calling convention falls out as the
-*runtime realisation* of the same hyperfunction algebra we
-have been using at the type level:
+```
+(γ) a b = Gamma { horizontal :: Hyper a b
+                , vertical   :: (γ) a b
+                }
+```
 
-- Static layer: `TyProc = Hyper TyView TyView`
-  (TyProc.meet self-applies to settle equalities).
-- Dynamic layer: `call-site = Hyper Args Result`
-  (caller and callee self-apply to settle the protocol).
+`Hyper` is the horizontal slice, Tower is the column, (γ) is
+the product.  `meetTowers` is the lateral+vertical dance
+(`TyProc.meet` sideways, `kindOf` upward).  The covering-space
+framing's `predLv (LVar p) = LVar p` fixpoint is *the column's
+stable tail*; `kindOf` is the productive upward step.
 
-Same shape, two layers — Atkey's "self-applicable unification"
-framing at the static side, and the calling-convention dance
-at the dynamic side.
+The runtime analog: the calling convention for "function
+returning function returning value" isn't a flat Hyper — it's
+one (γ) with three rungs.
 
-## Practical consequence
+## Why Church hurts laterals (and verticals)
 
-When the Wasm codegen lands, the encoding will be:
+Kidney/Wu observe that lateral functions — those whose recursion
+descends *two* arguments in lockstep (e.g., `(≤) :: ℕ → ℕ →
+Bool`) — perform horribly under Church encoding: you'd
+materialise both sides as folds and then re-traverse,
+quadratic at best.  `TyProc.meet` is the archetype in our
+codebase — every recursive case zips both sides.
 
-- Ctor function = Wasm function whose calling convention IS
-  the Scott dispatch protocol.
-- Branch lambda = continuation; passed as function-ref / table
-  index.
-- DPS for at-binder cycles = the hyperfunction's "settling
-  fixpoint" specialised to heap allocation.
+The vertical analogue: Church encoding's recursor is
+single-rung.  Walking *up* the kind tower requires building a
+fresh fold per rung — exponential in depth.  (γ) handles it
+in one pass because each rung's invocation can borrow from the
+next rung's productivity.
 
-No impedance gap between Scott-the-encoding and Wasm-the-
-target, because both speak hyperfunctions natively.  The
-calling convention IS the encoding, not a bridge between
-encoding and machine.
+So **Scott + (γ) at runtime** is the encoding that handles
+both axes natively:
+
+- Scott dispatches branches (lateral).
+- (γ) chains them up the tower (vertical).
+- Hyper-self-application is the calling-convention dance at
+  each rung.
+
+## Layer 3: inlining as the degenerate (γ)
+
+The framing also covers what *isn't* normally counted as a
+calling convention:
+
+| convention | (γ) shape | what's specialised |
+|---|---|---|
+| **inlining** | identity — boundary erased | both halves merged at compile time; the protocol is the no-op |
+| **tail call** | horizontal step reused | callee's epilogue *steals* caller's epilogue, no fresh frame |
+| **standard call** | full Hyper at one rung | the textbook lateral hyperfunction |
+| **curried call** | (γ) with N vertical rungs | each return is itself a callable, climbing the column |
+| **CPS / call-with-cc** | (γ) where vertical *is* the explicit term | continuation reified as a value, vertical motion is a first-class operand |
+| **dependently-typed dispatch** | full (γ), lateral + vertical | kind-indexed runtime; refining-GADT case-of |
+
+**Inlining is the calling convention where the (γ) collapses
+to identity** — caller and callee are *one piece of code at
+the use site*, the protocol contributes no observable work,
+the hyperfunction's invoke-against-dual is computed away.  Far
+from being "no calling convention," it's the limit case of the
+algebra.
+
+This matters for codegen:
+
+- The decision *which* calling convention to use at a given
+  call site is a choice of *which specialisation of (γ)* to
+  emit.
+- An optimiser that picks between "inline / tail / standard /
+  CPS" is doing *algebraic simplification of (γ)*, not picking
+  from an unrelated grab-bag.
+- Wasm's specific shape (no first-class continuations natively,
+  but `funcref` + tables giving CPS-with-overhead) determines
+  which rungs of (γ) are *cheap* to emit and which require
+  explicit closure construction.
+
+## Practical consequence for the queued Wasm codegen
+
+The Scott+DPS pairing handles lateral cleanly.  For the
+vertical pieces — currying, CPS, kind-indexed dispatch — the
+codegen should emit (γ)-aware code:
+
+- A function returning a function = one (γ) rung; emit a
+  funcref-returning Wasm function whose continuation captures
+  the next protocol.
+- A refining-GADT case-of = one (γ) rung per index level;
+  Scott handles dispatch, vertical handles refinement.
+- An inline decision = collapse (γ) to identity at compile
+  time; no Wasm code emitted for the protocol, only the
+  inlined body.
+- DPS for at-binder cycles = (γ)'s "settling fixpoint"
+  specialised to heap allocation.
+
+No impedance gap between Scott-the-encoding, (γ)-the-algebra,
+and Wasm-the-target, because all three speak the same shape.
+The calling convention IS the encoding IS the algebra.
+
+## TL;DR
+
+- Kidney/Wu: calling convention = Hyper.  Correct but flat.
+- Us: calling convention = (γ) = Hyper × column.
+- Inlining is (γ) collapsed to identity; tail call is (γ)
+  with shared epilogue; CPS is (γ) reified.  All variations
+  of the same algebra.
+- Codegen choices = algebraic simplifications of (γ).
