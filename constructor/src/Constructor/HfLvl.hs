@@ -131,6 +131,7 @@ instance Lang HfLvl where
   -- The parser resolved binder + use names to 'Path's; the carrier
   -- just uses them.
   forallLv _ann _name _path body = HfLvl $ runHfLvl body
+  existsTy _ann _name _path body = HfLvl $ runHfLvl body
 
   starVar _ann _name binderPath offset = HfLvl $ \env ->
     Right (fromLv (addOffset (LVar binderPath) offset), env)

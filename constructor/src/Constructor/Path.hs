@@ -34,6 +34,8 @@ data PathStep
   | PsDataParamKind !Int
                        -- ^ the kind annotation slot of the nth data parameter
                        --   (for @data Foo (a : K)@-style annotations).
+  | PsExistsBody       -- ^ the body of a '∃ m.' expression (existential
+                       --   type-variable binder introduced in a ctor type).
   deriving (Eq, Ord, Show)
 
 -- | A path from the root of the program to a particular grammar

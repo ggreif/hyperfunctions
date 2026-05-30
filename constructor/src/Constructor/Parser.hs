@@ -74,7 +74,13 @@ symbol :: (MonadParsec Void Text m) => Text -> m Text
 symbol = L.symbol sc
 
 keywords :: [Text]
-keywords = ["data", "forall"]
+keywords = ["data"]
+-- Binders '∀' (U+2200) and '∃' (U+2203) are Unicode-only — they
+-- aren't keywords because they aren't valid 'identifier' tokens
+-- in the first place.  Removing the ASCII fallback ('forall',
+-- 'exists') frees those identifiers for surface use; Unicode is
+-- ubiquitously typable on modern systems and the math glyphs
+-- carry their algebraic content visually.
 
 identifier :: (MonadParsec Void Text m, MonadFail m) => m Name
 identifier = lexeme . try $ do
@@ -329,7 +335,7 @@ forallExpr
   :: (Lang r, HasAnn a m, MonadParsec Void Text m, MonadFail m)
   => Path -> Binders -> m (r a 'SExpr)
 forallExpr path binders = do
-  void (symbol "\8704" <|> symbol "forall")
+  void (symbol "\8704")  -- ∀
   n <- identifier
   void (symbol ".")
   let binderPath = path
@@ -338,10 +344,36 @@ forallExpr path binders = do
   ann  <- freshExprAnn
   pure (forallLv ann n binderPath body)
 
+-- | @∃m. expr@ — existential type-binder introduction (step 3c-a).
+--   The binder's 'Path' is the @∃@'s position; the body is parsed
+--   at @path ++ [PsExistsBody]@ with @m@ added to 'tyBinders' (so
+--   references resolve to 'tyParamRef' with the binder's path).
+--   Used inside ctor type annotations for GADT-style existential
+--   indices: @FS : ∃ m. Fin m -> Fin (S m)@ introduces a fresh @m@
+--   scoped to FS's signature; refinement-on-match semantics
+--   (gabor/gadt invariant — refinements must never equate to
+--   existentials) is the operational consequence at the future
+--   pattern-match construct.
+existsExpr
+  :: (Lang r, HasAnn a m, MonadParsec Void Text m, MonadFail m)
+  => Path -> Binders -> m (r a 'SExpr)
+existsExpr path binders = do
+  void (symbol "\8707")  -- ∃
+  n <- identifier
+  void (symbol ".")
+  let binderPath = path
+      binders'   = extendTys [(n, binderPath)] binders
+  body <- expr (extendPath PsExistsBody path) binders'
+  ann  <- freshExprAnn
+  pure (existsTy ann n binderPath body)
+
 expr
   :: (Lang r, HasAnn a m, MonadParsec Void Text m, MonadFail m)
   => Path -> Binders -> m (r a 'SExpr)
-expr path binders = forallExpr path binders <|> arrowExpr path binders
+expr path binders =
+      forallExpr path binders
+  <|> existsExpr path binders
+  <|> arrowExpr  path binders
 
 arrowExpr
   :: (Lang r, HasAnn a m, MonadParsec Void Text m, MonadFail m)

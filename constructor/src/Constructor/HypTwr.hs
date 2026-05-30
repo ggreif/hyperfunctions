@@ -209,6 +209,7 @@ instance Lang HypTwr where
     pure (HypTwrExpr tower, env2)
 
   forallLv _ann _name _binderPath body = HypTwr $ runHypTwr body
+  existsTy _ann _name _binderPath body = HypTwr $ runHypTwr body
 
   starVar _ann _name _binderPath _offset = HypTwr $ \env ->
     Right (HypTwrExpr (leafTower env (TyUnivV Z)), env)

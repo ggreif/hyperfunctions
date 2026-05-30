@@ -146,8 +146,8 @@ cases =
             ]
         ]
     )
-  , ( "polymorphic universe — keyword 'forall'"
-    , "data Q : forall l . *(l + 1) { q : Q }"
+  , ( "polymorphic universe — second ∀l. *(l+1) form"
+    , "data Q : \8704l . *(l + 1) { q : Q }"
     , let pBinder = Path [PsProgDecl 0, PsDataAnn]
           qP      = Path [PsProgDecl 0]
       in Prog u

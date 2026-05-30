@@ -972,6 +972,46 @@ step 3b is re-attempted alongside step 3c, the
 self-registration-in-ctorDecl pattern is right; the check
 algorithm needs to know which case it's handling.
 
+### Step 3c-a — existential binder syntax `∃ m. T` (landed)
+
+`Lang.existsTy :: a 'SExpr -> Name -> Path -> r a 'SExpr -> r a
+'SExpr` added.  Parser parses '∃m. T' (Unicode-only — ASCII
+fallbacks 'forall'/'exists' removed from the parser's keywords;
+the math glyphs carry their algebraic content visually and are
+ubiquitously typable).  Pure surface for step 3c-a: most carriers
+pass-through (like 'forallLv'); HypLinf binds @name@ in
+'hypLinfEnvNames' at @LVar binderPath@ (the parametric level the
+existential's parametric scope settles to via 'predLv' fixpoint),
+saves & restores so the existential doesn't leak out of the @∃@'s
+body.
+
+What works end-to-end: existentials in ctor types whose body
+lands at the parent's concrete level — '∃ m. Bool', '∃ m. Bool
+-> Bool' — where the existential is bound but not load-bearing in
+the body's level computation.  What doesn't work yet: real GADT
+shapes like '∃ m. Fin m' that need arrow-kinded data + level
+unification (the existential's parametric level can't unify with
+the parent's concrete level without those features).
+
+Two semantic checks for step 3c-b (NOT enforced today):
+
+  * **'∃' escape error.**  When '∃ m. T' is in a ctor, the
+    existential @m@ must not escape its scope.  E.g., '∃ m. Foo
+    -> m' would make m appear in the result-side of the function
+    type, leaking out to callers — type error.  The check is
+    structural on the ctor's annotation under the '∃' binding.
+
+  * **'∀' non-escape error (deferred).**  When '∀ m. T' is in a
+    ctor, @m@ must be used in @T@ — otherwise the universal is
+    vacuous.  E.g., 'c : ∀ m. Int' has no reason to introduce
+    @m@; type error.  User flagged this as deferrable beyond
+    step 3c-b.
+
+Both are structural checks on the ctor type expression under the
+binder.  Step 3c-a doesn't enforce; step 3c-b adds the
+escape-tracking machinery alongside the pattern-match refinement
+work.
+
 ### Future: uppercase-convention for fixed-type vs parameter
 
 The user flagged a corner: `data Head Param { ... }` today

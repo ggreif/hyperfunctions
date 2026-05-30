@@ -25,6 +25,7 @@ data Tree (a :: Sort -> Type) (s :: Sort) where
   Star     :: a 'SExpr -> Word -> Tree a 'SExpr
   Arr      :: a 'SExpr -> Tree a 'SExpr -> Tree a 'SExpr -> Tree a 'SExpr
   ForallLv :: a 'SExpr -> Name -> Path -> Tree a 'SExpr -> Tree a 'SExpr
+  ExistsTy :: a 'SExpr -> Name -> Path -> Tree a 'SExpr -> Tree a 'SExpr
   StarVar  :: a 'SExpr -> Name -> Path -> Word -> Tree a 'SExpr
   App      :: a 'SExpr -> Path -> Tree a 'SExpr -> Tree a 'SExpr -> Tree a 'SExpr
   TyParamRef :: a 'SExpr -> Name -> Path -> Tree a 'SExpr
@@ -41,6 +42,7 @@ instance Lang Tree where
   star     = Star
   arr      = Arr
   forallLv   = ForallLv
+  existsTy   = ExistsTy
   starVar    = StarVar
   app        = App
   tyParamRef = TyParamRef

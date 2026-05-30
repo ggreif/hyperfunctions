@@ -122,6 +122,27 @@ tests =
       "data Nat : *0 { Z : Nat; S : Nat -> Nat };\
       \data Fin (n : Nat) : *0 { FZ : Fin n; FS : Fin n -> Fin n }"
       ["FZ", "FS", "Z", "S"]
+    -- --- Existential type binder ∃ (step 3c-a) -----------------
+    --
+    -- '∃ m. T' introduces a fresh type variable @m@ scoped to
+    -- @T@.  Step 3c-a is surface-only; refinement-on-match
+    -- semantics (the gabor/gadt invariant) lands when pattern
+    -- matching does.  For the body to elaborate end-to-end today,
+    -- the level layer needs the body to land at the parent's
+    -- level — so @∃ m. m@ alone fails (the existential's
+    -- parametric level can't unify with the parent's concrete
+    -- level), but @∃ m. Bool@ works (the body uses a concrete
+    -- type at the right level).  Real GADT uses ('∃ m. Fin m')
+    -- need arrow-kinded data + level-unification, queued for
+    -- step 3c-rest.
+  , accepts "GADT sketch ∃: existential m unused, body at concrete level"
+      "data Bool : *0 { T : Bool; F : Bool };\
+      \data Foo : *0 { c : \8707 m . Bool }"
+      ["T", "F", "c"]
+  , accepts "GADT sketch ∃: existential with arrow body at concrete level"
+      "data Bool : *0 { T : Bool };\
+      \data Foo : *0 { c : \8707 m . Bool -> Bool }"
+      ["T", "c"]
   , accepts "GADT sketch ⋮: weirdo self-towering parameter (a⋮)"
       -- 'data Selfie (a⋮) ⋮ { mk : Selfie a }' — the typing-tower
       -- glyph at the param scope: 'a's kind is 'a' itself, a

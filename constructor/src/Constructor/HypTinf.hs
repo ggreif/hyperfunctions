@@ -243,6 +243,7 @@ instance Lang HypTinf where
     pure (HypTinfExpr (hPure (TyAppV procF procX)), env3)
 
   forallLv _ann _name _path body = HypTinf $ runHypTinf body
+  existsTy _ann _name _path body = HypTinf $ runHypTinf body
 
   starVar _ann _name _path _offset = HypTinf $ \env ->
     Right (HypTinfExpr (hPure (TyUnivV Z)), env)

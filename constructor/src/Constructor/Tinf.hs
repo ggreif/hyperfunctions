@@ -176,6 +176,7 @@ instance Lang Tinf where
   -- 'TyUniv' tag — universe polymorphism interacts with this layer
   -- minimally for v0_polyType.
   forallLv _ann _name _path body = Tinf $ runTinf body
+  existsTy _ann _name _path body = Tinf $ runTinf body
 
   -- @*(l + n)@ as a value-level type expression doesn't strictly fit
   -- the value-type universe — but for symmetry we tag it as a

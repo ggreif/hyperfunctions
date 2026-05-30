@@ -147,6 +147,7 @@ instance Lang Lvl where
   -- The parser resolved the binder + use names to 'Path's; the carrier
   -- just uses them.  No internal binder env, no counter.
   forallLv _ann _name _path body = Lvl $ runLvl body
+  existsTy _ann _name _path body = Lvl $ runLvl body
 
   starVar _ann _name binderPath offset = Lvl $ \env -> do
     let lv = addOffset (LVar binderPath) offset

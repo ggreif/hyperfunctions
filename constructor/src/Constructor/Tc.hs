@@ -102,6 +102,7 @@ instance Lang Discard where
   star _ _           = Discard ()
   arr _ _ _          = Discard ()
   forallLv _ _ _ _   = Discard ()
+  existsTy _ _ _ _   = Discard ()
   starVar _ _ _ _    = Discard ()
   app _ _ _ _        = Discard ()
 
@@ -229,6 +230,16 @@ instance Lang Tc where
     pure ( TcVExpr pBody
          , env1 { tcEnvSheet = sheet' }
          , forallLv (LvAExpr lv) name binderPath polyBody
+         )
+
+  existsTy _ann name binderPath body = Tc $ \env -> do
+    (bv, env1, polyBody) <- runTc body env
+    let pBody = tcExprPlace bv
+        (mLv, sheet') = levelOf pBody (tcEnvSheet env1)
+    lv <- maybe (Left UnpinnedLevel) Right mLv
+    pure ( TcVExpr pBody
+         , env1 { tcEnvSheet = sheet' }
+         , existsTy (LvAExpr lv) name binderPath polyBody
          )
 
   starVar _ann name binderPath offset = Tc $ \env -> do

@@ -316,6 +316,32 @@ instance Lang HypLinf where
          , forallLv (LvAExpr lv) name binderPath polyBody
          )
 
+  -- Existential type binder.  Step 3c-a is surface-only; semantic
+  -- distinction between universal and existential happens at the
+  -- type layer (refinement-vs-existential at pattern-match time;
+  -- the gabor/gadt invariant) and lands with step 3c-b.  Here we
+  -- bind @name@ in 'hypLinfEnvNames' at the parametric level
+  -- 'LVar binderPath' so the body's 'tyParamRef' references can
+  -- look it up.  Save & restore the binding so the existential
+  -- doesn't leak out of the @∃@'s body.
+  existsTy _ann name binderPath body = HypLinf $ \env -> do
+    let saved = Map.lookup name (hypLinfEnvNames env)
+        envWithM = env
+          { hypLinfEnvNames =
+              Map.insert name (hPure (LVar binderPath)) (hypLinfEnvNames env)
+          }
+    (bv, env1, polyBody) <- runHypLinf body envWithM
+    let restoredNames = case saved of
+          Just v  -> Map.insert name v (hypLinfEnvNames env1)
+          Nothing -> Map.delete name (hypLinfEnvNames env1)
+        env2 = env1 { hypLinfEnvNames = restoredNames }
+        procBody = hypLinfExprProc bv
+        lv = hRun procBody
+    pure ( HypLinfExpr procBody
+         , env2
+         , existsTy (LvAExpr lv) name binderPath polyBody
+         )
+
   starVar _ann name binderPath offset = HypLinf $ \env ->
     let lv = addOffset (LVar binderPath) offset
         proc = hPure lv

@@ -104,6 +104,27 @@ class Lang (r :: (Sort -> Type) -> Sort -> Type) where
   starVar  :: a 'SExpr -> Name -> Path -> Word -> r a 'SExpr
   starVar  = error "Lang.starVar: level polymorphism not supported by this carrier"
 
+  -- | Existential type-variable binder: @∃ m. T@.  Introduces a
+  --   fresh type variable @m@ at the ctor's scope; @T@ is parsed
+  --   with @m@ in 'tyBinders'.  The 'Path' is the binder's identity
+  --   (replaces a per-parse counter); 'tyParamRef' inside @T@ with
+  --   the same 'Path' refers to this existential.
+  --
+  --   Semantically: at the ctor type, the existential is hidden
+  --   (only the ctor knows what @m@ is); when pattern-matching
+  --   that ctor, @m@ becomes a fresh skolem in the match arm.
+  --   The gabor/gadt invariant — refinements must never equate
+  --   to existentials — is the operational consequence at
+  --   pattern-match time.  For step 3c-a the binder is parsed
+  --   and threaded through Lang; the refinement-on-match
+  --   semantics is a later step.
+  --
+  --   Default for carriers that don't yet handle existentials:
+  --   pass through the body (the existential becomes a regular
+  --   tyVar at the level layer, kind defaults to @*0@).
+  existsTy :: a 'SExpr -> Name -> Path -> r a 'SExpr -> r a 'SExpr
+  existsTy = error "Lang.existsTy: existential type binders not supported by this carrier"
+
 -- | Annotation provider in an applicative monad @m@.  The parser is
 --   written generically against 'HasAnn', so it can produce trees at
 --   any annotation regime without further refactoring.
