@@ -36,6 +36,14 @@ data PathStep
                        --   (for @data Foo (a : K)@-style annotations).
   | PsExistsBody       -- ^ the body of a '∃ m.' expression (existential
                        --   type-variable binder introduced in a ctor type).
+  | PsLetBody          -- ^ the RHS of a top-level @let name = body@
+                       --   value declaration.
+  | PsCaseScrut        -- ^ the scrutinee of a @case@ expression.
+  | PsCaseArm   !Int   -- ^ the nth arm of a @case@.
+  | PsArmPat           -- ^ the pattern (LHS of @->@) of one arm.
+  | PsArmBody          -- ^ the body (RHS of @->@) of one arm.
+  | PsCtorAppArg !Int  -- ^ the nth argument of a value-level ctor
+                       --   application (Build or Dissect mode).
   deriving (Eq, Ord, Show)
 
 -- | A path from the root of the program to a particular grammar

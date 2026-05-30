@@ -199,4 +199,53 @@ cases =
             ]
         ]
     )
+  , ( "let + case — Bool swap"
+    , "data Bool : *0 { T : Bool; F : Bool };\
+      \let example = case T { T -> F; F -> T }"
+    , let boolP = Path [PsProgDecl 0]
+          tP    = Path [PsProgDecl 0, PsDeclIdx 0]
+          fP    = Path [PsProgDecl 0, PsDeclIdx 1]
+          letP  = Path [PsProgDecl 1]
+      in Prog u
+        [ DataDecl u boolP "Bool" [] (Star u 0)
+            [ CtorDecl u "T" (TyConRef u "Bool" boolP)
+            , CtorDecl u "F" (TyConRef u "Bool" boolP)
+            ]
+        , ValDecl u letP "example"
+            (Case u
+              (ValCtor u "T" tP [])
+              [ Arm u (ValCtor u "T" tP []) (ValCtor u "F" fP [])
+              , Arm u (ValCtor u "F" fP []) (ValCtor u "T" tP [])
+              ])
+        ]
+    )
+  , ( "let + case — Nat predecessor with binder"
+    , "data Nat : *0 { Z : Nat; S : Nat -> Nat };\
+      \let prev = case S Z { Z -> Z; S n -> n }"
+    , let natP    = Path [PsProgDecl 0]
+          zP      = Path [PsProgDecl 0, PsDeclIdx 0]
+          sP      = Path [PsProgDecl 0, PsDeclIdx 1]
+          letP    = Path [PsProgDecl 1]
+          -- 'n' is bound at the (sole) sub-pattern position of
+          -- the second arm's pattern @S n@.  Both the binding
+          -- site (inside @S n@) and the reference (in the arm
+          -- body) share this path.
+          nBinder = Path
+            [ PsProgDecl 1, PsLetBody, PsCaseArm 1
+            , PsArmPat, PsCtorAppArg 0
+            ]
+      in Prog u
+        [ DataDecl u natP "Nat" [] (Star u 0)
+            [ CtorDecl u "Z" (TyConRef u "Nat" natP)
+            , CtorDecl u "S" (Arr u (TyConRef u "Nat" natP) (TyConRef u "Nat" natP))
+            ]
+        , ValDecl u letP "prev"
+            (Case u
+              (ValCtor u "S" sP [ ValCtor u "Z" zP [] ])
+              [ Arm u (ValCtor u "Z" zP []) (ValCtor u "Z" zP [])
+              , Arm u (ValCtor u "S" sP [ ValVar u "n" nBinder ])
+                      (ValVar u "n" nBinder)
+              ])
+        ]
+    )
   ]

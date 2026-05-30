@@ -9,7 +9,7 @@ module Constructor.AST
   ) where
 
 import Constructor.Path (Path)
-import Constructor.Sort (Sort (..))
+import Constructor.Sort (Mode (..), Sort (..))
 import Constructor.Syntax (Lang (..), Name)
 import Data.Kind (Type)
 
@@ -30,6 +30,13 @@ data Tree (a :: Sort -> Type) (s :: Sort) where
   App      :: a 'SExpr -> Path -> Tree a 'SExpr -> Tree a 'SExpr -> Tree a 'SExpr
   TyParamRef :: a 'SExpr -> Name -> Path -> Tree a 'SExpr
   TyConRef   :: a 'SExpr -> Name -> Path -> Tree a 'SExpr
+  -- value-level / pattern-match constructors
+  ValDecl    :: a 'SDecl -> Path -> Name -> Tree a ('SVal 'Build) -> Tree a 'SDecl
+  ValVar     :: a ('SVal m) -> Name -> Path -> Tree a ('SVal m)
+  ValWild    :: a ('SVal 'Dissect) -> Tree a ('SVal 'Dissect)
+  ValCtor    :: a ('SVal m) -> Name -> Path -> [Tree a ('SVal m)] -> Tree a ('SVal m)
+  Case       :: a ('SVal 'Build) -> Tree a ('SVal 'Build) -> [Tree a 'SArm] -> Tree a ('SVal 'Build)
+  Arm        :: a 'SArm -> Tree a ('SVal 'Dissect) -> Tree a ('SVal 'Build) -> Tree a 'SArm
 
 deriving instance (forall s. Show (a s)) => Show (Tree a t)
 deriving instance (forall s. Eq   (a s)) => Eq   (Tree a t)
@@ -47,3 +54,9 @@ instance Lang Tree where
   app        = App
   tyParamRef = TyParamRef
   tyConRef   = TyConRef
+  valDecl    = ValDecl
+  valVar     = ValVar
+  valWild    = ValWild
+  valCtor    = ValCtor
+  case_      = Case
+  arm        = Arm

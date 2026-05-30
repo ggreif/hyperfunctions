@@ -21,7 +21,7 @@ module Constructor.Parser
 
 import Constructor.AST (Tree)
 import Constructor.Path (Path, PathStep (..), emptyPath, extendPath)
-import Constructor.Sort (Sort (..))
+import Constructor.Sort (Mode (..), Sort (..))
 import Constructor.Syntax (HasAnn (..), Lang (..), Name)
 import Control.Monad (foldM, void)
 import Data.Char (isAlpha, isAlphaNum)
@@ -38,10 +38,11 @@ import qualified Text.Megaparsec.Char.Lexer as L
 type Parser = Parsec Void Text
 type RawTree s = Tree (Const ()) s
 
--- | Binders threaded through the grammar — three disjoint surface-name
+-- | Binders threaded through the grammar — five disjoint surface-name
 --   namespaces: level-variable binders (from @∀l.@), type-parameter
---   binders (from @data Foo a@), and type-constructor binders (from
---   @data Foo … @).
+--   binders (from @data Foo a@), type-constructor binders (from
+--   @data Foo … @), value-ctor binders (from each @ctorDecl@), and
+--   value-binding binders (from @let@ and pattern binders).
 data Binders = Binders
   { lvBinders :: !(Map Name Path)
     -- ^ '∀l.'-bound names → their binder path.
@@ -49,10 +50,18 @@ data Binders = Binders
     -- ^ Data-type-parameter names → their parameter-binding path.
   , tcBinders :: !(Map Name Path)
     -- ^ Type-constructor names → their data-declaration path.
+  , valCtors  :: !(Map Name Path)
+    -- ^ Value-level constructor names → the path of the
+    --   introducing 'ctorDecl'.  Disambiguates "this identifier
+    --   is a known ctor" from "this identifier is a bare name
+    --   (variable in Build mode, fresh binder in Dissect mode)".
+  , valVars   :: !(Map Name Path)
+    -- ^ Value-binding names (@let@ binders, pattern binders
+    --   currently in scope) → their def-path.
   }
 
 emptyBinders :: Binders
-emptyBinders = Binders Map.empty Map.empty Map.empty
+emptyBinders = Binders Map.empty Map.empty Map.empty Map.empty Map.empty
 
 extendLv :: Name -> Path -> Binders -> Binders
 extendLv n p b = b { lvBinders = Map.insert n p (lvBinders b) }
@@ -62,6 +71,12 @@ extendTys ps b = b { tyBinders = foldr (\(n, p) -> Map.insert n p) (tyBinders b)
 
 extendTc :: Name -> Path -> Binders -> Binders
 extendTc n p b = b { tcBinders = Map.insert n p (tcBinders b) }
+
+extendValCtor :: Name -> Path -> Binders -> Binders
+extendValCtor n p b = b { valCtors = Map.insert n p (valCtors b) }
+
+extendValVar :: Name -> Path -> Binders -> Binders
+extendValVar n p b = b { valVars = Map.insert n p (valVars b) }
 
 -- Whitespace + line/block comments.
 sc :: (MonadParsec Void Text m) => m ()
@@ -74,7 +89,7 @@ symbol :: (MonadParsec Void Text m) => Text -> m Text
 symbol = L.symbol sc
 
 keywords :: [Text]
-keywords = ["data"]
+keywords = ["data", "let", "case"]
 -- Binders '∀' (U+2200) and '∃' (U+2203) are Unicode-only — they
 -- aren't keywords because they aren't valid 'identifier' tokens
 -- in the first place.  Removing the ASCII fallback ('forall',
@@ -192,14 +207,28 @@ prescanProgramDeclNames = lookAhead (collectTop 0 [])
       if done
         then pure (reverse acc)
         else do
-          name <- declHeadName_
-          let declPath = extendPath (PsProgDecl i) emptyPath
-          skipDeclBody_ 0
-          msep <- optional (symbol ";")
-          let acc' = (name, declPath) : acc
-          case msep of
-            Just _  -> collectTop (i + 1) acc'
-            Nothing -> pure (reverse acc')
+          -- Value-level @let@ declarations don't need
+          -- forward-reference support (they're sequentially
+          -- scoped), so the prescan skips them.  Only data
+          -- decls contribute names to the top-level
+          -- 'tcBinders'.
+          isLet <- optional (lookAhead (symbol "let"))
+          case isLet of
+            Just _ -> do
+              skipDeclBody_ 0
+              msep <- optional (symbol ";")
+              case msep of
+                Just _  -> collectTop (i + 1) acc
+                Nothing -> pure (reverse acc)
+            Nothing -> do
+              name <- declHeadName_
+              let declPath = extendPath (PsProgDecl i) emptyPath
+              skipDeclBody_ 0
+              msep <- optional (symbol ";")
+              let acc' = (name, declPath) : acc
+              case msep of
+                Just _  -> collectTop (i + 1) acc'
+                Nothing -> pure (reverse acc')
 
     declHeadName_ = do
       _ <- optional (try (symbol "data"))
@@ -226,7 +255,12 @@ prescanProgramDeclNames = lookAhead (collectTop 0 [])
 
 prescanBodyDeclNames
   :: (MonadParsec Void Text m, MonadFail m)
-  => Path -> m [(Name, Path)]
+  => Path -> m [(Name, Path, Bool)]
+  -- ^ The 'Bool' is @True@ when the declaration starts with the
+  --   @data@ keyword (i.e., it's a nested type), @False@ when it's
+  --   a constructor declaration.  Callers use this to selectively
+  --   propagate value-level ctors to outer 'valCtors' bindings,
+  --   without polluting that namespace with nested type names.
 prescanBodyDeclNames parentPath = lookAhead $ do
   void (symbol "{")
   collect 0 []
@@ -237,18 +271,19 @@ prescanBodyDeclNames parentPath = lookAhead $ do
       case end of
         Just _ -> pure (reverse acc)
         Nothing -> do
-          name <- declHeadName
+          (name, isData) <- declHead
           let declPath = extendPath (PsDeclIdx i) parentPath
           skipDeclBody 0
           msep <- optional (symbol ";")
-          let acc' = (name, declPath) : acc
+          let acc' = (name, declPath, isData) : acc
           case msep of
             Just _  -> collect (i + 1) acc'
             Nothing -> pure (reverse acc')
 
-    declHeadName = do
-      _ <- optional (try (symbol "data"))
-      identifier
+    declHead = do
+      isData <- (True <$ try (symbol "data")) <|> pure False
+      name   <- identifier
+      pure (name, isData)
 
     -- Skip tokens until we see a top-level @;@ or @}@ (depth 0).
     -- Balanced @{...}@ at depth > 0 don't terminate us; comments
@@ -405,6 +440,174 @@ application path binders = do
       pure (app ann path f x)
 
 -- ----------------------------------------------------------------------
+-- Value-level expressions ('SVal Build') and patterns ('SVal Dissect').
+--
+-- Build mode parses the RHS of a let, the scrutinee of a case, and
+-- the body of each arm.  Dissect mode parses the LHS of an arm.
+-- Both share grammar shape (identifiers, applications, parens) but
+-- diverge on bare-identifier semantics: in Build a name resolves to
+-- a known ctor or a known binder; in Dissect a name not in
+-- 'valCtors' becomes a fresh binder for the arm body.
+-- ----------------------------------------------------------------------
+
+-- | Build-mode value expression.
+build
+  :: (Lang r, HasAnn a m, MonadParsec Void Text m, MonadFail m)
+  => Path -> Binders -> m (r a ('SVal 'Build))
+build path binders =
+      caseExpr path binders
+  <|> buildHead path binders
+
+buildHead
+  :: (Lang r, HasAnn a m, MonadParsec Void Text m, MonadFail m)
+  => Path -> Binders -> m (r a ('SVal 'Build))
+buildHead path binders = do
+  name <- identifier
+  case Map.lookup name (valCtors binders) of
+    Just ctorPath -> do
+      args <- buildArgs path binders 0
+      ann  <- freshBuildAnn
+      pure (valCtor ann name ctorPath args)
+    Nothing -> case Map.lookup name (valVars binders) of
+      Just varPath -> do
+        ann <- freshBuildAnn
+        pure (valVar ann name varPath)
+      Nothing -> fail $ "unbound value-level name: " <> T.unpack name
+
+buildArgs
+  :: (Lang r, HasAnn a m, MonadParsec Void Text m, MonadFail m)
+  => Path -> Binders -> Int -> m [r a ('SVal 'Build)]
+buildArgs path binders i = do
+  marg <- optional (buildAtom (extendPath (PsCtorAppArg i) path) binders)
+  case marg of
+    Nothing -> pure []
+    Just a  -> do
+      rest <- buildArgs path binders (i + 1)
+      pure (a : rest)
+
+buildAtom
+  :: (Lang r, HasAnn a m, MonadParsec Void Text m, MonadFail m)
+  => Path -> Binders -> m (r a ('SVal 'Build))
+buildAtom path binders =
+      try (between (symbol "(") (symbol ")") (build path binders))
+  <|> nullaryBuild path binders
+
+nullaryBuild
+  :: (Lang r, HasAnn a m, MonadParsec Void Text m, MonadFail m)
+  => Path -> Binders -> m (r a ('SVal 'Build))
+nullaryBuild _path binders = do
+  name <- identifier
+  case Map.lookup name (valCtors binders) of
+    Just ctorPath -> do
+      ann <- freshBuildAnn
+      pure (valCtor ann name ctorPath [])
+    Nothing -> case Map.lookup name (valVars binders) of
+      Just varPath -> do
+        ann <- freshBuildAnn
+        pure (valVar ann name varPath)
+      Nothing -> fail $ "unbound value-level name: " <> T.unpack name
+
+caseExpr
+  :: (Lang r, HasAnn a m, MonadParsec Void Text m, MonadFail m)
+  => Path -> Binders -> m (r a ('SVal 'Build))
+caseExpr path binders = do
+  void (symbol "case")
+  scrut <- build (extendPath PsCaseScrut path) binders
+  arms  <- between (symbol "{") (symbol "}") (parseArms 0)
+  ann   <- freshBuildAnn
+  pure (case_ ann scrut arms)
+  where
+    parseArms i = do
+      ma <- optional (try (armP (extendPath (PsCaseArm i) path) binders))
+      case ma of
+        Nothing -> pure []
+        Just a  -> do
+          msep <- optional (symbol ";")
+          case msep of
+            Nothing -> pure [a]
+            Just _  -> do
+              rest <- parseArms (i + 1)
+              pure (a : rest)
+
+armP
+  :: (Lang r, HasAnn a m, MonadParsec Void Text m, MonadFail m)
+  => Path -> Binders -> m (r a 'SArm)
+armP path binders = do
+  (pat, binders') <- dissect (extendPath PsArmPat path) binders
+  void (symbol "->")
+  body            <- build (extendPath PsArmBody path) binders'
+  ann             <- freshArmAnn
+  pure (arm ann pat body)
+
+-- | Dissect-mode value expression (pattern).  Returns the parsed
+--   term together with the updated 'Binders' that pattern-introduced
+--   binders contribute, scoped to the arm body.
+dissect
+  :: (Lang r, HasAnn a m, MonadParsec Void Text m, MonadFail m)
+  => Path -> Binders -> m (r a ('SVal 'Dissect), Binders)
+dissect path binders =
+      wildDissect path binders
+  <|> dissectHead path binders
+
+wildDissect
+  :: (Lang r, HasAnn a m, MonadParsec Void Text m, MonadFail m)
+  => Path -> Binders -> m (r a ('SVal 'Dissect), Binders)
+wildDissect _path binders = do
+  void (symbol "_")
+  ann <- freshDissectAnn
+  pure (valWild ann, binders)
+
+dissectHead
+  :: (Lang r, HasAnn a m, MonadParsec Void Text m, MonadFail m)
+  => Path -> Binders -> m (r a ('SVal 'Dissect), Binders)
+dissectHead path binders = do
+  name <- identifier
+  case Map.lookup name (valCtors binders) of
+    Just ctorPath -> do
+      (args, binders') <- dissectArgs path binders 0
+      ann  <- freshDissectAnn
+      pure (valCtor ann name ctorPath args, binders')
+    Nothing -> do
+      ann <- freshDissectAnn
+      let binderPath = path
+          binders'   = extendValVar name binderPath binders
+      pure (valVar ann name binderPath, binders')
+
+dissectArgs
+  :: (Lang r, HasAnn a m, MonadParsec Void Text m, MonadFail m)
+  => Path -> Binders -> Int -> m ([r a ('SVal 'Dissect)], Binders)
+dissectArgs path binders i = do
+  marg <- optional (dissectAtom (extendPath (PsCtorAppArg i) path) binders)
+  case marg of
+    Nothing -> pure ([], binders)
+    Just (a, binders') -> do
+      (rest, binders'') <- dissectArgs path binders' (i + 1)
+      pure (a : rest, binders'')
+
+dissectAtom
+  :: (Lang r, HasAnn a m, MonadParsec Void Text m, MonadFail m)
+  => Path -> Binders -> m (r a ('SVal 'Dissect), Binders)
+dissectAtom path binders =
+      try (between (symbol "(") (symbol ")") (dissect path binders))
+  <|> wildDissect path binders
+  <|> nullaryDissect path binders
+
+nullaryDissect
+  :: (Lang r, HasAnn a m, MonadParsec Void Text m, MonadFail m)
+  => Path -> Binders -> m (r a ('SVal 'Dissect), Binders)
+nullaryDissect path binders = do
+  name <- identifier
+  case Map.lookup name (valCtors binders) of
+    Just ctorPath -> do
+      ann <- freshDissectAnn
+      pure (valCtor ann name ctorPath [], binders)
+    Nothing -> do
+      ann <- freshDissectAnn
+      let binderPath = path
+          binders'   = extendValVar name binderPath binders
+      pure (valVar ann name binderPath, binders')
+
+-- ----------------------------------------------------------------------
 -- Declaration-level parsers.
 -- ----------------------------------------------------------------------
 
@@ -415,7 +618,7 @@ application path binders = do
 decl
   :: (Lang r, HasAnn a m, MonadParsec Void Text m, MonadFail m)
   => Path -> Binders -> m (r a 'SDecl, Binders)
-decl path binders = dataD <|> ctorD
+decl path binders = dataD <|> letD <|> ctorD
   where
     dataD = do
       void (symbol "data")
@@ -446,13 +649,13 @@ decl path binders = dataD <|> ctorD
       -- HypTwr would fail with TyUnbound.  The prescan uses
       -- 'lookAhead' so it doesn't consume input — names are
       -- harvested first, then the body is parsed for real.
-      siblingNames <- prescanBodyDeclNames path
+      siblingDecls <- prescanBodyDeclNames path
       let paramPaths   = zipWith (\i (p, _) -> (p, extendPath (PsDataParam i) path))
                                  [0 ..] params
           bodyBinders0 = binders { lvBinders = Map.empty }
-          bodyBinders  = foldr (\(sn, sp) -> extendTc sn sp)
+          bodyBinders  = foldr (\(sn, sp, _) -> extendTc sn sp)
                                (extendTc n path (extendTys paramPaths bodyBinders0))
-                               siblingNames
+                               siblingDecls
       (ds, _)  <- between (symbol "{") (symbol "}") $
                     sepEndByIndexedAcc
                       (\i bs -> decl (extendPath (PsDeclIdx i) path) bs)
@@ -469,9 +672,17 @@ decl path binders = dataD <|> ctorD
       -- alongside the data name so subsequent decls can reference
       -- ctors as type-level constructors (e.g. @Fin (S n)@ where
       -- @S@ is Nat's ctor used to construct a Nat-valued index).
-      let nextBinders = foldr (\(cn, cp) -> extendTc cn cp)
+      --
+      -- Ctors (not nested data) additionally propagate to
+      -- 'valCtors' so subsequent decls can use them in
+      -- value-level positions — patterns and ctor-application
+      -- expressions both consult that namespace.
+      let extendSibling (cn, cp, isData)
+            | isData    = extendTc cn cp
+            | otherwise = extendValCtor cn cp . extendTc cn cp
+          nextBinders = foldr extendSibling
                               (extendTc n path binders)
-                              siblingNames
+                              siblingDecls
       pure (dataDecl ann path n params e ds, nextBinders)
 
     ctorD = do
@@ -479,6 +690,22 @@ decl path binders = dataD <|> ctorD
       e   <- towerOrAnnotated n path PsCtorTy binders
       ann <- freshDeclAnn
       pure (ctorDecl ann n e, binders)
+
+    -- | @let name = body@: top-level value declaration.  Only
+    --   well-formed at program scope (a 'let' inside a data body
+    --   is structurally allowed by 'decl' but would fail
+    --   downstream — none of the existing carriers handle 'SVal'
+    --   sorts yet, and the body's prescan harvest doesn't expect
+    --   it).  The binder 'name' takes the decl's own path as its
+    --   identity, and propagates to subsequent decls' 'valVars'.
+    letD = do
+      void (symbol "let")
+      n    <- identifier
+      void (symbol "=")
+      body <- build (extendPath PsLetBody path) binders
+      ann  <- freshDeclAnn
+      let nextBinders = extendValVar n path binders
+      pure (valDecl ann path n body, nextBinders)
 
     -- | Either @: expr@ or @⋮@ (the typing-tower shorthand).  The
     --   '⋮' (U+22EE VERTICAL ELLIPSIS) is /literally/ the typing
