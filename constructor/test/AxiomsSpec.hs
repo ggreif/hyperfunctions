@@ -204,27 +204,30 @@ tests =
       [("rt", "One")]
 
   , roundTripVia "@-round-trip: Nat with at-binder on S-arm"
-      -- The @S y\@(S n) -> y@-shape: matches a Nat that's a
+      -- The @S y@S n -> y@-shape: matches a Nat that's a
       -- successor of a successor; binds @y@ to the inner
       -- @S n@ (a Nat); body returns @y@.  For scrut
       -- @S (S Z)@ the second arm is reachable; @y@ is the
       -- /inner/ @S Z@ — not the whole scrutinee — and the
-      -- result type is Nat.
+      -- result type is Nat.  Note: no parens needed around
+      -- @S n@ on the LHS — application binds tighter than
+      -- '@', so @y@S n@ parses as @y@(S n)@.
       "data Nat : *0 { Z : Nat; S : Nat -> Nat };\
-      \let rt = case S (S Z) { Z -> Z; S y@(S n) -> y; S Z -> Z }"
+      \let rt = case S (S Z) { Z -> Z; S y@S n -> y; S Z -> Z }"
       [("rt", "Nat")]
 
   , roundTripVia "@-round-trip: Fin refinement via at-bound whole"
       -- Genuine refining-GADT round-trip via at-binder.  Scrut
-      -- @FS FZ : Fin (S Z)@; arm @y\@(FS m) -> y@ binds @y@
-      -- to the matched value, which has type @Fin (S Z)@
-      -- (after Dissect-side refinement unifies the pattern's
+      -- @FS FZ : Fin (S Z)@; arm @y@FS m -> y@ binds @y@ to
+      -- the matched value, which has type @Fin (S Z)@ (after
+      -- Dissect-side refinement unifies the pattern's
       -- @Fin (S α)@ with the scrutinee's @Fin (S Z)@).  Body
       -- returns @y@, a real "carry the dissected value across"
-      -- (no rebuild from parts).
+      -- (no rebuild from parts).  No parens around @FS m@: '@'
+      -- captures the largest application to its right.
       "data Nat : *0 { Z : Nat; S : Nat -> Nat };\
       \data Fin (n : Nat) : *0 { FZ : Fin Z; FS : Fin n -> Fin (S n) };\
-      \let rt = case FS FZ { y@FZ -> y; y@(FS m) -> y }"
+      \let rt = case FS FZ { y@FZ -> y; y@FS m -> y }"
       [("rt", "Fin (S Z)")]
 
     -- --- Existential round-trips -------------------------------------

@@ -571,10 +571,13 @@ dissectHead path binders = do
   name <- identifier
   -- @-pattern: an identifier followed by '@' captures the whole
   -- matched value (under name) while also dissecting the inner
-  -- pattern.  '@' binds tighter than ctor-application: in
-  -- @y@Foo a b@ the inner pattern is the full @Foo a b@ — the
-  -- inner sub-parser runs the standard 'dissect' grammar, so
-  -- ctor args after the inner head are consumed there.
+  -- pattern.  Application binds tighter than '@', so the inner
+  -- sub-parser is the full 'dissect' grammar — '@' captures the
+  -- largest pattern to its right.  In @y@Foo a b@ the inner is
+  -- @Foo a b@ (one arg-laden ctor), not @y@Foo@-then-@a b@; no
+  -- parens needed.  This is the inverse of Haskell's "@ binds
+  -- tighter than app" rule, eliminating the @y\@(Foo a b)@
+  -- parens wart.
   isAt <- optional (symbol "@")
   case isAt of
     Just _ -> do
@@ -622,14 +625,19 @@ nullaryDissect
   => Path -> Binders -> m (r a ('SVal 'Dissect), Binders)
 nullaryDissect path binders = do
   name <- identifier
-  -- @-pattern works at atom level too — the inner is restricted
-  -- to a 'dissectAtom' so ctor application inside the inner
-  -- needs parens (which 'dissectAtom' handles).
+  -- @-pattern: application binds tighter than '@', so the
+  -- inner sub-parser runs the full 'dissect' grammar — '@'
+  -- captures the largest pattern expression to its right
+  -- (greedy, the Haskell @-pattern wart eliminated).  In
+  -- arg position, this means @Foo y@Bar a@ parses as
+  -- @Foo (y@(Bar a))@ (one arg), not @Foo (y@Bar) a@ (two);
+  -- writers who want the two-arg shape can wrap the
+  -- at-binder in parens.
   isAt <- optional (symbol "@")
   case isAt of
     Just _ -> do
       let innerPath = extendPath PsAtInner path
-      (inner, binders1) <- dissectAtom innerPath binders
+      (inner, binders1) <- dissect innerPath binders
       ann <- freshDissectAnn
       let binders2 = extendValVar name path binders1
       pure (valAt ann name path inner, binders2)
