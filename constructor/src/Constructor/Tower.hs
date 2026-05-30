@@ -40,11 +40,14 @@ module Constructor.Tower
     -- * Navigation
   , climb
   , projectFirstRung
+    -- * Coinductive comparison
+  , compareTowers
   ) where
 
 import Constructor.HyperLite (hRun)
 import Constructor.Level (Lv (..))
 import Constructor.Syntax (Name)
+import Constructor.Tinf (TyErr (..))
 import Constructor.TyExpr (TyExpr)
 import Constructor.TyProc (TyProc, TyView (..), viewToTy)
 import Data.Map.Strict (Map)
@@ -149,3 +152,49 @@ climb = vertical
 --   (regardless of @env@ — the env affects only the vertical).
 projectFirstRung :: Tower -> TyExpr
 projectFirstRung = viewToTy . horizontal
+
+-- | Coinductive comparison of two Towers along the vertical axis.
+--
+--   Walks both towers rung-by-rung, comparing horizontal views.
+--   Termination is guaranteed by the @x^0 = 1@ collapse from PLAN's
+--   covering-space framing: every Tower's vertical eventually
+--   stabilises into a pure @*n@-stream tail, and two such tails
+--   coincide iff they share the same @Lv@.
+--
+--   Base case (success): both rungs are 'TyUnivV' at the same level.
+--   From this point both towers are observationally the same
+--   @*n@-stream, so 'Right ()' is sound.
+--
+--   Failure: at some rung the horizontals diverge structurally
+--   (different head shapes, or same shape with different identifying
+--   data — Name + Path).  Returns 'TyMismatch' with the diverging
+--   rung's views materialised as 'TyExpr'.
+--
+--   Recursive case: heads are structurally compatible and not yet
+--   stable — climb one rung in both towers and continue.
+--
+--   The comparison is shape-and-identity at each rung (not deep
+--   structural equality of TyApp/TyArr children) — children share
+--   the same kind by construction (kindOf only inspects the head
+--   for those forms), so the rung-1+ comparison handles compound
+--   shapes uniformly.
+compareTowers :: Tower -> Tower -> Either TyErr ()
+compareTowers = go
+  where
+    go t1 t2
+      | TyUnivV lv1 <- h1, TyUnivV lv2 <- h2
+      , lv1 == lv2                       = Right ()
+      | sameView h1 h2                   = go (vertical t1) (vertical t2)
+      | otherwise                        = Left (TyMismatch (viewToTy h1) (viewToTy h2))
+      where
+        h1 = horizontal t1
+        h2 = horizontal t2
+
+    sameView v1 v2 = case (v1, v2) of
+      (TyConV n1 p1, TyConV n2 p2) -> n1 == n2 && p1 == p2
+      (TyVarV n1 p1, TyVarV n2 p2) -> n1 == n2 && p1 == p2
+      (TyUnivV l1,   TyUnivV l2)   -> l1 == l2
+      (TyMetaV m1,   TyMetaV m2)   -> m1 == m2
+      (TyAppV{},     TyAppV{})     -> True
+      (TyArrV{},     TyArrV{})     -> True
+      _                            -> False
