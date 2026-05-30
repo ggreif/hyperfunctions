@@ -50,7 +50,15 @@ import Constructor.Level (Lv (..))
 import Constructor.Syntax (Name)
 import Constructor.Tinf (TyErr (..))
 import Constructor.TyExpr (TyExpr)
-import Constructor.TyProc (Subst, TyProc, TyView (..), emptySubst, meet, viewToTy)
+import Constructor.TyProc
+  ( Subst
+  , TyProc
+  , TyView (..)
+  , emptySubst
+  , meet
+  , resolveView
+  , viewToTy
+  )
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 
@@ -108,8 +116,26 @@ emptyKindEnv = Map.empty
 --   * 'TyMetaV': propagates as a meta (kind unknown).  Tower arc
 --     step 3 will treat this as a fresh kind-meta to be unified
 --     during tower-aware 'meet'.
-kindOf :: KindEnv -> TyView -> TyView
-kindOf env v0 = case v0 of
+-- Subst-aware: the first action is 'resolveView s' on the input.
+-- This is the naturality fix — making 'kindOf' a natural family
+-- indexed by 'Subst', so the square
+--
+--       kindOf s
+--   v  ─────────►  kindOf s v
+--   │                 │
+--   resolve s'        resolve s'
+--   ▼                 ▼
+--   resolve s' v ─►  kindOf s' (resolve s' v)
+--       kindOf s'
+--
+-- commutes against substitution extension @s ⊑ s'@.  Without
+-- 'resolveView' at entry, 'kindOf' specialises at @s = ∅@ and the
+-- square breaks the moment a meta is bound — climb-then-resolve and
+-- resolve-then-climb land at different views, the upward chain
+-- diverges from the substitution-coherent one, and tower-aware
+-- meet against a bound meta produces stale upper rungs.
+kindOf :: Subst -> KindEnv -> TyView -> TyView
+kindOf s env v0 = case resolveView s v0 of
   TyConV n p offset -> case Map.lookup n env of
                          Just kindProc -> case hRun kindProc of
                            -- Self-reference: kindProc IS our own TyConV.
@@ -120,33 +146,39 @@ kindOf env v0 = case v0 of
                              | n == n' && p == p' -> TyConV n p (S offset)
                            other -> other
                          Nothing -> TyUnivV (S (S Z))   -- fallback: @*0@
-  TyAppV f _   -> kindOf env (hRun f)
-  TyArrV a _   -> kindOf env (hRun a)
+  TyAppV f _   -> kindOf s env (hRun f)
+  TyArrV a _   -> kindOf s env (hRun a)
   TyVarV _ _   -> TyUnivV (S (S Z))                      -- parameters default to @*0@
   TyUnivV lv   -> TyUnivV (S lv)
-  TyMetaV m    -> TyMetaV m
+  TyMetaV m    -> TyMetaV m   -- after resolveView, this means truly unbound
 
--- | Lift a 'TyProc' to a Tower under a given 'KindEnv'.  The
---   horizontal is the proc's TyView; the vertical is generated
---   coinductively by 'kindOf'.
-liftTower :: KindEnv -> TyProc -> Tower
-liftTower env p =
+-- | Lift a 'TyProc' to a Tower under a given 'Subst' and 'KindEnv'.
+--   The horizontal is the proc's TyView; the vertical is generated
+--   coinductively by 'kindOf'.  The 'Subst' fixes the substitution
+--   context at construction time — note that callers who extend the
+--   substitution later need to either re-build the tower or walk it
+--   via 'meetTowers' (which regenerates each climb under the current
+--   Subst rather than walking the frozen 'vertical' chain).
+liftTower :: Subst -> KindEnv -> TyProc -> Tower
+liftTower s env p =
   let v = hRun p
-  in Tower v (towerOfView env (kindOf env v))
+  in Tower v (towerOfView s env (kindOf s env v))
 
 -- | Coalgebraic unfolding: the Tower whose horizontal is the given
---   view and whose vertical is 'kindOf' applied repeatedly.
---   Productive codata as long as 'kindOf' produces a different view
---   each step (it does, because the @Lv@ strictly increases inside
---   the @*n@-stable tail; the structural layer is finite).
-towerOfView :: KindEnv -> TyView -> Tower
-towerOfView env v = Tower v (towerOfView env (kindOf env v))
+--   view and whose vertical is 'kindOf' applied repeatedly under
+--   the given 'Subst'.  Productive codata as long as 'kindOf'
+--   produces a different view each step (it does, because the @Lv@
+--   strictly increases inside the @*n@-stable tail and the
+--   TyConV-stable tail bumps the deck-shift offset; the structural
+--   layer is finite).
+towerOfView :: Subst -> KindEnv -> TyView -> Tower
+towerOfView s env v = Tower v (towerOfView s env (kindOf s env v))
 
 -- | Convenience: the universe-only tower starting at a given level.
---   Special case of @towerOfView emptyKindEnv (TyUnivV lv)@ — what
---   the @*n@-stable tail looks like in isolation.
+--   Special case of @towerOfView emptySubst emptyKindEnv (TyUnivV lv)@
+--   — what the @*n@-stable tail looks like in isolation.
 universeStream :: Lv -> Tower
-universeStream lv = towerOfView emptyKindEnv (TyUnivV lv)
+universeStream lv = towerOfView emptySubst emptyKindEnv (TyUnivV lv)
 
 -- | One step up the tower (the directed @:@-arrow).  Total but
 --   irreversible — there is no inverse function because the
@@ -190,14 +222,24 @@ projectFirstRung = viewToTy . horizontal
 --   'Constructor.HypTinf.dataDecl' threads no metavariables — but it
 --   is the path that a tower-aware occurs check / vertical
 --   regeneration will need to close.
-meetTowers :: Subst -> Tower -> Tower -> Either TyErr Subst
-meetTowers = go
+--   Note on regeneration: this walk does NOT use the towers' frozen
+--   'vertical' slots after the first rung.  Each climb regenerates
+--   via 'kindOf s' env' against the just-extended substitution, so
+--   meta-bindings recorded at rung @n@ flow into the upper rungs
+--   correctly.  Walking the frozen vertical instead would give the
+--   right view at rung @n+1@ (via 'resolveView' inside 'meet') but
+--   stale views from rung @n+2@ onward — the staleness only fixable
+--   by re-running 'kindOf' under the new Subst.
+meetTowers :: KindEnv -> Subst -> Tower -> Tower -> Either TyErr Subst
+meetTowers env = go
   where
-    go s t1 t2
+    go s h1Tower h2Tower = step s (horizontal h1Tower) (horizontal h2Tower)
+
+    step s h1 h2
       -- *n-stable tail: both rungs are TyUnivV at the same level.
       -- This is the canonical termination case for non-self-stratified
       -- towers (everything that's not Weird-style).
-      | TyUnivV lv1 <- h1, TyUnivV lv2 <- h2
+      | TyUnivV lv1 <- h1_, TyUnivV lv2 <- h2_
       , lv1 == lv2                       = Right s
       -- TyConV-stable tail (Weird-style stratification): both rungs
       -- are the same TyConV (Name + Path + offset).  Stern-Gerlach
@@ -205,17 +247,42 @@ meetTowers = go
       -- equal offsets mean both towers have climbed the same number
       -- of self-referential rungs above the def.  From here both
       -- towers are observationally identical productive codata.
-      | TyConV n1 p1 o1 <- h1, TyConV n2 p2 o2 <- h2
+      | TyConV n1 p1 o1 <- h1_, TyConV n2 p2 o2 <- h2_
       , n1 == n2 && p1 == p2 && o1 == o2 = Right s
       | otherwise                        = do
           s' <- meet s (hPure h1) (hPure h2)
-          go s' (vertical t1) (vertical t2)
+          step s' (kindOf s' env h1) (kindOf s' env h2)
+      where
+        h1_ = resolveView s h1
+        h2_ = resolveView s h2
+
+-- | Coinductive comparison: 'meetTowers' under the empty kind-env
+--   and empty substitution, discarding the resulting 'Subst'.
+--   Convenience for callers (tests and shape probes) that only want a
+--   yes/no parity verdict and whose towers were already built with
+--   the right env baked in (so re-running 'kindOf' under
+--   'emptyKindEnv' would be unsound — instead this function walks
+--   the towers' pre-existing vertical slots, which is the
+--   meta-blind semantics).
+compareTowers :: Tower -> Tower -> Either TyErr ()
+compareTowers = go
+  where
+    go t1 t2
+      | TyUnivV lv1 <- h1, TyUnivV lv2 <- h2
+      , lv1 == lv2                       = Right ()
+      | TyConV n1 p1 o1 <- h1, TyConV n2 p2 o2 <- h2
+      , n1 == n2 && p1 == p2 && o1 == o2 = Right ()
+      | sameView h1 h2                   = go (vertical t1) (vertical t2)
+      | otherwise                        = Left (TyMismatch (viewToTy h1) (viewToTy h2))
       where
         h1 = horizontal t1
         h2 = horizontal t2
 
--- | Coinductive comparison: 'meetTowers' under the empty substitution,
---   discarding the resulting 'Subst'.  Convenience for callers (tests
---   and shape probes) that only want a yes/no parity verdict.
-compareTowers :: Tower -> Tower -> Either TyErr ()
-compareTowers t1 t2 = meetTowers emptySubst t1 t2 >> Right ()
+    sameView v1 v2 = case (v1, v2) of
+      (TyConV n1 p1 o1, TyConV n2 p2 o2) -> n1 == n2 && p1 == p2 && o1 == o2
+      (TyVarV n1 p1,    TyVarV n2 p2)    -> n1 == n2 && p1 == p2
+      (TyUnivV l1,      TyUnivV l2)      -> l1 == l2
+      (TyMetaV m1,      TyMetaV m2)      -> m1 == m2
+      (TyAppV{},        TyAppV{})        -> True
+      (TyArrV{},        TyArrV{})        -> True
+      _                                  -> False

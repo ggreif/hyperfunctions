@@ -113,9 +113,10 @@ hypTwrProgram p = do
           (hypTwrEnvSubst env))
 
 -- | Helper: build the tower for a leaf 'TyView' under the current
---   env's kindEnv.  The vertical is lazily generated via 'kindOf'.
+--   env's kindEnv and Subst.  The vertical is lazily generated via
+--   'kindOf'.
 leafTower :: HypTwrEnv -> TyView -> Tower
-leafTower env v = towerOfView (hypTwrEnvKindEnv env) v
+leafTower env v = towerOfView (hypTwrEnvSubst env) (hypTwrEnvKindEnv env) v
 
 exprTower :: HypTwrVal 'SExpr -> Tower
 exprTower (HypTwrExpr t) = t
@@ -150,7 +151,9 @@ instance Lang HypTwr where
             let parentTower = leafTower env0 (TyConV parentName parentPath Z)
                 memberTower = leafTower env0 (horizontal kindTower)
             in do
-              subst' <- meetTowers (hypTwrEnvSubst env0) memberTower parentTower
+              subst' <- meetTowers (hypTwrEnvKindEnv env0)
+                                   (hypTwrEnvSubst env0)
+                                   memberTower parentTower
               Right env0 { hypTwrEnvSubst = subst' }
         let env1 = env0'
               { hypTwrEnvDataTypes =

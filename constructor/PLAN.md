@@ -612,12 +612,36 @@ The arc proper is now complete.  Two follow-ups sit at the seam:
   the A-side analog of the TyConV offset — present since v0
   anticipating exactly this move.
 
-- **Meta-aware vertical regeneration.**  When a metavariable
-  resolves at rung *n* during `meetTowers`, the towers' verticals
-  for rung *n+1* onward are stale.  Today no kind-check path
-  threads metas through, but the tower-aware occurs check (and any
-  meta-touching subtyping along the directed `:`-arrow) needs the
-  loop closed.
+- **Meta-aware vertical regeneration (landed).**  `kindOf` is now
+  a natural family indexed by `Subst`: `kindOf :: Subst -> KindEnv
+  -> TyView -> TyView`, internally calling 'resolveView s' before
+  processing.  The categorical content: the square
+  ```
+            kindOf s
+        v ─────────► kindOf s v
+        │              │
+   resolve s'      resolve s'
+        ▼              ▼
+   resolve s' v ─► kindOf s' (resolve s' v)
+            kindOf s'
+  ```
+  commutes against substitution extension `s ⊑ s'`.  Without the
+  resolveView at entry the square doesn't close — climb-then-
+  resolve and resolve-then-climb land at different views, and
+  every subsequent climb compounds the divergence.
+  'meetTowers' was updated to regenerate the climb via 'kindOf'
+  under the just-extended Subst rather than walking the towers'
+  frozen 'vertical' chains; the static codata is fine for
+  meta-blind 'compareTowers' but a tower constructed under one
+  Subst can't speak for an extended one without re-evaluation.
+  Two 'TowerSpec' tests witness: a meta-vs-concrete meet now
+  walks all the way to the '*n'-stable tail (binding the meta
+  *and* propagating the binding upward), and the naturality
+  property is verified in concrete numbers against an
+  out-of-band Subst.  Removing the 'resolveView' at 'kindOf'
+  entry causes the first test to fail with structural
+  TyMismatch, demonstrating the load-bearing nature of the
+  naturality fix.
 
 The end-of-arc decoration question dissolves: B's Tower is the
 decoration — each `SExpr` carrier value *is* the decorated

@@ -33,6 +33,7 @@ module Constructor.TyProc
   , mkMeta
   , meet
   , materialize
+  , resolveView
   ) where
 
 import Constructor.HyperLite (Hyper, hPure, hRun)

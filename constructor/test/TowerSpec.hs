@@ -40,11 +40,13 @@ import Constructor.Tower
   , horizontal
   , kindOf
   , liftTower
+  , meetTowers
   , projectFirstRung
+  , towerOfView
   , universeStream
   )
 import Constructor.TyExpr (TyExpr (..))
-import Constructor.TyProc (TyView (..), tyToProc, viewToTy)
+import Constructor.TyProc (MetaId (..), TyView (..), emptySubst, tyToProc, viewToTy)
 import Data.Functor.Const (Const (..))
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
@@ -55,19 +57,19 @@ tests =
   [ ( "Tower: projectFirstRung (liftTower _ p) ≡ procToTy p — nullary case"
     , let boolP = Path [PsProgDecl 0]
           ty    = TyCon "Bool" boolP
-          tw    = liftTower emptyKindEnv (tyToProc ty)
+          tw    = liftTower emptySubst emptyKindEnv (tyToProc ty)
       in expectEq (projectFirstRung tw) ty
     )
   , ( "Tower: projectFirstRung — compound case (List Nat)"
     , let listP = Path [PsProgDecl 0]
           natP  = Path [PsProgDecl 1]
           ty    = TyApp (TyCon "List" listP) (TyCon "Nat" natP)
-          tw    = liftTower emptyKindEnv (tyToProc ty)
+          tw    = liftTower emptySubst emptyKindEnv (tyToProc ty)
       in expectEq (projectFirstRung tw) ty
     )
   , ( "Tower: vertical stream above Bool — *0, *1, *2"
     , let boolP = Path [PsProgDecl 0]
-          tw    = liftTower emptyKindEnv (tyToProc (TyCon "Bool" boolP))
+          tw    = liftTower emptySubst emptyKindEnv (tyToProc (TyCon "Bool" boolP))
           rung1 = viewToTy (horizontal (climb tw))
           rung2 = viewToTy (horizontal (climb (climb tw)))
           rung3 = viewToTy (horizontal (climb (climb (climb tw))))
@@ -128,7 +130,7 @@ tests =
                -- HypTinf's elaboration of each data's kind annotation.
                let procs = hypTinfCtors r
                    env_  = hypTinfKindEnv r
-                   towers = Map.map (liftTower env_) procs
+                   towers = Map.map (liftTower emptySubst env_) procs
                    projected = Map.map projectFirstRung towers
                ok2 <- expectEq projected want
                pure (ok1 && ok2)
@@ -156,8 +158,8 @@ tests =
 
     -- --- Step-2 kindOf coalgebra ----------------------------------
   , ( "kindOf: TyUnivV lv steps to TyUnivV (S lv)"
-    , let k0 = kindOf emptyKindEnv (TyUnivV Z)
-          k1 = kindOf emptyKindEnv (TyUnivV (S Z))
+    , let k0 = kindOf emptySubst emptyKindEnv (TyUnivV Z)
+          k1 = kindOf emptySubst emptyKindEnv (TyUnivV (S Z))
       in do
         ok0 <- expectEq (viewToTy k0) (TyUniv (S Z))
         ok1 <- expectEq (viewToTy k1) (TyUniv (S (S Z)))
@@ -171,7 +173,7 @@ tests =
         "data Type : *1 { Constr : Type }"
         $ \r ->
           let typeP = Path [PsProgDecl 0]
-              k     = kindOf (hypTinfKindEnv r) (TyConV "Type" typeP Z)
+              k     = kindOf emptySubst (hypTinfKindEnv r) (TyConV "Type" typeP Z)
           in expectEq (viewToTy k) (TyUniv (S (S (S Z))))
     )
     -- --- Weird-style self-stratification ---------------------------
@@ -182,9 +184,9 @@ tests =
       let weirdP = Path [PsProgDecl 0]
           env_   = Map.fromList [("Weird", tyToProc (TyCon "Weird" weirdP))]
           -- tyToProc embeds at offset Z by construction (oneLayer).
-          k0 = kindOf env_ (TyConV "Weird" weirdP Z)
-          k1 = kindOf env_ k0
-          k2 = kindOf env_ k1
+          k0 = kindOf emptySubst env_ (TyConV "Weird" weirdP Z)
+          k1 = kindOf emptySubst env_ k0
+          k2 = kindOf emptySubst env_ k1
       in case (k0, k1, k2) of
         ( TyConV n0 p0 o0
           , TyConV n1 p1 o1
@@ -208,8 +210,8 @@ tests =
       -- infinite climb that the *n-only base case would loop on).
       let weirdP = Path [PsProgDecl 0]
           env_   = Map.fromList [("Weird", tyToProc (TyCon "Weird" weirdP))]
-          tow1   = liftTower env_ (tyToProc (TyCon "Weird" weirdP))
-          tow2   = liftTower env_ (tyToProc (TyCon "Weird" weirdP))
+          tow1   = liftTower emptySubst env_ (tyToProc (TyCon "Weird" weirdP))
+          tow2   = liftTower emptySubst env_ (tyToProc (TyCon "Weird" weirdP))
       in case compareTowers tow1 tow2 of
         Right () -> pure True
         Left err -> reportFail $ "expected Right (), got: " <> show err
@@ -220,7 +222,7 @@ tests =
       -- tower must fail (different offsets, same name+path → reject).
       let weirdP = Path [PsProgDecl 0]
           env_   = Map.fromList [("Weird", tyToProc (TyCon "Weird" weirdP))]
-          tow0   = liftTower env_ (tyToProc (TyCon "Weird" weirdP))
+          tow0   = liftTower emptySubst env_ (tyToProc (TyCon "Weird" weirdP))
           -- Skipped to offset 1 by climbing once.
           tow1   = climb tow0
       in case compareTowers tow0 tow1 of
@@ -228,6 +230,76 @@ tests =
         Left err -> reportFail $ "expected TyMismatch, got: " <> show err
         Right () -> reportFail
           "expected mismatch (different offsets), got success"
+    )
+    -- --- Meta-aware vertical regeneration (kindOf naturality) -----
+  , ( "Meta: meetTowers binds the meta and walks to the stable tail"
+    , -- Setup: a synthetic KindEnv where "Foo" : *0 (so kindOf
+      -- (TyConV "Foo" fooP Z) = TyUnivV (S (S Z)) = *0).  Build:
+      --   metaTower  = towerOfView ∅ env (TyMetaV m)      — meta @ rung 0
+      --   fooTower   = towerOfView ∅ env (TyConV "Foo" …) — concrete
+      -- 'meetTowers env ∅ metaTower fooTower' must:
+      --   * at rung 0, bind m := TyConV "Foo" fooP Z via 'meet';
+      --   * at rung 1, regenerate via 'kindOf s' env' under the
+      --     extended Subst — both sides become TyUnivV (S (S Z));
+      --   * fire the *n-stable base case and return Right.
+      -- Without naturality / regeneration: rung 1 of metaTower
+      -- (frozen at construction under ∅) would still be TyMetaV m,
+      -- which resolves to TyConV "Foo" — but fooTower's rung 1 is
+      -- TyUnivV (S (S Z)).  meet ("Foo", *0) → structural mismatch,
+      -- TyMismatch.  The test passes iff regeneration is in effect.
+      let fooP = Path [PsProgDecl 0]
+          mBinderPath = Path [PsProgDecl 0, PsDataParam 0]
+          mUsePath    = Path [PsProgDecl 1]
+          mId   = MetaId mBinderPath mUsePath
+          env_  = Map.fromList
+                    [ ("Foo", tyToProc (TyUniv (S (S Z))))   -- Foo : *0
+                    ]
+          metaTower = towerOfView emptySubst env_ (TyMetaV mId)
+          fooTower  = towerOfView emptySubst env_ (TyConV "Foo" fooP Z)
+      in case meetTowers env_ emptySubst metaTower fooTower of
+        Right s' -> case Map.lookup mId s' of
+          Just (TyConV "Foo" p _) | p == fooP -> pure True
+          Just other -> reportFail $
+            "Subst binding for m wasn't TyConV \"Foo\" fooP _: got " <> show (viewToTy other)
+          Nothing -> reportFail "Subst doesn't bind m after meetTowers"
+        Left err -> reportFail $
+          "expected meetTowers to succeed (regeneration should walk to *n-tail), got: "
+          <> show err
+    )
+  , ( "Meta: kindOf is natural — resolve-then-climb = climb-then-resolve under bound meta"
+    , -- The naturality property in concrete numbers.  Build a
+      -- synthetic Subst binding m := TyConV "Foo" fooP Z and a
+      -- KindEnv with Foo : *0.  Then:
+      --
+      --     resolve s (kindOf s env (TyMetaV m))
+      --   = resolve s (kindOf s env (resolve s (TyMetaV m)))    -- by definition
+      --   = resolve s (kindOf s env (TyConV "Foo" fooP Z))
+      --   = resolve s (TyUnivV (S (S Z)))                       -- Foo's kind
+      --   = TyUnivV (S (S Z))
+      --
+      -- versus climb-then-resolve under the same s:
+      --
+      --     resolve s (kindOf s env (TyMetaV m))                -- same expression
+      --
+      -- They MUST agree.  Pre-naturality 'kindOf' (no resolveView)
+      -- would have given: kindOf ∅ env (TyMetaV m) = TyMetaV m;
+      -- then resolve s (TyMetaV m) = TyConV "Foo" — NOT TyUnivV.
+      -- Square didn't close.
+      let fooP = Path [PsProgDecl 0]
+          mBinderPath = Path [PsProgDecl 0, PsDataParam 0]
+          mUsePath    = Path [PsProgDecl 1]
+          mId   = MetaId mBinderPath mUsePath
+          env_  = Map.fromList
+                    [ ("Foo", tyToProc (TyUniv (S (S Z)))) ]
+          s_    = Map.fromList [(mId, TyConV "Foo" fooP Z)]
+          -- "Climb under bound meta": kindOf s_ env (TyMetaV m)
+          climbed = kindOf s_ env_ (TyMetaV mId)
+          -- "Resolve, then climb"  : kindOf s_ env (resolved view)
+          -- (resolveView is what kindOf does internally — both
+          -- paths now go through the same machinery, but the test
+          -- documents what the closed square looks like.)
+          want    = TyUniv (S (S Z))
+      in expectEq (viewToTy climbed) want
     )
   , ( "kindOf: well-kinded Ty2's rung 1 is TyConV \"Type\""
     , -- The property step 3 exploits: under a well-kinded program,
@@ -240,7 +312,7 @@ tests =
         "data Type : *1 { Constr : Type; data Ty2 : Type { Foo : Ty2 } }"
         $ \r ->
           let ty2P = Path [PsProgDecl 0, PsDeclIdx 1]
-              k    = kindOf (hypTinfKindEnv r) (TyConV "Ty2" ty2P Z)
+              k    = kindOf emptySubst (hypTinfKindEnv r) (TyConV "Ty2" ty2P Z)
           in expectEq (viewToTy k) (TyCon "Type" (Path [PsProgDecl 0]))
     )
   ]

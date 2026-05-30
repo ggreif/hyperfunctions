@@ -177,12 +177,13 @@ instance Lang HypTinf where
         env0' <- case hypEnvParent env0 of
           Nothing -> Right env0
           Just (parentName, parentPath) ->
-            let parentTower = towerOfView (hypEnvKindEnv env0)
+            let kEnv        = hypEnvKindEnv env0
+                s0          = hypEnvSubst env0
+                parentTower = towerOfView s0 kEnv
                                           (TyConV parentName parentPath Z)
-                memberTower = towerOfView (hypEnvKindEnv env0)
-                                          (hRun kindProc)
+                memberTower = towerOfView s0 kEnv (hRun kindProc)
             in do
-              subst' <- meetTowers (hypEnvSubst env0) memberTower parentTower
+              subst' <- meetTowers kEnv s0 memberTower parentTower
               Right env0 { hypEnvSubst = subst' }
         let env1 = env0'
               { hypEnvDataTypes = Map.insert name (length params) (hypEnvDataTypes env0')

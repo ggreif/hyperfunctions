@@ -64,6 +64,7 @@ test-suite constructor-test
     TinfSpec
     TyProcSpec
     HypTinfSpec
+    HypTwrSpec
     TowerSpec
   build-depends:
     , base
