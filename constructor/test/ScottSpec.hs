@@ -37,6 +37,26 @@ tests =
       "data Iso : Iso { One : One; Two : Two; Three : Three };\
       \let rt = case One { One -> Two; Two -> Three; Three -> One }"
       "Two"
+
+  , runsWith
+      "Scott codegen: Nat predecessor — case S Z { Z -> Z; S n -> n } prints Z"
+      -- Captured-arg ctor: S's branch type is @(Nat' -> x)@.
+      -- The arm @S n -> n@ binds @n@ at the captured arg's type
+      -- (Nat') and the body returns it.
+      "data Nat : *0 { Z : Nat; S : Nat -> Nat };\
+      \let rt = case S Z { Z -> Z; S n -> n }"
+      "Z"
+
+  , runsWith
+      "Scott codegen: existential round-trip — case Pack T { Pack x -> Pack x }"
+      -- Existential ctor: Pack's branch type wraps with
+      -- @forall m.@.  The arm rebuilds via the same ctor; the
+      -- existential is opaque from outside, so showFoo just
+      -- says "Pack <existential>".
+      "data Bool : *0 { T : Bool };\
+      \data Foo : *0 { Pack : \8707 m . m -> Foo };\
+      \let rt = case Pack T { Pack x -> Pack x }"
+      "(Pack <existential>)"
   ]
 
 runsWith :: String -> Text -> String -> (String, IO Bool)
