@@ -923,31 +923,85 @@ rather than *with* it.  The correct step 3b reduces to about 30
 lines: each `ctorDecl` registers itself; post-threading walk
 checks each ctor's annotation tower against parent's tower.
 
-### Step 3b — the actual plan
+### Step 3b — attempted, deferred (tension in self-ref vs singleton)
 
-When step 3b lands:
+**First attempt.**  ctorDecl self-registers in kindEnv at
+parent's kind; post-threading `meetTowers` compares each ctor's
+kindOf-tower against the parent's kind annotation tower.
 
-1. **HypTinf.ctorDecl / HypTwr.ctorDecl** — each writes
-   `ctorName → parentKindProc` to `kindEnv` alongside its
-   existing `hypEnvCtors` write.  One line addition per
-   carrier.
-2. **Post-threading kind-coherence pass** — in
-   `HypTinf.dataDecl` / `HypTwr.dataDecl`, after `threadDecls`,
-   iterate over the body ctors just registered.  For each
-   ctor's annotation, build `kindOf(ctorAnnot)`'s tower and
-   `meetTowers` it against the parent's kind tower.  Failures
-   surface as `TyMismatch` or a new `TyCtorKindMismatch`.
-3. **Tests** — positive and negative cases.  Iso-cute / Swap /
-   Mirror all pass (kindOf of sibling = parent's kind = parent's
-   tower).  Reject `data Foo : *0 { c : *1 }` (kindOf(*1) = *2
-   ≠ *0).
+**Why it didn't land.**  Two reasons:
 
-This is the smallest meaningful step 3b.  Step 3c (per-ctor
-existentials `∃ m. T` with refinement-on-match) is a separate
-arc on top, but the substrate is now sized for it (the v0.1.0
-TyView → TyProc lift gives refinement-metas distinguishable
-process identity from existential-metas — the gabor/gadt
-invariant becomes structural rather than ad-hoc).
+1. **For the v0 corpus, the level layer already catches everything.**
+   `data Foo : *0 { c : *1 }` is rejected at HypLinf's `lt /= lp`
+   check (level tear).  `data Foo : *0 { c : Bar }` with Bar :
+   *0 is level-coherent and the Tower-aware check also accepts
+   it — both layers agree.  Step 3b adds no *new* rejection
+   today.  Its actual value arrives only when per-ctor
+   result-type refinement makes the level layer insufficient
+   (step 3c, `FZ : Fin (S n)` vs `Fin n` — both at the same
+   level, but the result-type *refines* the index).
+
+2. **A coherence tension between self-tower and singleton cases.**
+   For self-towering parents, `kindOf` bumps the offset on
+   self-references.  Specifically, for `data Weird : Weird {
+   Level0 : Weird }`, Level0's kindOf-tower starts at @Weird@(S
+   Z)@ (the offset bumped) but the parent's kind annotation
+   tower starts at @Weird@Z@.  Strict-equality TyConV-tail
+   comparison fails at rung 0.  The two cases want different
+   rules:
+
+   - **Self-tower with ctor referencing parent name**
+     (Weird-Level0, Iso-flat-GetOne): `kindOf(parent's name)`
+     bumps the offset.  Want comparison to align *after the
+     bump*.
+   - **Singleton style with ctor referencing own/sibling name**
+     (Iso-cute, Swap, Mirror): `kindOf(ctor's name)` looks up
+     the kindEnv registration (parent's kindProc) and returns
+     it *without bumping* (since the name differs).  Want
+     comparison to align *at the kindEnv-lookup result*.
+
+   No single rule handles both without special-casing.  Honest
+   verdict: step 3b's check has the wrong shape — the
+   right design lives alongside step 3c's refinement work,
+   where the comparison can be designed for the data shapes
+   that actually need it.
+
+**Status.**  No code in repo; HEAD remains at the post-step-1
+state.  The "fundament-witness" insight remains correct — when
+step 3b is re-attempted alongside step 3c, the
+self-registration-in-ctorDecl pattern is right; the check
+algorithm needs to know which case it's handling.
+
+### Future: uppercase-convention for fixed-type vs parameter
+
+The user flagged a corner: `data Head Param { ... }` today
+parses `Param` as a fresh parameter binding, shadowing any
+outer `Param`-data.  To express "Head indexed by the fixed Param
+type", you write `data Head (P : Param) : *0 { ... }` —
+kind-annotating `P` to inhabit `Param`.
+
+In Haskell / Ωmega, capitalization is a load-bearing
+convention: `Param` (uppercase) refers to a type constructor;
+`p` (lowercase) is a parameter binder.  Adopting this convention
+would let `data Head Param` mean "Head applied to the fixed
+Param type" without the parenthesised kind annotation.
+
+Implementation: in `paramSpec`, check the identifier's first
+character.  Uppercase → resolve via tcBinders (tycon ref) and
+treat as an applied argument to the head; lowercase → parameter
+binding as today.
+
+Trade-offs:
+
+  * Backward-incompatible for any program using uppercase
+    parameter names (none in the current corpus — we use `a`,
+    `n`, etc. — so the cost is zero).
+  * Adds parser-level role distinction based on lexical
+    convention.
+  * Aligns with Haskell/Ωmega tradition; less surprising for
+    users coming from those languages.
+
+Worth doing.  Queued for a future arc.
 
 ### Status snapshot at PLAN.md compaction
 
