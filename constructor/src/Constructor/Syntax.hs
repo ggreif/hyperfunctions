@@ -10,7 +10,7 @@ module Constructor.Syntax
   ) where
 
 import Constructor.Path (Path)
-import Constructor.Sort (Sort (..))
+import Constructor.Sort (Mode (..), Sort (..))
 import Data.Functor.Const (Const (..))
 import Data.Kind (Type)
 import Data.Text (Text)
@@ -125,17 +125,93 @@ class Lang (r :: (Sort -> Type) -> Sort -> Type) where
   existsTy :: a 'SExpr -> Name -> Path -> r a 'SExpr -> r a 'SExpr
   existsTy = error "Lang.existsTy: existential type binders not supported by this carrier"
 
+  -- ----------------------------------------------------------------
+  -- Value-level expressions ('SVal Build', 'SVal Dissect') and
+  -- pattern matching ('SArm').
+  --
+  -- 'SVal' is parametric in 'Mode': 'SVal Build' is the assembling
+  -- mode (the RHS of an arm; the body of a @let@), 'SVal Dissect'
+  -- the matching mode (the LHS of an arm).  Bipartite forms (ctor
+  -- application, variable, @at@-binder, literals — those that
+  -- /look/ identical on either side of '->') are mode-polymorphic
+  -- in their signatures.  Mode-specific forms (wildcard '_',
+  -- lambdas, nested case) instantiate the mode to the appropriate
+  -- value, so Haskell's type-checker catches "a wildcard slipped
+  -- into a value expression" at the call site.
+  -- ----------------------------------------------------------------
+
+  -- | Top-level value declaration: @let name = body@.  Binds
+  --   @name@ to the value expression @body@ at program scope.
+  --   The 'Path' is the binding's def-site (the parser supplies
+  --   it).  RHS is in 'Build' mode — you can't dissect at a
+  --   top-level binding.
+  valDecl :: a 'SDecl -> Path -> Name -> r a ('SVal 'Build) -> r a 'SDecl
+  valDecl = error "Lang.valDecl: value-level declarations not supported by this carrier"
+
+  -- | Variable reference / pattern binding.  Bipartite — same
+  --   node shape, different role per mode:
+  --
+  --     * 'Build': resolves to a previously-bound name (outer
+  --       @let@, parent ctor parameter, or a pattern-introduced
+  --       binder of an enclosing arm).
+  --     * 'Dissect': introduces a /new/ binder that shadows any
+  --       outer namesake within the arm body.
+  --
+  --   The 'Path' identifies the binder's def-site either way:
+  --   the parser produces a fresh path in pattern position and
+  --   a resolved path in expression position.
+  valVar :: a ('SVal m) -> Name -> Path -> r a ('SVal m)
+  valVar = error "Lang.valVar: value-level variables not supported by this carrier"
+
+  -- | Wildcard pattern @_@.  Dissect-only by signature — Lang
+  --   statically rejects a wildcard in 'Build' mode.  Matches
+  --   any scrutinee shape; binds nothing.
+  valWild :: a ('SVal 'Dissect) -> r a ('SVal 'Dissect)
+  valWild = error "Lang.valWild: wildcard patterns not supported by this carrier"
+
+  -- | Constructor application at the value level.  Mode-polymorphic:
+  --   @C v1 ... vk@ in 'Build' assembles, in 'Dissect' dissects.
+  --   The args list may be empty for nullary ctors.  The 'Path'
+  --   resolves to the declaring 'ctorDecl'.  Children carry the
+  --   same mode as the parent application — you can't nest a
+  --   value expression inside a pattern (it'd parse as a binder
+  --   instead) or vice versa.
+  valCtor :: a ('SVal m) -> Name -> Path -> [r a ('SVal m)] -> r a ('SVal m)
+  valCtor = error "Lang.valCtor: value-level ctor applications not supported by this carrier"
+
+  -- | @case scrutinee { arm; arm; ... }@.  Scrutinee is in 'Build'
+  --   mode (a value expression that produces something to match
+  --   against); the case as a whole is also a 'Build'-mode
+  --   expression.  Nested case inside a pattern doesn't make
+  --   sense — the signature wouldn't unify.
+  case_ :: a ('SVal 'Build) -> r a ('SVal 'Build) -> [r a 'SArm] -> r a ('SVal 'Build)
+  case_ = error "Lang.case_: case expressions not supported by this carrier"
+
+  -- | One arm of a case: @pat -> body@.  The pattern is at
+  --   @'SVal 'Dissect@, the body at @'SVal 'Build@ — the mode
+  --   asymmetry across @->@ is reflected directly in the
+  --   signature.  Binders introduced in the pattern are in scope
+  --   in the body only.
+  arm :: a 'SArm -> r a ('SVal 'Dissect) -> r a ('SVal 'Build) -> r a 'SArm
+  arm = error "Lang.arm: match arms not supported by this carrier"
+
 -- | Annotation provider in an applicative monad @m@.  The parser is
 --   written generically against 'HasAnn', so it can produce trees at
 --   any annotation regime without further refactoring.
 class Applicative m => HasAnn (a :: Sort -> Type) (m :: Type -> Type) where
-  freshExprAnn :: m (a 'SExpr)
-  freshDeclAnn :: m (a 'SDecl)
-  freshProgAnn :: m (a 'SProg)
+  freshExprAnn    :: m (a 'SExpr)
+  freshDeclAnn    :: m (a 'SDecl)
+  freshProgAnn    :: m (a 'SProg)
+  freshBuildAnn   :: m (a ('SVal 'Build))
+  freshDissectAnn :: m (a ('SVal 'Dissect))
+  freshArmAnn     :: m (a 'SArm)
 
 -- | Trivial annotations: every slot is @Const ()@.  Works for any
 --   applicative monad — the raw-parsing default.
 instance Applicative m => HasAnn (Const ()) m where
-  freshExprAnn = pure (Const ())
-  freshDeclAnn = pure (Const ())
-  freshProgAnn = pure (Const ())
+  freshExprAnn    = pure (Const ())
+  freshDeclAnn    = pure (Const ())
+  freshProgAnn    = pure (Const ())
+  freshBuildAnn   = pure (Const ())
+  freshDissectAnn = pure (Const ())
+  freshArmAnn     = pure (Const ())
