@@ -31,9 +31,13 @@ module AxiomsSpec (tests) where
 import Constructor.HypTwr (HypTwr, HypTwrResult (..), hypTwrProgram)
 import Constructor.Parser (parseProgram)
 import Constructor.Syntax (Name)
+import Constructor.Tower (Tower (..))
+import Constructor.TyExpr (prettyTy)
+import Constructor.TyProc (materialize)
 import Data.Functor.Const (Const (..))
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
+import qualified Data.Text as T
 import Text.Megaparsec (errorBundlePretty)
 
 tests :: [(String, IO Bool)]
@@ -54,7 +58,7 @@ tests =
     roundTripVia "Bool round-trip: case T { T -> T; F -> F }"
       "data Bool : *0 { T : Bool; F : Bool };\
       \let rt = case T { T -> T; F -> F }"
-      ["rt"]
+      [("rt", "Bool")]
 
   , roundTripVia "Nat round-trip: case S Z { Z -> Z; S n -> S n }"
       -- Round-trip preserves ctor shape under FS-binding.  The
@@ -63,7 +67,7 @@ tests =
       -- same Nat shape the scrutinee had.
       "data Nat : *0 { Z : Nat; S : Nat -> Nat };\
       \let rt = case S Z { Z -> Z; S n -> S n }"
-      ["rt"]
+      [("rt", "Nat")]
 
     -- --- Refining round-trips -----------------------------------------
     --
@@ -94,7 +98,7 @@ tests =
       "data Nat : *0 { Z : Nat; S : Nat -> Nat };\
       \data Fin (n : Nat) : *0 { FZ : Fin Z; FS : Fin n -> Fin (S n) };\
       \let rt = case FS FZ { FZ -> FZ; FS m -> FS m }"
-      ["rt"]
+      [("rt", "Fin (S Z)")]
 
     -- --- Typed-AST round-trip ----------------------------------------
     --
@@ -107,7 +111,7 @@ tests =
       "data Bool : *0 { T : Bool; F : Bool };\
       \data Expr (a : Bool) : *0 { Lit : Expr T; Pair : Expr T -> Expr F -> Expr F };\
       \let rt = case Lit { Lit -> Lit; Pair l r -> Lit }"
-      ["rt"]
+      [("rt", "Expr T")]
 
     -- --- Coverage axiom: every Built value matches an arm --------
     --
@@ -118,7 +122,7 @@ tests =
   , roundTripVia "Coverage: every Bool-ctor has a covering arm"
       "data Bool : *0 { T : Bool; F : Bool };\
       \let cov = case T { T -> F; F -> T }"
-      ["cov"]
+      [("cov", "Bool")]
 
     -- --- Weird-class (self-towering / singleton family) -----------
     --
@@ -144,7 +148,7 @@ tests =
       -- scrutinee.
       "data Weird : Weird { Level0 : Weird };\
       \let rt = case Level0 { Level0 -> Level0 }"
-      ["rt"]
+      [("rt", "Weird")]
 
   , roundTripVia "Iso round-trip: case One { One -> One; Two -> Two; Three -> Three }"
       -- The Iso-cute singleton: each ctor has its own type.
@@ -154,7 +158,7 @@ tests =
       -- body @One@ rebuilds at @One@ = scrutinee's type.
       "data Iso : Iso { One : One; Two : Two; Three : Three };\
       \let rt = case One { One -> One; Two -> Two; Three -> Three }"
-      ["rt"]
+      [("rt", "One")]
 
   , roundTripVia "Swap round-trip: case Left { Left -> Left; Right -> Right }"
       -- Swap's twist: @Left@'s annotation is @Right@ (and vice
@@ -166,7 +170,7 @@ tests =
       -- typed shape is /the swap target/, not the matched ctor.
       "data Swap : Swap { Left : Right; Right : Left };\
       \let rt = case Left { Left -> Left; Right -> Right }"
-      ["rt"]
+      [("rt", "Right")]
 
   , roundTripVia "Mirror round-trip: case Cup { Cup -> Cup; Fridge -> Fridge; Plate -> Plate }"
       -- The universe-polymorphic Iso: same structure as Iso
@@ -178,27 +182,70 @@ tests =
       -- identity of each ctor's annotation, exactly as in Iso.
       "data Mirror : \8704l. *l { Cup : Cup; Fridge : Fridge; Plate : Plate };\
       \let rt = case Cup { Cup -> Cup; Fridge -> Fridge; Plate -> Plate }"
-      ["rt"]
+      [("rt", "Cup")]
+
+    -- --- Existential round-trips -------------------------------------
+    --
+    -- A ctor whose argument-side carries an existentially-bound
+    -- type variable: @Pack : ∃ m. m -> Foo@.  At each Build site
+    -- @m@ gets a fresh meta — instantiated to whatever the arg's
+    -- type happens to be — but the result type is just @Foo@,
+    -- with @m@ hidden.  The pattern-match arm gets a fresh skolem
+    -- for the existential; the rebuilt value's @Foo@ doesn't
+    -- expose it.  The axiom: the round-trip preserves @Foo@
+    -- regardless of what type the existential was instantiated to
+    -- at the original Build site.
+
+  , roundTripVia "Existential round-trip: case Pack T { Pack x -> Pack x }"
+      -- Build @Pack T@: existential @m@ instantiated to @Bool@
+      -- (T's type), result @Foo@.  Pattern-match: @x@ bound at
+      -- a fresh meta, the @Pack x@ pat-tower @Foo@ meets the
+      -- scrutinee's @Foo@.  Body rebuilds @Pack x@ at @Foo@.
+      "data Bool : *0 { T : Bool };\
+      \data Foo : *0 { Pack : \8707 m . m -> Foo };\
+      \let rt = case Pack T { Pack x -> Pack x }"
+      [("rt", "Foo")]
   ]
 
--- | Parse → 'HypTwr' → expect success.  Verifies that all expected
---   'let' binders land in 'hypTwrValVars'.  Once Build / Dissect
---   type-checking lands, the binder map will carry types as well
---   (currently '()'), and this helper will additionally inspect
---   the types via a richer expected-value parameter.
-roundTripVia :: String -> Text -> [Name] -> (String, IO Bool)
-roundTripVia name src wantLets = (name, go)
+-- | Parse → 'HypTwr' → expect success.  For each expected let
+--   binder, look up its tower in 'hypTwrValVars', materialise
+--   the first rung through the result's 'Subst', and compare
+--   the pretty-rendered type against the expected text.
+--
+--   This is what makes the round-trip an /axiom/: the case-as-
+--   a-whole is type-checked, the case's result type is the let
+--   binder's type, and we assert it equals the expected text.
+--   For Build → Dissect → Build round-trips the expected text
+--   is the scrutinee's type — the literal "Built can be Dissected
+--   and rebuilt to the same type" invariant.
+roundTripVia :: String -> Text -> [(Name, Text)] -> (String, IO Bool)
+roundTripVia name src wantLetTypes = (name, go)
   where
     go = case parseProgram @HypTwr @(Const ()) name src of
       Left e -> fail_ $ "parse error: " <> errorBundlePretty e
       Right pTwr -> case hypTwrProgram pTwr of
         Left ty -> fail_ $ "HypTwr rejected: " <> show ty
         Right r ->
-          let got = Map.keys (hypTwrValVars r)
-          in if got == wantLets
+          let subst   = hypTwrSubst r
+              valVars = hypTwrValVars r
+              errs    = concatMap (checkOne subst valVars) wantLetTypes
+          in if null errs
                then pure True
-               else fail_ $
-                 "let-binder set mismatch:\n  want: " <> show wantLets
-                 <> "\n  got:  " <> show got
+               else fail_ (unlines errs)
+
+    checkOne subst valVars (n, wantPretty) =
+      case Map.lookup n valVars of
+        Nothing -> ["binder not found: " <> show n]
+        Just tower -> case materialize subst (horizontal tower) of
+          Left err -> ["materialise failed for " <> show n <> ": " <> show err]
+          Right ty ->
+            let got = prettyTy ty
+            in if got == wantPretty
+                 then []
+                 else
+                   [ "type mismatch for " <> show n <> ":"
+                   , "  want: " <> T.unpack wantPretty
+                   , "  got:  " <> T.unpack got
+                   ]
 
     fail_ msg = putStrLn ("    " <> msg) >> pure False
