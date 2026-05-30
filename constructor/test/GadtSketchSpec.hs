@@ -72,32 +72,41 @@ tests =
       "data Weird : Weird { Level0 : Weird }"
       ["Level0"]
 
-  -- --- Blocked by forward-mutual references ---------------------
+  -- --- Body-mutual references (now WORKS via prescan + fallback) -
   --
-  -- The 'Iso singleton' family wants each ctor's type to be a
-  -- DIFFERENT type, and those types either to be declared (Iso-sep)
-  -- or to share their name with the ctor (Iso-cute).  Either way
-  -- there are forward references between siblings — Iso's ctors
-  -- reference One / Two / Three before they're declared, OR
-  -- One / Two / Three reference Iso before it's declared.  The
-  -- parser's binders today track only forward-only sibling
-  -- visibility; the data binder is only added /after/ its decl is
-  -- complete.  Mutual-reference support is its own feature.
+  -- Parser prescan (lookAhead the body, harvest sibling names into
+  -- 'tcBinders' before parsing each decl's annotation) + HypLinf
+  -- parent-fallback (tyConRef lookup-miss falls back to parent's
+  -- level when inside a data body) together close the body-mutual
+  -- corner without DataKinds-style promotion.  The covering-space
+  -- framing's "the same name inhabits multiple rungs" insight
+  -- (recorded in the git-note on 78f00f4) is what makes this just
+  -- bookkeeping: each ctor's value-side lives at level
+  -- @predLv parent@; the same identifier as a type-side reference
+  -- lives at @parent@, with the level coordinate disambiguating.
+  , accepts "GADT sketch: Iso cute singleton (One : One, Two : Two, Three : Three)"
+      "data Iso : Iso { One : One; Two : Two; Three : Three }"
+      ["One", "Two", "Three"]
+  , accepts "GADT sketch: Swap (mutual ctor-as-type — Left : Right; Right : Left)"
+      "data Swap : Swap { Left : Right; Right : Left }"
+      ["Left", "Right"]
+
+  -- --- Top-level mutual references — still BLOCKED -------------
+  --
+  -- Top-level mutual recursion would need an analogous prescan at
+  -- the 'program' level: pre-harvest all data names BEFORE
+  -- elaborating any.  Today the same forward-only accumulator
+  -- pattern means later top-level siblings see earlier ones but
+  -- not vice versa.  Iso-sep needs Iso forward-referenced from
+  -- One / Two / Three, which fails because Iso isn't declared
+  -- yet at the point those parse.
   , rejectsAtLevel
-      "GADT sketch: Iso singleton via separate type decls (BLOCKED: forward ref to Iso)"
+      "GADT sketch: Iso singleton via separate type decls (BLOCKED: top-level mutual)"
       ("data One : Iso { OneCtor : One };\
        \data Two : Iso { TwoCtor : Two };\
        \data Three : Iso { ThreeCtor : Three };\
        \data Iso : Iso { GetOne : One; GetTwo : Two; GetThree : Three }")
       (Unbound "Iso")
-  , rejectsAtLevel
-      "GADT sketch: Iso cute singleton (BLOCKED: ctor name as type)"
-      "data Iso : Iso { One : One; Two : Two; Three : Three }"
-      (Unbound "One")
-  , rejectsAtLevel
-      "GADT sketch: Swap singleton (BLOCKED: mutual ctor-as-type reference)"
-      "data Swap : Swap { Left : Right; Right : Left }"
-      (Unbound "Right")
 
   -- --- Doubly blocked: arrow-kinded data + GADT refinement ------
   --

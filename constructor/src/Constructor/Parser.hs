@@ -108,6 +108,71 @@ sepEndByIndexedAcc mk sep = go 0
               (xs, acc'') <- go (i + 1) acc'
               pure (x : xs, acc'')
 
+-- | Lookahead-scan the body @{ decl1; decl2; … }@ that's about to
+--   be parsed, harvesting each decl's name + path so the body can
+--   then be parsed with all siblings already in 'tcBinders'.
+--   Required for mutual references inside a data body — e.g. @data
+--   Swap : Swap { Left : Right; Right : Left }@ where each ctor's
+--   type mentions a sibling ctor.  Without the prescan, the
+--   forward-only accumulator pattern in 'sepEndByIndexedAcc' would
+--   only let later siblings see earlier ones.
+--
+--   This is a /name/-only scan: it advances the cursor past the
+--   first identifier of each decl (skipping the optional 'data'
+--   keyword), then skips the rest of the decl by consuming tokens
+--   until the next top-level @;@ or the closing @}@.  Balanced
+--   braces inside nested data bodies are tracked so a nested @data
+--   Inner : *0 { … }@ doesn't fool the outer scan.  Block comments
+--   are handled by interleaving 'sc' (the lexer's space-and-comment
+--   skipper) before each character peek.
+prescanBodyDeclNames
+  :: (MonadParsec Void Text m, MonadFail m)
+  => Path -> m [(Name, Path)]
+prescanBodyDeclNames parentPath = lookAhead $ do
+  void (symbol "{")
+  collect 0 []
+  where
+    collect i acc = do
+      sc
+      end <- optional (try (lookAhead (single '}')))
+      case end of
+        Just _ -> pure (reverse acc)
+        Nothing -> do
+          name <- declHeadName
+          let declPath = extendPath (PsDeclIdx i) parentPath
+          skipDeclBody 0
+          msep <- optional (symbol ";")
+          let acc' = (name, declPath) : acc
+          case msep of
+            Just _  -> collect (i + 1) acc'
+            Nothing -> pure (reverse acc')
+
+    declHeadName = do
+      _ <- optional (try (symbol "data"))
+      identifier
+
+    -- Skip tokens until we see a top-level @;@ or @}@ (depth 0).
+    -- Balanced @{...}@ at depth > 0 don't terminate us; comments
+    -- are eaten via 'sc' before each peek.
+    skipDeclBody depth = do
+      sc
+      mc <- optional (lookAhead anySingle)
+      case mc of
+        Nothing -> pure ()  -- EOF
+        Just c -> case c of
+          '{' -> do
+            void (single '{')
+            skipDeclBody (depth + 1)
+          '}'
+            | depth == 0 -> pure ()
+            | otherwise -> do
+                void (single '}')
+                skipDeclBody (depth - 1)
+          ';' | depth == 0 -> pure ()
+          _   -> do
+            void anySingle
+            skipDeclBody depth
+
 -- ----------------------------------------------------------------------
 -- Expression-level parsers.
 -- ----------------------------------------------------------------------
@@ -248,10 +313,22 @@ decl path binders = dataD <|> ctorD
       -- constructors can mention the type they construct, and so
       -- nested data can reference it), and the outer tcBinders DO
       -- (top-level tycons remain visible inside nested bodies).
+      --
+      -- Plus: PRESCAN sibling names so that mutual references
+      -- between body decls resolve correctly to 'tyConRef'.  E.g.
+      -- @data Swap : Swap { Left : Right; Right : Left }@ has Left
+      -- and Right referring to each other; without the prescan,
+      -- 'Right' in 'Left : Right' would be a 'var' and HypTinf /
+      -- HypTwr would fail with TyUnbound.  The prescan uses
+      -- 'lookAhead' so it doesn't consume input — names are
+      -- harvested first, then the body is parsed for real.
+      siblingNames <- prescanBodyDeclNames path
       let paramPaths   = zipWith (\i p -> (p, extendPath (PsDataParam i) path))
                                  [0 ..] params
           bodyBinders0 = binders { lvBinders = Map.empty }
-          bodyBinders  = extendTc n path (extendTys paramPaths bodyBinders0)
+          bodyBinders  = foldr (\(sn, sp) -> extendTc sn sp)
+                               (extendTc n path (extendTys paramPaths bodyBinders0))
+                               siblingNames
       (ds, _)  <- between (symbol "{") (symbol "}") $
                     sepEndByIndexedAcc
                       (\i bs -> decl (extendPath (PsDeclIdx i) path) bs)

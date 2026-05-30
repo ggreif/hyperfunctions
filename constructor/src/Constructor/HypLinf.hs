@@ -216,11 +216,28 @@ instance Lang HypLinf where
   -- polymorphic LvAnnot-decorated output preserves the path so
   -- downstream consumers (HypTinf) can route to their own 'tyConRef'
   -- rather than to 'var'.
+  --
+  -- Lookup-miss-with-parent fallback: when the name isn't in env
+  -- AND we're inside a data body (parent set), assume it's a
+  -- forward sibling reference and resolve at the parent's level.
+  -- This is how mutual references between body siblings work
+  -- (@data Swap : Swap { Left : Right; Right : Left }@) without
+  -- pre-binding: 'predLv (LVar p) = LVar p' has the level
+  -- coordinate's fixpoint, so every body sibling at the parent's
+  -- parametric level is operationally indistinguishable, and the
+  -- parser prescan has already populated 'tcBinders' so the
+  -- correct 'tyConRef' (with path) is emitted in the polymorphic
+  -- output.  The parser knows the static names; HypLinf trusts
+  -- the path and uses parent's process for the level.
   tyConRef _ann n path = HypLinf $ \env -> case Map.lookup n (hypLinfEnvNames env) of
     Just proc ->
       let lv = hRun proc
       in Right (HypLinfExpr proc, env, tyConRef (LvAExpr lv) n path)
-    Nothing -> Left (Unbound n)
+    Nothing -> case hypLinfEnvParent env of
+      Just parentProc ->
+        let lv = hRun parentProc
+        in Right (HypLinfExpr parentProc, env, tyConRef (LvAExpr lv) n path)
+      Nothing -> Left (Unbound n)
 
   -- Parameter uses look the param up by name (just like tyConRef),
   -- and likewise re-emit the path in the polymorphic output for
