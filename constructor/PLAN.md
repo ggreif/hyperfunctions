@@ -547,18 +547,24 @@ the design depends on.
    inference" became a real notion in the codebase: not as a
    separate pass, but as a coalgebraic step re-indexable by rung.
 
-3. **Tower-aware kind coherence (landed).**  `compareTowers ::
-   Tower -> Tower -> Either TyErr ()` walks two Towers rung-by-rung
-   along the vertical axis; termination is guaranteed by the
-   `*n`-stable-tail (the `x^0 = 1` collapse from the covering-space
-   framing).  `HypTinf.dataDecl` threads a `Maybe (Name, Path)`
-   parent context and, on a nested `data Y : K_Y` inside `data X :
-   K`, builds Y's annotation tower against the parent's
-   TyConV-tower; mismatch (e.g. `data Ty2 : *0` inside `data Type :
-   *1`) is rejected with `TyMismatch` at elaboration time.  The
-   horizontal-meet retrofit (today's `meet`, lifted onto Towers)
-   and the directed-vertical unifier for occurs checks are
-   deferred to a subsequent commit.
+3. **Tower-aware kind coherence + meet (landed).**  Walks two Towers
+   rung-by-rung along the vertical axis; termination is guaranteed by
+   the `*n`-stable-tail (the `x^0 = 1` collapse from the
+   covering-space framing).  Two entry points: `compareTowers` (pure
+   yes/no parity) and `meetTowers :: Subst -> Tower -> Tower -> Either
+   TyErr Subst` (groupoid-flavoured horizontal meet via the existing
+   `TyProc.meet`, threaded through the Subst at each rung;
+   directed-flavoured vertical walk).  `HypTinf.dataDecl` threads a
+   `Maybe (Name, Path)` parent context and, on a nested `data Y :
+   K_Y` inside `data X : K`, builds Y's annotation tower against the
+   parent's TyConV-tower; mismatch (e.g. `data Ty2 : *0` inside `data
+   Type : *1`) is rejected with `TyMismatch` at elaboration time.
+   `Constructor.HyperLite` gained Ed Kmett's `Category` instance for
+   the future composition machinery.  Limitation: a metavariable
+   resolution at rung *n* does not yet re-generate the towers'
+   verticals for rung *n+1* onward — the kind-check path threads no
+   metas today, but a tower-aware occurs check will need to close
+   that loop.
 
 4. **`HypTwr` carrier.**  New `Lang` instance emitting Towers in
    place of `TyProc`s, paralleling `HypTinf`.  Existing parity

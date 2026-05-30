@@ -40,16 +40,17 @@ module Constructor.Tower
     -- * Navigation
   , climb
   , projectFirstRung
-    -- * Coinductive comparison
+    -- * Coinductive comparison + unification
   , compareTowers
+  , meetTowers
   ) where
 
-import Constructor.HyperLite (hRun)
+import Constructor.HyperLite (hPure, hRun)
 import Constructor.Level (Lv (..))
 import Constructor.Syntax (Name)
 import Constructor.Tinf (TyErr (..))
 import Constructor.TyExpr (TyExpr)
-import Constructor.TyProc (TyProc, TyView (..), viewToTy)
+import Constructor.TyProc (Subst, TyProc, TyView (..), emptySubst, meet, viewToTy)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 
@@ -153,48 +154,45 @@ climb = vertical
 projectFirstRung :: Tower -> TyExpr
 projectFirstRung = viewToTy . horizontal
 
--- | Coinductive comparison of two Towers along the vertical axis.
+-- | Tower-aware unification (Tower arc step "tower-aware meet").
 --
---   Walks both towers rung-by-rung, comparing horizontal views.
---   Termination is guaranteed by the @x^0 = 1@ collapse from PLAN's
---   covering-space framing: every Tower's vertical eventually
---   stabilises into a pure @*n@-stream tail, and two such tails
---   coincide iff they share the same @Lv@.
+--   Walks both towers rung-by-rung along the vertical axis, threading
+--   a 'Subst' through the rungs.  At each rung the horizontal slot is
+--   reconciled by 'Constructor.TyProc.meet' lifted via 'hPure'; this
+--   is the /groupoid-flavoured/ symmetric arm of the algebra
+--   (metavariable bindings flow into 'Subst', structural mismatches
+--   surface as 'TyMismatch').  The vertical walk is the
+--   /directed-flavoured/ arm — today it is structurally the same as
+--   the horizontal recursion, but the asymmetry is what step 4 and the
+--   eventual subtyping/coercion work will specialise.
 --
---   Base case (success): both rungs are 'TyUnivV' at the same level.
---   From this point both towers are observationally the same
---   @*n@-stream, so 'Right ()' is sound.
+--   Termination is guaranteed by the @x^0 = 1@ collapse: every
+--   Tower's vertical eventually stabilises into a pure @*n@-stream
+--   tail, and two such tails coincide iff they share the same @Lv@.
+--   The base case fires when both rungs are 'TyUnivV' at the same
+--   level — from there both towers are observationally identical.
 --
---   Failure: at some rung the horizontals diverge structurally
---   (different head shapes, or same shape with different identifying
---   data — Name + Path).  Returns 'TyMismatch' with the diverging
---   rung's views materialised as 'TyExpr'.
---
---   Recursive case: heads are structurally compatible and not yet
---   stable — climb one rung in both towers and continue.
---
---   The comparison is shape-and-identity at each rung (not deep
---   structural equality of TyApp/TyArr children) — children share
---   the same kind by construction (kindOf only inspects the head
---   for those forms), so the rung-1+ comparison handles compound
---   shapes uniformly.
-compareTowers :: Tower -> Tower -> Either TyErr ()
-compareTowers = go
+--   Limitation: a metavariable resolution at rung @n@ does NOT yet
+--   re-generate the towers' verticals for rung @n+1@ onward.  In the
+--   current corpus this is moot — the kind-check use site in
+--   'Constructor.HypTinf.dataDecl' threads no metavariables — but it
+--   is the path that a tower-aware occurs check / vertical
+--   regeneration will need to close.
+meetTowers :: Subst -> Tower -> Tower -> Either TyErr Subst
+meetTowers = go
   where
-    go t1 t2
+    go s t1 t2
       | TyUnivV lv1 <- h1, TyUnivV lv2 <- h2
-      , lv1 == lv2                       = Right ()
-      | sameView h1 h2                   = go (vertical t1) (vertical t2)
-      | otherwise                        = Left (TyMismatch (viewToTy h1) (viewToTy h2))
+      , lv1 == lv2                       = Right s
+      | otherwise                        = do
+          s' <- meet s (hPure h1) (hPure h2)
+          go s' (vertical t1) (vertical t2)
       where
         h1 = horizontal t1
         h2 = horizontal t2
 
-    sameView v1 v2 = case (v1, v2) of
-      (TyConV n1 p1, TyConV n2 p2) -> n1 == n2 && p1 == p2
-      (TyVarV n1 p1, TyVarV n2 p2) -> n1 == n2 && p1 == p2
-      (TyUnivV l1,   TyUnivV l2)   -> l1 == l2
-      (TyMetaV m1,   TyMetaV m2)   -> m1 == m2
-      (TyAppV{},     TyAppV{})     -> True
-      (TyArrV{},     TyArrV{})     -> True
-      _                            -> False
+-- | Coinductive comparison: 'meetTowers' under the empty substitution,
+--   discarding the resulting 'Subst'.  Convenience for callers (tests
+--   and shape probes) that only want a yes/no parity verdict.
+compareTowers :: Tower -> Tower -> Either TyErr ()
+compareTowers t1 t2 = meetTowers emptySubst t1 t2 >> Right ()

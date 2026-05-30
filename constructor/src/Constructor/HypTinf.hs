@@ -33,7 +33,7 @@ import Constructor.Level (Lv (..), starLevel)
 import Constructor.Path (Path, PathStep (..), extendPath)
 import Constructor.Sort (Sort (..))
 import Constructor.Syntax (Lang (..), Name)
-import Constructor.Tower (compareTowers, towerOfView)
+import Constructor.Tower (meetTowers, towerOfView)
 import Constructor.TyExpr (TyExpr)
 import Constructor.TyProc
   ( Subst
@@ -164,24 +164,29 @@ instance Lang HypTinf where
         -- store; consumed by Constructor.Tower.kindOf later.
         (eVal, env0) <- runHypTinf e env
         let kindProc = exprProc eVal
-        -- Tower-aware kind coherence (Tower arc step 3): if we are
-        -- nested inside another @data X : K { ... }@, this data's
-        -- kind annotation must agree with the parent's TyConV-tower
-        -- coinductively.  The parent's tower's rung 1 is K (looked up
-        -- via 'kindOf' from the env we built when elaborating X), so
-        -- a member with a different annotation diverges at rung 0
-        -- already (e.g. @data Ty2 : *0@ vs parent @TyConV "Type"@).
-        () <- case hypEnvParent env0 of
-          Nothing                     -> Right ()
+        -- Tower-aware kind coherence: if we are nested inside another
+        -- @data X : K { ... }@, this data's kind annotation must
+        -- unify with the parent's TyConV-tower along the vertical
+        -- @:@-arrow.  'meetTowers' threads 'hypEnvSubst' through —
+        -- groupoid-coherent at the horizontal layer (delegating to
+        -- 'TyProc.meet'), directed walk at the vertical layer.  Today
+        -- this is purely a kind-equality check (no metavariables in
+        -- the parent or member towers), so the resulting 'Subst' is
+        -- unchanged; the threading is forward-looking for when metas
+        -- enter the kind layer.
+        env0' <- case hypEnvParent env0 of
+          Nothing -> Right env0
           Just (parentName, parentPath) ->
             let parentTower = towerOfView (hypEnvKindEnv env0)
                                           (TyConV parentName parentPath)
                 memberTower = towerOfView (hypEnvKindEnv env0)
                                           (hRun kindProc)
-            in compareTowers memberTower parentTower
-        let env1 = env0
-              { hypEnvDataTypes = Map.insert name (length params) (hypEnvDataTypes env0)
-              , hypEnvKindEnv   = Map.insert name kindProc        (hypEnvKindEnv env0)
+            in do
+              subst' <- meetTowers (hypEnvSubst env0) memberTower parentTower
+              Right env0 { hypEnvSubst = subst' }
+        let env1 = env0'
+              { hypEnvDataTypes = Map.insert name (length params) (hypEnvDataTypes env0')
+              , hypEnvKindEnv   = Map.insert name kindProc        (hypEnvKindEnv env0')
               }
             savedParent = hypEnvParent env1
         env2 <- threadDecls ds (env1 { hypEnvParent = Just (name, declPath) })
