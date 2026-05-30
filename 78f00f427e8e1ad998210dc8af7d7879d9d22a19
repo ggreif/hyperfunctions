@@ -1,0 +1,101 @@
+# Cute `Iso : Iso { One : One }` is automatic promotion via the level coordinate
+
+A clarifying realisation while looking at the GADT sketches: the
+"DataKinds-style promotion of ctor names to types" framing for
+making `data Iso : Iso { One : One }` work is *the wrong framing*.
+No explicit promotion is needed.  The covering-space framing
+already gives it for free, via the level coordinate.
+
+## The mechanism
+
+For `data Iso : Iso { One : One; Two : Two; Three : Three }`:
+
+- The **left** `Iso` is the def-site — declares a tycon at some
+  parametric level `l_def` (via the `LVar declPath` fixpoint at
+  `predLv`).
+- The **right** `Iso` (the kind annotation) is a use-site — it
+  references the def-site `Iso` with the implicit deck-shift
+  offset of +1 (because it's the kind of `Iso`, one rung up).  In
+  Tower terms: `kindOf (TyConV "Iso" path Z) = TyConV "Iso" path
+  (S Z)` — the same name, the same path, the offset bumped by one.
+
+- The body's `One : One` declaration does TWO things at once:
+  - Defines a **value** `One` at level `l_def - 1` (the typical
+    ctor level — one below its type).
+  - Defines a **type** `One` at level `l_def` (the same level as
+    its enclosing `Iso`, because it's reachable as a type from
+    `Iso`'s body).
+
+Both are bindings of the same identifier `One`.  They don't
+collide because the level coordinate disambiguates: when `One`
+appears in a value-level context the parser/elaborator resolves
+it at level `l_def - 1`; in a type-level context at `l_def`.
+
+For the user (not the implementation), the `One : One` syntax
+*reads* as "the value One has type One", and the type-level One
+is just the implicit promotion of the ctor name to the next rung
+up — but there's no separate "promote" operation; the cover's
+deck transformation already does it.  The two `One`s in `One :
+One` aren't even strictly the same entity: they're the value at
+rung 0 and the type at rung 1, joined by the implicit `:`-arrow.
+
+## Contrast with Haskell's DataKinds
+
+Haskell needs `'True` syntax (or `DataKinds` extension to lift)
+because Haskell's universe structure isn't stratified — kinds
+and types live in disjoint syntactic categories.  Promoting a
+ctor requires explicit lifting because there's no automatic
+deck transformation between Type and Kind levels.
+
+Our covering-space ladder makes the stratification *the*
+structure rather than *an extra* structure.  The same name
+inhabits multiple rungs of the cover, each at its own level.
+Declaring at one rung automatically populates the next.
+
+## What this unlocks
+
+`Refl : a ~ a` becomes a horizontal equality "at all levels" —
+meaning the `~` ctor inhabits every rung where `a` does, with
+the same shape.  Concretely:
+
+```
+data (~) : forall l. *l -> *l -> *l where
+  Refl : a ~ a
+```
+
+The implicit promotion machinery means `Refl` at level 0 is the
+same syntactic identifier as `Refl` at level 1, etc.  The
+covering-space ladder threads through all of them with one
+generator.
+
+This is the path that puts us "almost in dependently typed
+territory" — *almost* because we're missing type-level
+functions (so we can't compute with the type-level promotions
+yet).  Once type-level functions arrive, the same promotion
+mechanism that handles `One : One` will handle `Vec : Nat -> *`
+naturally — `Nat` is just a tycon at the rung below `*`, and
+applying `Vec` to a `Nat`-valued *type* expression is the same
+operation as applying it to a `Nat`-valued *value* expression
+viewed one rung up.
+
+## Implication for the GADT sketch tests
+
+The "BLOCKED: ctor name as type" framing in `GadtSketchSpec` is
+imprecise.  It's not blocked by missing DataKinds-style
+promotion — there shouldn't be any promotion step.  It's
+blocked by **the parser not knowing that ctor names inside a
+data body's annotations should resolve to the implicitly-
+promoted type at the next rung up**.
+
+The fix is a parser-elaborator handshake: when parsing a ctor
+type annotation, the binders should include the enclosing
+data's *body* (i.e., sibling ctor names available as types at
+the parent's level).  That's the same mechanism that makes
+mutual references work — Iso-cute is *not* a separate feature
+from mutual references; it's the same feature, viewed through
+the lens of the level coordinate.
+
+Recorded as a course correction: the GADT-sketch test labels
+that say "needs DataKinds-style promotion" should be re-labelled
+to say "needs sibling-ctor-as-type binder inclusion" instead.
+The substrate is fine; the parser is the work.
