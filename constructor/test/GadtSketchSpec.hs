@@ -90,6 +90,31 @@ tests =
   , accepts "GADT sketch: Swap (mutual ctor-as-type — Left : Right; Right : Left)"
       "data Swap : Swap { Left : Right; Right : Left }"
       ["Left", "Right"]
+  , accepts "GADT sketch: Mirror — universe-polymorphic singleton"
+      -- 'data Mirror : ∀l. *l { Cup : Cup; Fridge : Fridge; Plate : Plate }'
+      -- — Iso-cute but the parent's level is parametric in @l@
+      -- (an ∀-binder rather than a self-referential TyConRef).
+      -- The body ctors inherit the parent's parametric level via
+      -- HypLinf's parent-fallback; 'predLv (LVar p) = LVar p'
+      -- doesn't care whether @p@ points at a declPath or a
+      -- ∀-binderPath, so the fixpoint reasoning carries through
+      -- unchanged.  Tests that the mutual-ref machinery composes
+      -- with universe polymorphism.
+      "data Mirror : \8704l. *l { Cup : Cup; Fridge : Fridge; Plate : Plate }"
+      ["Cup", "Fridge", "Plate"]
+  , rejectsAtLevel
+      "GADT sketch: Mirror with typo (typo correctly caught, Unbound)"
+      -- Same Mirror but with @Fridge : Frigde@ — a typo on the
+      -- type side.  The parser prescan only registers actual
+      -- sibling names, so 'Frigde' doesn't end up in 'tcBinders'
+      -- and the parser emits @var "Frigde"@ rather than a
+      -- 'tyConRef'.  HypLinf.var has no parent-fallback (only
+      -- 'tyConRef' does, by design — 'var' is reserved for genuine
+      -- unbound names), so the program is correctly rejected.
+      -- Witnesses that the body-mutual machinery doesn't
+      -- accidentally accept arbitrary forward references.
+      "data Mirror : \8704l. *l { Cup : Cup; Fridge : Frigde; Plate : Plate }"
+      (Unbound "Frigde")
 
   -- --- Top-level mutual references — still BLOCKED -------------
   --
