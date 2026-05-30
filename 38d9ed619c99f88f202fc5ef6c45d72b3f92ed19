@@ -1,0 +1,77 @@
+# Calling convention as hyperfunction (reading the Kidney/Wu paper)
+
+Reading "Hyperfunctions: Communicating Continuations" surfaced
+a framing that fits directly onto the Wasm codegen queued for
+0.3.0: a calling convention IS a hyperfunction.
+
+## The protocol shape
+
+A calling convention is a contract between caller and callee.
+Each side knows its own half:
+
+- **Caller**: pre-call (push args, save caller-saved regs)
+  + post-call (pop, restore, consume result).
+- **Callee**: prologue (save callee-saved, frame setup)
+  + body + epilogue (place result, restore).
+
+Crucially each side's behaviour is a *function of the other's*.
+The caller emits "if you do X with my args, I'll do Y with your
+result"; the callee emits "if you give me args of shape A, I'll
+hand you a result of shape B."  That two-way functional
+dependence is exactly:
+
+```
+Hyper a b = Hyper { invoke :: Hyper b a -> b }
+```
+
+- Caller : `Hyper Args Result`
+- Callee : `Hyper Result Args` (the dual)
+- `invoke` against each other = run the protocol
+
+Self-application = actually executing the call.  The
+prologue/epilogue pair is the hyperfunction's `invoke` and its
+settling step.
+
+## Why this matters for our Wasm codegen
+
+Scott-encoded ctors are already continuation-receivers: each
+branch the elim passes IS a continuation the value will pick
+and thread its captured args through.  So Scott values are
+hyperfunctions already, just dressed up as Haskell newtypes.
+
+When we emit Scott to Wasm:
+
+- Each ctor's branches become Wasm continuations (function
+  refs / table indices).
+- The elim's dispatch IS the calling convention dance —
+  caller hands branches, callee picks one and invokes with
+  captured args.
+
+This means the Wasm calling convention falls out as the
+*runtime realisation* of the same hyperfunction algebra we
+have been using at the type level:
+
+- Static layer: `TyProc = Hyper TyView TyView`
+  (TyProc.meet self-applies to settle equalities).
+- Dynamic layer: `call-site = Hyper Args Result`
+  (caller and callee self-apply to settle the protocol).
+
+Same shape, two layers — Atkey's "self-applicable unification"
+framing at the static side, and the calling-convention dance
+at the dynamic side.
+
+## Practical consequence
+
+When the Wasm codegen lands, the encoding will be:
+
+- Ctor function = Wasm function whose calling convention IS
+  the Scott dispatch protocol.
+- Branch lambda = continuation; passed as function-ref / table
+  index.
+- DPS for at-binder cycles = the hyperfunction's "settling
+  fixpoint" specialised to heap allocation.
+
+No impedance gap between Scott-the-encoding and Wasm-the-
+target, because both speak hyperfunctions natively.  The
+calling convention IS the encoding, not a bridge between
+encoding and machine.
