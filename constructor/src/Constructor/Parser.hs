@@ -296,7 +296,6 @@ decl path binders = dataD <|> ctorD
       void (symbol "data")
       n      <- identifier
       params <- many identifier  -- zero-or-more parameter names
-      void (symbol ":")
       -- Pre-extend the binders with @n@ BEFORE parsing the kind
       -- annotation, so a self-referential annotation (the @data
       -- Weird : Weird@ shape) resolves the inner @n@ to a
@@ -306,7 +305,7 @@ decl path binders = dataD <|> ctorD
       -- parse time as 'Var "Weird"' and then fail with TyUnbound
       -- when the polymorphic re-emit reaches the type layer.
       let annBinders = extendTc n path binders
-      e   <- expr (extendPath PsDataAnn path) annBinders
+      e   <- towerOrAnnotated n path PsDataAnn annBinders
       -- Inside the data body, the outer ∀-scope does NOT carry over,
       -- but: the data's own type parameters DO (scoped over each
       -- constructor's type), the data binder itself DOES (so
@@ -342,10 +341,30 @@ decl path binders = dataD <|> ctorD
 
     ctorD = do
       n   <- identifier
-      void (symbol ":")
-      e   <- expr (extendPath PsCtorTy path) binders
+      e   <- towerOrAnnotated n path PsCtorTy binders
       ann <- freshDeclAnn
       pure (ctorDecl ann n e, binders)
+
+    -- | Either @: expr@ or @⋮@ (the typing-tower shorthand).  The
+    --   '⋮' (U+22EE VERTICAL ELLIPSIS) is /literally/ the typing
+    --   tower as glyph — three vertical dots picking out the
+    --   stable upward stream of rungs that @predLv (LVar p) = LVar
+    --   p@ guarantees.  Parsed as a 'tyConRef' to the LHS
+    --   identifier at the LHS path: the right reading is "build the
+    --   tower at this name+path, use its next rung as the type
+    --   annotation" — which is precisely 'kindOf' applied to that
+    --   TyConV at offset zero, giving the same-name-bumped-offset
+    --   under self-stratification.
+    --
+    --   This is shorthand only — semantically equivalent to the
+    --   explicit @c : c@ form once the body-mutual prescan + the
+    --   self-reference pre-extend put @c@ into tcBinders.
+    towerOrAnnotated lhsName lhsPath pathStep bs =
+          (do void (symbol "\8942")
+              ann' <- freshExprAnn
+              pure (tyConRef ann' lhsName lhsPath))
+      <|> (do void (symbol ":")
+              expr (extendPath pathStep lhsPath) bs)
 
 program
   :: (Lang r, HasAnn a m, MonadParsec Void Text m, MonadFail m)

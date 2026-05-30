@@ -90,6 +90,39 @@ tests =
   , accepts "GADT sketch: Swap (mutual ctor-as-type — Left : Right; Right : Left)"
       "data Swap : Swap { Left : Right; Right : Left }"
       ["Left", "Right"]
+    -- --- Typing-tower shorthand ⋮ ---------------------------------
+    --
+    -- '⋮' (U+22EE VERTICAL ELLIPSIS) is the typing-tower glyph:
+    -- 'c ⋮' expands to 'c : c' (the singleton type-annotation
+    -- shape).  The three vertical dots are the productive
+    -- self-stratified codata above the LHS — depicting exactly
+    -- what 'predLv (LVar p) = LVar p' + 'kindOf' on a TyConV
+    -- compute.  Pure parser-level desugaring; no elaborator
+    -- changes needed.
+  , accepts "GADT sketch ⋮: Iso cute with tower shorthand"
+      "data Iso \8942 { One \8942; Two \8942; Three \8942 }"
+      ["One", "Two", "Three"]
+  , accepts "GADT sketch ⋮: Mirror with tower shorthand on ctors only"
+      -- Mixed: the data uses an explicit ∀-poly kind, ctors use ⋮.
+      "data Mirror : \8704l. *l { Cup \8942; Fridge \8942; Plate \8942 }"
+      ["Cup", "Fridge", "Plate"]
+  , accepts "GADT sketch ⋮: Swap with tower on data, explicit ctors"
+      -- Swap's ctors point at /siblings/, not themselves, so they
+      -- still need the explicit annotation form.  The data line
+      -- alone gets ⋮ here.
+      "data Swap \8942 { Left : Right; Right : Left }"
+      ["Left", "Right"]
+  , accepts "GADT sketch ⋮: Mirror full shorthand (drops the ∀l. *l)"
+      -- 'data Mirror ⋮' is Weird-style self-stratification rather
+      -- than universe-polymorphic — Mirror's level is 'LVar
+      -- mirrorPath' (the def's path) instead of 'LVar pBinder'
+      -- (a ∀-binder's path).  Both are LVar fixpoints, so the
+      -- ctor-level behaviour is observationally equivalent.
+      -- More concise when you don't specifically want to
+      -- introduce a ∀-binder.
+      "data Mirror \8942 { Cup \8942; Fridge \8942; Plate \8942 }"
+      ["Cup", "Fridge", "Plate"]
+
   , accepts "GADT sketch: Mirror — universe-polymorphic singleton"
       -- 'data Mirror : ∀l. *l { Cup : Cup; Fridge : Fridge; Plate : Plate }'
       -- — Iso-cute but the parent's level is parametric in @l@
