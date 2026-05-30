@@ -35,6 +35,7 @@ import Constructor.Path (Path (..), PathStep (..))
 import Constructor.Tinf (TyErr (..))
 import Constructor.Tower
   ( climb
+  , compareTowers
   , emptyKindEnv
   , horizontal
   , kindOf
@@ -170,8 +171,63 @@ tests =
         "data Type : *1 { Constr : Type }"
         $ \r ->
           let typeP = Path [PsProgDecl 0]
-              k     = kindOf (hypTinfKindEnv r) (TyConV "Type" typeP)
+              k     = kindOf (hypTinfKindEnv r) (TyConV "Type" typeP Z)
           in expectEq (viewToTy k) (TyUniv (S (S (S Z))))
+    )
+    -- --- Weird-style self-stratification ---------------------------
+  , ( "Weird: kindOf detects self-reference and bumps offset"
+    , -- A KindEnv where "Weird" is bound to its own TyConV.  Each
+      -- 'kindOf' step should bump the offset rather than producing
+      -- a stationary stream.
+      let weirdP = Path [PsProgDecl 0]
+          env_   = Map.fromList [("Weird", tyToProc (TyCon "Weird" weirdP))]
+          -- tyToProc embeds at offset Z by construction (oneLayer).
+          k0 = kindOf env_ (TyConV "Weird" weirdP Z)
+          k1 = kindOf env_ k0
+          k2 = kindOf env_ k1
+      in case (k0, k1, k2) of
+        ( TyConV n0 p0 o0
+          , TyConV n1 p1 o1
+          , TyConV n2 p2 o2
+          )
+          | n0 == "Weird" && p0 == weirdP && o0 == S Z
+          , n1 == "Weird" && p1 == weirdP && o1 == S (S Z)
+          , n2 == "Weird" && p2 == weirdP && o2 == S (S (S Z))
+          -> pure True
+        _ -> reportFail $
+              "expected three TyConV \"Weird\" with offsets S Z, S (S Z), S (S (S Z))\n" <>
+              "  got: k0=" <> show (viewToTy k0) <>
+              " k1=" <> show (viewToTy k1) <>
+              " k2=" <> show (viewToTy k2)
+    )
+  , ( "Weird: compareTowers terminates immediately on identical Weird towers"
+    , -- Build two Weird-style towers under the same env and compare.
+      -- The new TyConV-stable-tail base case must fire at rung 0:
+      -- both rungs are TyConV \"Weird\" weirdP Z, so meet returns
+      -- 'Right' without needing to walk further (avoiding the
+      -- infinite climb that the *n-only base case would loop on).
+      let weirdP = Path [PsProgDecl 0]
+          env_   = Map.fromList [("Weird", tyToProc (TyCon "Weird" weirdP))]
+          tow1   = liftTower env_ (tyToProc (TyCon "Weird" weirdP))
+          tow2   = liftTower env_ (tyToProc (TyCon "Weird" weirdP))
+      in case compareTowers tow1 tow2 of
+        Right () -> pure True
+        Left err -> reportFail $ "expected Right (), got: " <> show err
+    )
+  , ( "Weird: compareTowers rejects two TyConVs at different offsets"
+    , -- Sanity check: if we manually build a Weird tower starting at
+      -- a non-zero offset, comparison against a fresh-offset Weird
+      -- tower must fail (different offsets, same name+path → reject).
+      let weirdP = Path [PsProgDecl 0]
+          env_   = Map.fromList [("Weird", tyToProc (TyCon "Weird" weirdP))]
+          tow0   = liftTower env_ (tyToProc (TyCon "Weird" weirdP))
+          -- Skipped to offset 1 by climbing once.
+          tow1   = climb tow0
+      in case compareTowers tow0 tow1 of
+        Left (TyMismatch _ _) -> pure True
+        Left err -> reportFail $ "expected TyMismatch, got: " <> show err
+        Right () -> reportFail
+          "expected mismatch (different offsets), got success"
     )
   , ( "kindOf: well-kinded Ty2's rung 1 is TyConV \"Type\""
     , -- The property step 3 exploits: under a well-kinded program,
@@ -184,7 +240,7 @@ tests =
         "data Type : *1 { Constr : Type; data Ty2 : Type { Foo : Ty2 } }"
         $ \r ->
           let ty2P = Path [PsProgDecl 0, PsDeclIdx 1]
-              k    = kindOf (hypTinfKindEnv r) (TyConV "Ty2" ty2P)
+              k    = kindOf (hypTinfKindEnv r) (TyConV "Ty2" ty2P Z)
           in expectEq (viewToTy k) (TyCon "Type" (Path [PsProgDecl 0]))
     )
   ]

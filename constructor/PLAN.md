@@ -586,14 +586,31 @@ the design depends on.
 
 The arc proper is now complete.  Two follow-ups sit at the seam:
 
-- **Stratified self-typing — `data Weird : Weird` and kin.**  The
-  parser already accepts the syntax; the parametric-tail termination
-  criterion in `meetTowers` does not yet stabilise (it only knows
-  the `*n` collapse).  Adding a level offset to 'TyConV' and
-  generalising the base case to "same name, same path, equal
-  offset-stream" closes the case.  The deck-shift slot already
-  sitting on `Place` (in `Sheet.hs`) is the A-side analog of this
-  data shape — it's been there since v0 anticipating the move.
+- **Stratified self-typing — `data Weird : Weird` (Tower layer
+  landed; level-layer end-to-end pending).**  'TyConV' grew a deck-
+  shift offset `!Lv`; 'kindOf' on a TyConV whose env-bound kind
+  annotation is itself (modulo Name + Path) bumps the offset by one
+  instead of recursing, giving productive codata up the rungs.
+  'meetTowers'/'compareTowers' gained a TyConV-stable-tail base
+  case (same Name, Path, and offset → success).  Tower-layer
+  tests in 'TowerSpec' build a Weird-tower under a synthetic
+  KindEnv and verify both productive climbing and immediate
+  termination on identical towers.  End-to-end through HypLinf is
+  still blocked: HypLinf rejects 'data Weird : Weird' at level
+  elaboration because the name isn't in scope while its own kind
+  annotation is being elaborated, and `predLv (LVar _) = Nothing`
+  has no fixpoint for `n = predLv n`.  Two related accommodations
+  unblock end-to-end:
+    - HypLinf.dataDecl pre-binds `n` (to a tentative LVar declPath)
+      before elaborating the kind annotation, so the self-reference
+      can resolve.
+    - `predLv (LVar p)` returns `Just (LVar p)` (the LVar is its
+      own predecessor — the level coordinate is fully parametric),
+      letting `data Weird : Weird` settle at a level-polymorphic
+      level rather than failing 'DataAnnotationTooLow'.
+  The deck-shift slot already sitting on 'Place' in 'Sheet.hs' is
+  the A-side analog of the TyConV offset — present since v0
+  anticipating exactly this move.
 
 - **Meta-aware vertical regeneration.**  When a metavariable
   resolves at rung *n* during `meetTowers`, the towers' verticals

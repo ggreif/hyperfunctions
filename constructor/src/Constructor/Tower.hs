@@ -82,7 +82,12 @@ emptyKindEnv = Map.empty
 --   * 'TyConV' (a declared tycon): look up its kind annotation in
 --     the env; fall back to @*0@ if absent (built-ins, or empty env
 --     in synthetic tests — preserves backward compatibility with the
---     commit-7 synthetic universe-stream tests).
+--     commit-7 synthetic universe-stream tests).  Self-reference
+--     special case: when the kind annotation IS the same TyConV
+--     (modulo offset) — the @data Weird : Weird@ shape — return the
+--     same TyConV with the offset bumped by one rather than
+--     recursing into a stationary stream.  This is the productive
+--     codata that the Weird-style stratification needs.
 --
 --   * 'TyAppV' f _: result kind of f.  For our limited grammar where
 --     tycon kind annotations are flat (the result kind only, not
@@ -105,9 +110,16 @@ emptyKindEnv = Map.empty
 --     during tower-aware 'meet'.
 kindOf :: KindEnv -> TyView -> TyView
 kindOf env v0 = case v0 of
-  TyConV n _   -> case Map.lookup n env of
-                    Just kindProc -> hRun kindProc
-                    Nothing       -> TyUnivV (S (S Z))   -- fallback: @*0@
+  TyConV n p offset -> case Map.lookup n env of
+                         Just kindProc -> case hRun kindProc of
+                           -- Self-reference: kindProc IS our own TyConV.
+                           -- Bump the deck-shift offset instead of recursing
+                           -- — produces 'Weird@(offset+1)', the next rung
+                           -- of the Weird-tower as productive codata.
+                           TyConV n' p' _
+                             | n == n' && p == p' -> TyConV n p (S offset)
+                           other -> other
+                         Nothing -> TyUnivV (S (S Z))   -- fallback: @*0@
   TyAppV f _   -> kindOf env (hRun f)
   TyArrV a _   -> kindOf env (hRun a)
   TyVarV _ _   -> TyUnivV (S (S Z))                      -- parameters default to @*0@
@@ -182,8 +194,19 @@ meetTowers :: Subst -> Tower -> Tower -> Either TyErr Subst
 meetTowers = go
   where
     go s t1 t2
+      -- *n-stable tail: both rungs are TyUnivV at the same level.
+      -- This is the canonical termination case for non-self-stratified
+      -- towers (everything that's not Weird-style).
       | TyUnivV lv1 <- h1, TyUnivV lv2 <- h2
       , lv1 == lv2                       = Right s
+      -- TyConV-stable tail (Weird-style stratification): both rungs
+      -- are the same TyConV (Name + Path + offset).  Stern-Gerlach
+      -- guarantees def-path identification for nullary tycons, and
+      -- equal offsets mean both towers have climbed the same number
+      -- of self-referential rungs above the def.  From here both
+      -- towers are observationally identical productive codata.
+      | TyConV n1 p1 o1 <- h1, TyConV n2 p2 o2 <- h2
+      , n1 == n2 && p1 == p2 && o1 == o2 = Right s
       | otherwise                        = do
           s' <- meet s (hPure h1) (hPure h2)
           go s' (vertical t1) (vertical t2)

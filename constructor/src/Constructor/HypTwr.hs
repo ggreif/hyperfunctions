@@ -147,7 +147,7 @@ instance Lang HypTwr where
         env0' <- case hypTwrEnvParent env0 of
           Nothing -> Right env0
           Just (parentName, parentPath) ->
-            let parentTower = leafTower env0 (TyConV parentName parentPath)
+            let parentTower = leafTower env0 (TyConV parentName parentPath Z)
                 memberTower = leafTower env0 (horizontal kindTower)
             in do
               subst' <- meetTowers (hypTwrEnvSubst env0) memberTower parentTower
@@ -177,7 +177,7 @@ instance Lang HypTwr where
   var _ann n = HypTwr $ \_env -> Left (TyUnbound n)
 
   tyConRef _ann n path = HypTwr $ \env ->
-    Right (HypTwrExpr (leafTower env (TyConV n path)), env)
+    Right (HypTwrExpr (leafTower env (TyConV n path Z)), env)
 
   tyParamRef _ann n path = HypTwr $ \env ->
     Right (HypTwrExpr (leafTower env (TyVarV n path)), env)

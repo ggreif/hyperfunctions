@@ -36,7 +36,7 @@ module Constructor.TyProc
   ) where
 
 import Constructor.HyperLite (Hyper, hPure, hRun)
-import Constructor.Level (Lv)
+import Constructor.Level (Lv (..))
 import Constructor.Path (Path)
 import Constructor.Syntax (Name)
 import Constructor.Tinf (TyErr (..))
@@ -48,7 +48,15 @@ import qualified Data.Map.Strict as Map
 --   'TyProc's by recursion, so unfolding cost is paid lazily as the
 --   web is traversed.
 data TyView
-  = TyConV  !Name !Path        -- ^ nullary type-constructor; identified by decl path
+  = TyConV  !Name !Path !Lv    -- ^ nullary type-constructor; identified by decl
+                               --   path.  The 'Lv' is a /deck-shift offset/ — the
+                               --   covering-space level above the tycon's own
+                               --   rung.  Surface uses always start at offset 'Z';
+                               --   non-zero offsets arise from 'kindOf' on a
+                               --   self-referential tycon (e.g. @data Weird :
+                               --   Weird@'s upward tower bumps offset by one per
+                               --   climb, giving productive codata rather than a
+                               --   stationary stream).
   | TyVarV  !Name !Path        -- ^ data-parameter reference; identified by binder path
   | TyAppV  !TyProc !TyProc    -- ^ type-level application
   | TyArrV  !TyProc !TyProc    -- ^ function type
@@ -96,7 +104,7 @@ type TyProc = Hyper TyView TyView
 tyToProc :: TyExpr -> TyProc
 tyToProc = hPure . oneLayer
   where
-    oneLayer (TyCon n p) = TyConV n p
+    oneLayer (TyCon n p) = TyConV n p Z
     oneLayer (TyVar n p) = TyVarV n p
     oneLayer (TyApp f x) = TyAppV (tyToProc f) (tyToProc x)
     oneLayer (TyArr a b) = TyArrV (tyToProc a) (tyToProc b)
@@ -116,7 +124,7 @@ procToTy = viewToTy . hRun
 --   children via 'procToTy'.  Useful when handling a view directly
 --   (e.g. in error reporting from 'meet') without going via 'hRun'.
 viewToTy :: TyView -> TyExpr
-viewToTy (TyConV n p)  = TyCon n p
+viewToTy (TyConV n p _) = TyCon n p   -- offset elided in syntactic projection
 viewToTy (TyVarV n pa) = TyVar n pa
 viewToTy (TyAppV f x)  = TyApp (procToTy f) (procToTy x)
 viewToTy (TyArrV a b)  = TyArr (procToTy a) (procToTy b)
@@ -157,8 +165,8 @@ meet s p1 p2 = meetView s (resolveView s (hRun p1)) (resolveView s (hRun p2))
         | otherwise -> Right (Map.insert m1 (TyMetaV m2) s')
       (TyMetaV m, v) -> Right (Map.insert m v s')
       (v, TyMetaV m) -> Right (Map.insert m v s')
-      (TyConV n1 p1', TyConV n2 p2')
-        | n1 == n2 && p1' == p2' -> Right s'
+      (TyConV n1 p1' o1, TyConV n2 p2' o2)
+        | n1 == n2 && p1' == p2' && o1 == o2 -> Right s'
       (TyVarV n1 p1', TyVarV n2 p2')
         | n1 == n2 && p1' == p2' -> Right s'
       (TyAppV f1 x1, TyAppV f2 x2) -> do
@@ -177,7 +185,7 @@ meet s p1 p2 = meetView s (resolveView s (hRun p1)) (resolveView s (hRun p2))
 materialize :: Subst -> TyProc -> Either TyErr TyExpr
 materialize s p = materializeView (resolveView s (hRun p))
   where
-    materializeView (TyConV n pa) = Right (TyCon n pa)
+    materializeView (TyConV n pa _) = Right (TyCon n pa)   -- offset elided
     materializeView (TyVarV n pa) = Right (TyVar n pa)
     materializeView (TyAppV f x)  = TyApp <$> materialize s f <*> materialize s x
     materializeView (TyArrV a b)  = TyArr <$> materialize s a <*> materialize s b

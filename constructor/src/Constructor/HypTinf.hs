@@ -128,7 +128,7 @@ threadDecls (d:ds) env = do
 spineHead :: TyProc -> (Maybe (Name, Path), Int)
 spineHead p = go (hRun p) 0
   where
-    go (TyConV n declP) depth = (Just (n, declP), depth)
+    go (TyConV n declP _) depth = (Just (n, declP), depth)
     go (TyAppV g _)     depth = go (hRun g) (depth + 1)
     go _                _     = (Nothing, 0)
 
@@ -178,7 +178,7 @@ instance Lang HypTinf where
           Nothing -> Right env0
           Just (parentName, parentPath) ->
             let parentTower = towerOfView (hypEnvKindEnv env0)
-                                          (TyConV parentName parentPath)
+                                          (TyConV parentName parentPath Z)
                 memberTower = towerOfView (hypEnvKindEnv env0)
                                           (hRun kindProc)
             in do
@@ -206,7 +206,7 @@ instance Lang HypTinf where
   var _ann n = HypTinf $ \_env -> Left (TyUnbound n)
 
   tyConRef _ann n path = HypTinf $ \env ->
-    Right (HypTinfExpr (hPure (TyConV n path)), env)
+    Right (HypTinfExpr (hPure (TyConV n path Z)), env)
 
   tyParamRef _ann n path = HypTinf $ \env ->
     Right (HypTinfExpr (hPure (TyVarV n path)), env)
