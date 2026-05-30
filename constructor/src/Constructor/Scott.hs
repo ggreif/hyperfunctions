@@ -45,8 +45,13 @@ data ScottOut (s :: Sort) where
   SoArm  :: !String -> !(Maybe Name) -> ScottOut 'SArm
 
 data DeclInfo
-  = DiCtor !Name ![String] ![String] ![Name]
-    -- ^ ctor name, captured-arg types, result-index args, existentials
+  = DiCtor !Name ![String] ![String] ![Name] ![Name]
+    -- ^ ctor name, captured-arg types, result-index args,
+    --   explicit existentials (from @∃m.@), tyParamRefs seen
+    --   in this ctor's annotation.  The seenRefs list is
+    --   consumed only by refining-GADT emission to forall'-
+    --   bind the parent-parameter references at each ctor
+    --   site; non-refining emit ignores it.
   | DiData !String
   | DiVal  !String
 
@@ -56,10 +61,26 @@ data Env = Env
   , envDataParams :: !(Map Name [(Name, String)])
     -- ^ data name → list of (param name, param kind text)
   , envRtType     :: !(Maybe Name)
+  , envInKind     :: !Bool
+    -- ^ 'True' while elaborating a parameter's kind annotation
+    --   (the @K@ in @(n : K)@).  In that context 'tyConRef'
+    --   emits the /Haskell data/ name (no tick) so the result
+    --   is DataKinds-promotable; outside, it emits the Scott
+    --   newtype name (with tick) for runtime types.
+  , envCurrentParams :: ![Name]
+    -- ^ Names of the parametric data type currently being
+    --   processed.  References to these inside a ctor's
+    --   annotation become per-ctor foralls (the parent
+    --   param flows in as a universal at the ctor's type).
+  , envTyParamSeen :: ![Name]
+    -- ^ tyParamRefs encountered during the current ctor's
+    --   annotation elaboration.  Intersected with
+    --   'envCurrentParams' to determine which parent params
+    --   should be forall'd at the ctor level.
   } deriving Show
 
 emptyEnv :: Env
-emptyEnv = Env Map.empty Map.empty Map.empty Nothing
+emptyEnv = Env Map.empty Map.empty Map.empty Nothing False [] []
 
 newtype Scott (a :: Sort -> Type) (s :: Sort) = Scott
   { unScott :: State Env (ScottOut s) }
@@ -110,7 +131,7 @@ splitTopLevel s = reverse (map reverse (go s 0 [] []))
 extractDeclText :: DeclInfo -> Maybe String
 extractDeclText (DiData t)         = Just t
 extractDeclText (DiVal  t)         = Just t
-extractDeclText (DiCtor _ _ _ _)   = Nothing
+extractDeclText DiCtor {}          = Nothing
 
 -- ----------------------------------------------------------------------
 -- Non-parametric emission (Bool, Iso, Nat-style)
@@ -125,20 +146,47 @@ branchTyNonParam caps existentials =
   in "(" <> prefix <> intercalate " -> " (caps <> ["x"]) <> ")"
 
 emitNonParametric
-  :: Name -> [(Name, [String], [String], [Name])] -> String
+  :: Name -> [(Name, [String], [String], [Name], [Name])] -> String
 emitNonParametric dataName ctorInfos =
   let dn          = T.unpack dataName
       elimTy      = dn <> "'"
+      -- Regular Haskell data with DataKinds-promotable ctors —
+      -- emitted only when no ctor has existential binders (those
+      -- would require ExistentialQuantification + a GADT-style
+      -- emission, which we skip for now; data types with
+      -- existentials aren't useful as kinds anyway).
+      hasExistentials = any (\(_, _, _, es, _) -> not (null es)) ctorInfos
+      regCtor (cn, caps, _, _, _) =
+        T.unpack cn <> case caps of
+          [] -> ""
+          _  -> " " <> unwords (map stripTicks caps)
+      regDataLine
+        | hasExistentials = ""
+        | otherwise =
+            "data " <> dn <> " = "
+            <> intercalate " | " (map regCtor ctorInfos)
+            <> " deriving Show\n\n"
       branches    =
-        [ branchTyNonParam caps es | (_, caps, _, es) <- ctorInfos ]
+        [ branchTyNonParam caps es | (_, caps, _, es, _) <- ctorInfos ]
       newtypeLine = "newtype " <> elimTy <> " = " <> elimTy
                   <> " { un" <> elimTy <> " :: forall x. "
                   <> intercalate " -> " (branches <> ["x"]) <> " }"
       ctorFns =
         [ emitCtorFnNonParam elimTy idx (length ctorInfos) cn caps es
-        | (idx, (cn, caps, _, es)) <- zip [0 :: Int ..] ctorInfos ]
+        | (idx, (cn, caps, _, es, _)) <- zip [0 :: Int ..] ctorInfos ]
       showFn = emitShowFnNonParam elimTy dn ctorInfos
-  in unlines (newtypeLine : "" : ctorFns ++ ["", showFn])
+  in regDataLine <> unlines (newtypeLine : "" : ctorFns ++ ["", showFn])
+
+-- | Strip a trailing @'@ from each whitespace-separated token —
+--   used to convert Scott type-text back to its Haskell-data
+--   form when emitting the regular @data X = …@ that pairs with
+--   the Scott newtype.
+stripTicks :: String -> String
+stripTicks = unwords . map stripOne . words
+  where
+    stripOne w = case reverse w of
+      '\'':rest -> reverse rest
+      _         -> w
 
 emitCtorFnNonParam
   :: String -> Int -> Int -> Name -> [String] -> [Name] -> String
@@ -163,12 +211,12 @@ emitCtorFnNonParam elimTy idx n cn caps existentials =
   in typeSig <> "\n" <> defLine
 
 emitShowFnNonParam
-  :: String -> String -> [(Name, [String], [String], [Name])] -> String
+  :: String -> String -> [(Name, [String], [String], [Name], [Name])] -> String
 emitShowFnNonParam elimTy dn ctorInfos =
   let fnName = "show" <> dn
       branches =
         [ emitShowBranchNonParam cn caps es
-        | (cn, caps, _, es) <- ctorInfos ]
+        | (cn, caps, _, es, _) <- ctorInfos ]
   in fnName <> " :: " <> elimTy <> " -> String\n"
      <> fnName <> " v = un" <> elimTy <> " v " <> unwords branches
 
@@ -177,10 +225,14 @@ emitShowBranchNonParam cn caps existentials =
   let cnStr = T.unpack cn
       capVars = [ "a" <> show i | i <- [0 .. length caps - 1] ]
       existSet = map T.unpack existentials
-      showOne (capTy, var)
-        | capTy `elem` existSet      = "\"<existential>\""
-        | "'" `isSuffixOf` capTy     = "show" <> init capTy <> " " <> var
-        | otherwise                  = "\"<unrecognised " <> capTy <> ">\""
+      showOne (capTy, var) = case words capTy of
+        (t1 : _) | "'" `isSuffixOf` t1 ->
+          -- Scott-typed arg (e.g. "Nat'" or "Fin' n"): recurse
+          -- via 'showX' where X is the unticked name.
+          "show" <> init t1 <> " " <> var
+        _ | capTy `elem` existSet ->
+            "\"<existential>\""
+        _ -> "\"<unrecognised " <> capTy <> ">\""
       bodyStr = case caps of
         [] -> "\"" <> cnStr <> "\""
         _  -> "\"(" <> cnStr <> " \" ++ "
@@ -200,7 +252,7 @@ emitShowBranchNonParam cn caps existentials =
 
 emitNonRefining
   :: Name -> [(Name, String)]
-  -> [(Name, [String], [String], [Name])] -> String
+  -> [(Name, [String], [String], [Name], [Name])] -> String
 emitNonRefining dataName params ctorInfos =
   let dn        = T.unpack dataName
       elimTy    = dn <> "'"
@@ -208,7 +260,7 @@ emitNonRefining dataName params ctorInfos =
         [ "(" <> T.unpack pn <> " :: " <> pk <> ")" | (pn, pk) <- params ]
       paramRefs = unwords [ T.unpack pn | (pn, _) <- params ]
       branches  =
-        [ branchTyNonParam caps es | (_, caps, _, es) <- ctorInfos ]
+        [ branchTyNonParam caps es | (_, caps, _, es, _) <- ctorInfos ]
       newtypeLine = "newtype " <> elimTy <> " " <> paramSig
                   <> " = " <> elimTy
                   <> " { un" <> elimTy <> " :: forall x. "
@@ -216,7 +268,7 @@ emitNonRefining dataName params ctorInfos =
       ctorFns =
         [ emitCtorFnNonRefining elimTy paramRefs idx (length ctorInfos)
                                   cn caps es
-        | (idx, (cn, caps, _, es)) <- zip [0 :: Int ..] ctorInfos ]
+        | (idx, (cn, caps, _, es, _)) <- zip [0 :: Int ..] ctorInfos ]
       showFn = emitShowFnNonRefining dn elimTy paramRefs ctorInfos
   in unlines (newtypeLine : "" : ctorFns ++ ["", showFn])
 
@@ -245,12 +297,12 @@ emitCtorFnNonRefining elimTy paramRefs idx n cn caps existentials =
 
 emitShowFnNonRefining
   :: String -> String -> String
-  -> [(Name, [String], [String], [Name])] -> String
+  -> [(Name, [String], [String], [Name], [Name])] -> String
 emitShowFnNonRefining dn elimTy paramRefs ctorInfos =
   let fnName   = "show" <> dn
       branches =
         [ emitShowBranchNonParam cn caps es
-        | (cn, caps, _, es) <- ctorInfos ]
+        | (cn, caps, _, es, _) <- ctorInfos ]
   in fnName <> " :: forall " <> paramRefs <> ". " <> elimTy <> " "
      <> paramRefs <> " -> String\n"
      <> fnName <> " v = un" <> elimTy <> " v " <> unwords branches
@@ -276,7 +328,7 @@ branchTyParam caps resultArgs existentials =
 
 emitParametric
   :: Name -> [(Name, String)]
-  -> [(Name, [String], [String], [Name])] -> String
+  -> [(Name, [String], [String], [Name], [Name])] -> String
 emitParametric dataName params ctorInfos =
   let dn       = T.unpack dataName
       elimTy   = dn <> "'"
@@ -284,9 +336,17 @@ emitParametric dataName params ctorInfos =
         [ "(" <> T.unpack pn <> " :: " <> pk <> ")" | (pn, pk) <- params ]
       paramRefs = unwords [ T.unpack pn | (pn, _) <- params ]
       xKindChain = concat [ pk <> " -> " | (_, pk) <- params ] <> "Type"
+      -- For refining-GADT branches, parent params referenced by
+      -- the ctor become per-use foralls in the branch's type
+      -- (FS's @n@ is fresh at each elim site).  Combine explicit
+      -- existentials with parent-param refs here, then thread to
+      -- the branch type / ctor fn / show fn emitters.
+      enrichedInfos =
+        [ (cn, caps, res, nub (es <> seen))
+        | (cn, caps, res, es, seen) <- ctorInfos ]
       branches =
         [ branchTyParam caps res es
-        | (_, caps, res, es) <- ctorInfos ]
+        | (_, caps, res, es) <- enrichedInfos ]
       xApplied = "x " <> paramRefs
       newtypeLine = "newtype " <> elimTy <> " " <> paramSig
                   <> " = " <> elimTy
@@ -295,10 +355,14 @@ emitParametric dataName params ctorInfos =
                   <> intercalate " -> " (branches <> [xApplied])
                   <> " }"
       ctorFns =
-        [ emitCtorFnParam dn elimTy idx (length ctorInfos) cn caps res es
-        | (idx, (cn, caps, res, es)) <- zip [0 :: Int ..] ctorInfos ]
-      showFn = emitShowFnParam dn elimTy params ctorInfos
+        [ emitCtorFnParam dn elimTy idx (length enrichedInfos) cn caps res es
+        | (idx, (cn, caps, res, es)) <- zip [0 :: Int ..] enrichedInfos ]
+      showFn = emitShowFnParam dn elimTy params enrichedInfos
   in unlines (newtypeLine : "" : ctorFns ++ ["", showFn])
+  where
+    nub :: Eq a => [a] -> [a]
+    nub []     = []
+    nub (x:xs) = x : nub (filter (/= x) xs)
 
 emitCtorFnParam
   :: String -> String -> Int -> Int -> Name -> [String] -> [String]
@@ -351,10 +415,12 @@ emitShowBranchParam cn caps existentials =
   let cnStr = T.unpack cn
       capVars = [ "a" <> show i | i <- [0 .. length caps - 1] ]
       existSet = map T.unpack existentials
-      showOne (capTy, var)
-        | capTy `elem` existSet  = "\"<existential>\""
-        | "'" `isSuffixOf` capTy = "show" <> init capTy <> " " <> var
-        | otherwise              = "\"<unrecognised " <> capTy <> ">\""
+      showOne (capTy, var) = case words capTy of
+        (t1 : _) | "'" `isSuffixOf` t1 ->
+          "show" <> init t1 <> " " <> var
+        _ | capTy `elem` existSet ->
+            "\"<existential>\""
+        _ -> "\"<unrecognised " <> capTy <> ">\""
       bodyStr = case caps of
         [] -> "Const \"" <> cnStr <> "\""
         _  -> "Const (\"(" <> cnStr <> " \" ++ "
@@ -414,7 +480,7 @@ instance Lang Scott where
       , ""
       , "module Main where"
       , ""
-      , "import Prelude (IO, String, putStrLn, ($), (++))"
+      , "import Prelude (IO, String, putStrLn, ($), (++), Show)"
       , "import Data.Functor.Const (Const (..), getConst)"
       , "import Data.Kind (Type)"
       , ""
@@ -425,16 +491,24 @@ instance Lang Scott where
   dataDecl _ann _path name params _kindExpr ctorScotts = Scott $ do
     -- Elaborate params' kind expressions to text fragments.
     paramKindTexts <- mapM elabKind params
+    -- Make the parent's param names available to each ctorDecl
+    -- so it can detect tyParamRefs to them and add them to its
+    -- existentials list (parent params used in ctor signatures
+    -- flow in as per-ctor foralls in the Scott emit).
+    let paramNames = [ pn | (pn, _) <- params ]
+    savedParams <- gets envCurrentParams
+    modify $ \e -> e { envCurrentParams = paramNames }
     ctorOuts <- mapM unScott ctorScotts
+    modify $ \e -> e { envCurrentParams = savedParams }
     let paramList =
           [ (pn, pk) | (pn, pk) <- paramKindTexts ]
         ctorInfos =
-          [ (cn, caps, res, es)
+          [ (cn, caps, res, es, seen)
           | so <- ctorOuts
           , let di = case so of SoDecl x -> x
-          , DiCtor cn caps res es <- [di]
+          , DiCtor cn caps res es seen <- [di]
           ]
-        ctorNames = [ cn | (cn, _, _, _) <- ctorInfos ]
+        ctorNames = [ cn | (cn, _, _, _, _) <- ctorInfos ]
     modify $ \env -> env
       { envDataCtors = Map.insert name ctorNames (envDataCtors env)
       , envCtorParent = Map.union
@@ -442,9 +516,9 @@ instance Lang Scott where
           (envCtorParent env)
       , envDataParams = Map.insert name paramList (envDataParams env)
       }
-    let paramNames = [ T.unpack pn | (pn, _) <- paramList ]
+    let paramNamesStr = [ T.unpack pn | (pn, _) <- paramList ]
         refining =
-          any (\(_, _, resArgs, _) -> resArgs /= paramNames) ctorInfos
+          any (\(_, _, resArgs, _, _) -> resArgs /= paramNamesStr) ctorInfos
         emitted = case paramList of
           []                  -> emitNonParametric name ctorInfos
           _ | not refining    -> emitNonRefining name paramList ctorInfos
@@ -454,26 +528,49 @@ instance Lang Scott where
       elabKind :: (Name, Maybe (Scott a 'SExpr)) -> State Env (Name, String)
       elabKind (pn, Nothing)     = pure (pn, "Type")
       elabKind (pn, Just kindS)  = do
+        modify $ \e -> e { envInKind = True }
         sExpr <- unScott kindS
+        modify $ \e -> e { envInKind = False }
         let t = case sExpr of SoExpr txt _ -> txt
         pure (pn, t)
 
   ctorDecl _ann name ty = Scott $ do
+    -- Reset tyParamRef-seen list for THIS ctor; the result is
+    -- stored on the carrier and consumed selectively by
+    -- emitParametric (refining) only.
+    modify $ \e -> e { envTyParamSeen = [] }
     sExpr <- unScott ty
-    let (tyText, existentials) = case sExpr of SoExpr t es -> (t, es)
-        (caps, resultText) = splitArrows tyText
-        -- Result is "Bool'" or "Fin' Z'" or "Fin' (S' n)".  Tokenise
-        -- top-level, drop the parent head, keep the index args.
+    seen   <- gets envTyParamSeen
+    params <- gets envCurrentParams
+    let (tyText, explicitEx) = case sExpr of SoExpr t es -> (t, es)
+        (caps, resultText)   = splitArrows tyText
         resultArgs = case splitTopLevel resultText of
           []     -> []
           (_:rs) -> rs
-    pure $ SoDecl (DiCtor name caps resultArgs existentials)
+        seenInParents = nubL (filter (`elem` params) seen)
+    pure $ SoDecl (DiCtor name caps resultArgs explicitEx seenInParents)
+    where
+      nubL :: Eq a => [a] -> [a]
+      nubL []     = []
+      nubL (x:xs) = x : nubL (filter (/= x) xs)
 
   -- ---- Type-level expressions ----------------------------------
 
   var        _ann n        = Scott $ pure $ SoExpr (T.unpack n) []
-  tyConRef   _ann n _p     = Scott $ pure $ SoExpr (T.unpack n <> "'") []
-  tyParamRef _ann n _p     = Scott $ pure $ SoExpr (T.unpack n) []
+  tyConRef _ann n _p = Scott $ do
+    isCtor <- gets (Map.member n . envCtorParent)
+    inKind <- gets envInKind
+    let nStr = T.unpack n
+        -- Ctors emit unticked (DataKinds-promoted, e.g. 'Z' for
+        -- the Z ctor of Nat).  Data types emit unticked in kind
+        -- context (the @K@ in @(n :: K)@) and ticked in type
+        -- context (the captured-arg-type / result-spine head
+        -- positions, where they refer to the Scott newtype).
+        tick = not isCtor && not inKind
+    pure $ SoExpr (nStr <> if tick then "'" else "") []
+  tyParamRef _ann n _p = Scott $ do
+    modify $ \e -> e { envTyParamSeen = n : envTyParamSeen e }
+    pure $ SoExpr (T.unpack n) []
   star       _ann _w       = Scott $ pure $ SoExpr "Type" []
 
   arr _ann a b = Scott $ do

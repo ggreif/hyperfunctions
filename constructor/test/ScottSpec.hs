@@ -68,6 +68,18 @@ tests =
       \data Maybe (a : *0) : *0 { Nothing : Maybe a; Just : a -> Maybe a };\
       \let rt = case Just T { Nothing -> Nothing; Just x -> Just x }"
       "(Just <unrecognised a>)"
+
+  , runsWith
+      "Scott codegen: Fin refining GADT — indexed eliminator"
+      -- The load-bearing test for the indexed-elim regime.  Uses
+      -- DataKinds promotion of Nat ctors (Z, S) as Fin's index;
+      -- Fin's eliminator is @forall (x :: Nat -> Type). x Z -> …@.
+      -- The Haskell @data Nat = Z | S Nat@ provides the kind;
+      -- the Scott @newtype Nat'@ provides runtime; both coexist.
+      "data Nat : *0 { Z : Nat; S : Nat -> Nat };\
+      \data Fin (n : Nat) : *0 { FZ : Fin Z; FS : Fin n -> Fin (S n) };\
+      \let rt = case FS FZ { FZ -> FZ; FS m -> FS m }"
+      "(FS FZ)"
   ]
 
 runsWith :: String -> Text -> String -> (String, IO Bool)
