@@ -119,6 +119,66 @@ tests =
       "data Bool : *0 { T : Bool; F : Bool };\
       \let cov = case T { T -> F; F -> T }"
       ["cov"]
+
+    -- --- Weird-class (self-towering / singleton family) -----------
+    --
+    -- Singleton self-towering data have each ctor's annotation
+    -- equal to its own name (or another sibling's): the value
+    -- 'One' has type 'One', not 'Iso'.  At case time the
+    -- scrutinee's type is fixed by /which/ ctor built it, so
+    -- only that arm's pattern meets the scrutinee — every other
+    -- arm clashes on TyMismatch and is filtered.  Reachable
+    -- arms agree on their rebuild type (= scrutinee's type) by
+    -- construction.
+    --
+    -- The covering-space framing's content surfaces here: at a
+    -- nullary self-towering parent, the parent and each ctor
+    -- inhabit the same parametric-level fibre, and the
+    -- value-level Build / Dissect pas-de-deux is just the
+    -- TyConV identity check.
+
+  , roundTripVia "Weird round-trip: case Level0 { Level0 -> Level0 }"
+      -- The minimal Weird-class case: one ctor, one arm.  Scrut
+      -- @Level0 : Weird@; pat @Level0@ tower @Weird@ meets;
+      -- body @Level0@ rebuilds at @Weird@ — same type as the
+      -- scrutinee.
+      "data Weird : Weird { Level0 : Weird };\
+      \let rt = case Level0 { Level0 -> Level0 }"
+      ["rt"]
+
+  , roundTripVia "Iso round-trip: case One { One -> One; Two -> Two; Three -> Three }"
+      -- The Iso-cute singleton: each ctor has its own type.
+      -- For scrut @One : One@, arm @One@ tower @One@ meets;
+      -- arms @Two@ and @Three@ have towers @Two@ / @Three@ —
+      -- both clash with @One@, both filtered.  Reachable arm's
+      -- body @One@ rebuilds at @One@ = scrutinee's type.
+      "data Iso : Iso { One : One; Two : Two; Three : Three };\
+      \let rt = case One { One -> One; Two -> Two; Three -> Three }"
+      ["rt"]
+
+  , roundTripVia "Swap round-trip: case Left { Left -> Left; Right -> Right }"
+      -- Swap's twist: @Left@'s annotation is @Right@ (and vice
+      -- versa).  So @Left@ /builds/ a value of type @Right@.
+      -- Scrut @Left : Right@; arm @Left@'s pat tower is also
+      -- @Right@ (matching the building-rule); arm @Right@'s pat
+      -- tower is @Left@ — clashes with @Right@, filtered.
+      -- Body @Left@ rebuilds at @Right@.  The round-trip's
+      -- typed shape is /the swap target/, not the matched ctor.
+      "data Swap : Swap { Left : Right; Right : Left };\
+      \let rt = case Left { Left -> Left; Right -> Right }"
+      ["rt"]
+
+  , roundTripVia "Mirror round-trip: case Cup { Cup -> Cup; Fridge -> Fridge; Plate -> Plate }"
+      -- The universe-polymorphic Iso: same structure as Iso
+      -- but the parent's kind is @∀l. *l@ rather than a
+      -- self-referential TyConRef.  Cup/Fridge/Plate live at
+      -- the parametric level the parent's ∀ introduces.  At
+      -- value level the type-checker doesn't care about the
+      -- parent's level shape — the case operates on TyConV
+      -- identity of each ctor's annotation, exactly as in Iso.
+      "data Mirror : \8704l. *l { Cup : Cup; Fridge : Fridge; Plate : Plate };\
+      \let rt = case Cup { Cup -> Cup; Fridge -> Fridge; Plate -> Plate }"
+      ["rt"]
   ]
 
 -- | Parse → 'HypTwr' → expect success.  Verifies that all expected
