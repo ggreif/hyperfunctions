@@ -114,14 +114,34 @@ tests =
       ["Left", "Right"]
   , accepts "GADT sketch: kind-annotated parameter (a : Nat) — surface syntax"
       -- 'data Fin (n : Nat) : *0' with kind annotation on n.  The
-      -- kind expression is parsed and validated but not yet
-      -- semantically consumed (HypLinf / HypTinf / HypTwr all
-      -- destructure as @(name, _kindMaybe)@ today).  Step 1 of
-      -- the GADT roadmap — surface only; per-ctor refinement
-      -- comes later.
+      -- kind expression is now semantically consumed in HypLinf:
+      -- with @(n : Nat)@, @n@ binds at @predLv (level of Nat)@
+      -- (the /value/ level), not at the data's own level.  The
+      -- 'app' rule was loosened in tandem to accept the
+      -- heterogeneous tycon-application case (lvX = predLv lvF),
+      -- so @Fin n@ — a type at level 1 applied to a value at
+      -- level 0 — type-checks at level 1.
       "data Nat : *0 { Z : Nat; S : Nat -> Nat };\
       \data Fin (n : Nat) : *0 { FZ : Fin n; FS : Fin n -> Fin n }"
       ["FZ", "FS", "Z", "S"]
+  , accepts "GADT sketch: real-Fin with result refinement (Fin Z / Fin (S n))"
+      -- The /honest/ Fin: @FZ@'s result type is @Fin Z@ (refined
+      -- to the zero index), @FS@'s result is @Fin (S n)@ (refined
+      -- to a successor).  This is the first end-to-end case that
+      -- exercises both halves of arrow-kinded data: kind-annotation
+      -- consumption (n at value level) and heterogeneous app
+      -- (Fin applied to Z / S n).  Previously failed with
+      -- 'LevelTear' at the @Fin Z@ / @Fin (S n)@ checks.
+      "data Nat : *0 { Z : Nat; S : Nat -> Nat };\
+      \data Fin (n : Nat) : *0 { FZ : Fin Z; FS : Fin n -> Fin (S n) }"
+      ["FZ", "FS", "Z", "S"]
+  , accepts "GADT sketch: real-Expr (typed AST with result refinement)"
+      -- An honest typed-AST GADT shape: @Lit@'s result is the
+      -- specific @Expr a@, @App@ chains two @Expr@s through an
+      -- arrow.  Same machinery as real-Fin.
+      "data Bool : *0 { T : Bool; F : Bool };\
+      \data Expr (a : Bool) : *0 { Lit : Expr T; Pair : Expr T -> Expr F -> Expr F }"
+      ["Lit", "Pair", "T", "F"]
     -- --- Existential type binder ∃ (step 3c-a) -----------------
     --
     -- '∃ m. T' introduces a fresh type variable @m@ scoped to

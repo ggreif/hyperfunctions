@@ -168,20 +168,37 @@ instance Lang HypLinf where
           { hypLinfEnvNames  = Map.insert n procN (hypLinfEnvNames env1)
           , hypLinfEnvParent = Just procN
           }
-    -- Bind each parameter to the data's level for the body's scope.
-    -- Save the prior binding for each param name so it doesn't leak
-    -- out after the body — different decls reuse the same surface
-    -- name ('a' in @data Box a@ and @data Bag a@) without clashing.
-    -- Parameter kind annotations (the @K@ in @data Foo (a : K)@)
-    -- are accepted at the parser surface but not yet semantically
-    -- consumed: each carrier just destructures @(name, _kindMaybe)@
-    -- and uses the name as before.  Kinds become load-bearing when
-    -- arrow-kinded data + per-ctor result refinement land.
-    let paramNames    = [p | (p, _) <- params]
+    -- Bind each parameter for the body's scope.  Save the prior
+    -- binding for each param name so it doesn't leak out after the
+    -- body — different decls reuse the same surface name ('a' in
+    -- @data Box a@ and @data Bag a@) without clashing.
+    --
+    -- Parameter kind annotation @(p : K)@: elaborate @K@ in 'env2'
+    -- (param kinds reference OUTSIDE binders only) and bind @p@ at
+    -- @predLv (level of K)@ — i.e., as a /value/ of K.  Unannotated
+    -- params @data Foo a@ default to the data's own level (Fin's
+    -- @n@ lives at Fin's level, the universe-polymorphic shorthand
+    -- the singleton-family tests rely on).
+    --
+    -- The kind expression's polymorphic output is threaded back into
+    -- 'polyParams' so downstream (HypTinf / HypTwr) sees the
+    -- elaborated kind.  Kind elaboration is env-pure (kind expressions
+    -- contain only tyConRefs, stars, arrows, apps — none mutate env),
+    -- so the env returned by 'runHypLinf k env2' is discarded.
+    let elabParam (p, Nothing)     = pure ((p, Nothing), ln)
+        elabParam (p, Just kExpr)  = do
+          (kv, _, polyK) <- runHypLinf kExpr env2
+          let lK = hRun (hypLinfExprProc kv)
+          lp <- maybe (Left (DataAnnotationTooLow p lK)) Right (predLv lK)
+          pure ((p, Just polyK), lp)
+    elaborated <- mapM elabParam params
+    let polyParams    = map fst elaborated
+        paramLvs      = map snd elaborated
+        paramNames    = [p | (p, _) <- params]
         savedBindings = [(p, Map.lookup p (hypLinfEnvNames env2)) | p <- paramNames]
         paramEnv = env2
           { hypLinfEnvNames =
-              Map.union (Map.fromList [(p, procN) | p <- paramNames])
+              Map.union (Map.fromList (zip paramNames (map hPure paramLvs)))
                         (hypLinfEnvNames env2)
           }
     (polys, env3) <- threadDecls ds paramEnv
@@ -190,7 +207,6 @@ instance Lang HypLinf where
                    Nothing -> Map.delete p m
                    Just v  -> Map.insert p v m)
                 (hypLinfEnvNames env3) savedBindings
-        polyParams = [(p, Nothing) | (p, _) <- params]
     pure ( HypLinfDecl procN
          , env3 { hypLinfEnvParent = hypLinfEnvParent env1
                 , hypLinfEnvNames  = restoredNames
@@ -268,8 +284,22 @@ instance Lang HypLinf where
       in Right (HypLinfExpr proc, env, tyParamRef (LvAExpr lv) n path)
     Nothing -> Left (Unbound n)
 
-  -- Homogeneous application: f and x must inhabit the same fibre.
-  -- The application's level is f's level (= x's by the check).
+  -- Application levels: two shapes are accepted.
+  --
+  --   * Homogeneous (f and x at the same level): function-type
+  --     application within a single rung.  Result lives at that
+  --     same level.
+  --
+  --   * Heterogeneous (lvX = predLv lvF): type-constructor
+  --     application — @f@ is a thing at rung @n@ whose kind is an
+  --     arrow @K -> *l@, and @x@ is a /value/ of @K@ at rung @n-1@.
+  --     Example: @Fin (S z)@, where @Fin@ lives at rung 1 and
+  --     @S z@ at rung 0.  Result lives at @lvF@ (the codomain
+  --     stays at the function's rung).
+  --
+  -- The rule reduces to: @lvX@ must be either @lvF@ or the
+  -- @predLv@ of @lvF@.  Both branches emit the application at
+  -- @lvF@.
   app _ann appPath f x = HypLinf $ \env -> do
     (vf, env1, polyF) <- runHypLinf f env
     (vx, env2, polyX) <- runHypLinf x env1
@@ -277,11 +307,11 @@ instance Lang HypLinf where
         procX = hypLinfExprProc vx
         lvF   = hRun procF
         lvX   = hRun procX
-    if lvF /= lvX
-      then Left (LevelTear lvF lvX)
-      else
+    if lvF == lvX || predLv lvF == Just lvX
+      then
         let lv = lvF
         in Right (HypLinfExpr procF, env2, app (LvAExpr lv) appPath polyF polyX)
+      else Left (LevelTear lvF lvX)
 
   star _ann w = HypLinf $ \env -> do
     let lv   = starLevel w
