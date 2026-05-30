@@ -59,25 +59,14 @@ tests :: [(String, IO Bool)]
 tests =
   -- --- Reachable today -------------------------------------------
   --
-  -- WARNING — none of these are 'real' GADTs.  The parametric
-  -- variants below have the same ctor /names/ as Fin / Expr but
-  -- LACK both arrow-kinded data declarations (e.g. @data Fin :
-  -- Nat -> *@) and per-ctor result-type refinement.  Real Fin
-  -- needs @FZ : Fin (S n)@ and @FS : Fin n -> Fin (S n)@ — each
-  -- ctor's result is the parent applied to a /specific/ index
-  -- that may differ from other ctors.  The fakes here have
-  -- @FZ : Fin n@ for ANY n (so @Fin Z@, which should be empty,
-  -- is inhabited).  Kept as 'baseline shape' tests for when the
-  -- real GADT machinery lands; renamed to make the falseness
-  -- explicit.
-  [ accepts "GADT sketch: fake-Fin (parametric, NOT a real GADT — no result refinement)"
-      "data Nat : *0 { Z : Nat; S : Nat -> Nat };\
-      \data Fin n : *0 { FZ : Fin n; FS : Fin n -> Fin n }"
-      ["FZ", "FS", "Z", "S"]
-  , accepts "GADT sketch: fake-Expr (parametric, NOT a real typed-AST GADT)"
-      "data Expr a : *0 { Lit : a -> Expr a; App : Expr a -> Expr a -> Expr a }"
-      ["Lit", "App"]
-  , accepts "GADT sketch: Iso flat (Weird-style; all ctors : Iso)"
+  -- Real refining GADTs elaborate end-to-end now: kind-annotated
+  -- parameters bind at the value level, the @app@ rule is
+  -- loosened to accept the heterogeneous tycon-application case
+  -- (Fin@1 applied to (S n)@0), the saturation check rejects
+  -- structurally-wrong ctor results, and 'CtorSig' extraction
+  -- packages the per-ctor refinement substitution that pattern
+  -- matching consumes (see 'AxiomsSpec' for round-trip axioms).
+  [ accepts "GADT sketch: Iso flat (Weird-style; all ctors : Iso)"
       "data Iso : Iso { GetOne : Iso; GetTwo : Iso; GetThree : Iso }"
       ["GetOne", "GetTwo", "GetThree"]
   , accepts "GADT sketch: Weird end-to-end (TyConRef self-reference)"
@@ -124,33 +113,26 @@ tests =
       -- alone gets ⋮ here.
       "data Swap \8942 { Left : Right; Right : Left }"
       ["Left", "Right"]
-  , accepts "GADT sketch: kind-annotated parameter (a : Nat) — surface syntax"
-      -- 'data Fin (n : Nat) : *0' with kind annotation on n.  The
-      -- kind expression is now semantically consumed in HypLinf:
-      -- with @(n : Nat)@, @n@ binds at @predLv (level of Nat)@
-      -- (the /value/ level), not at the data's own level.  The
-      -- 'app' rule was loosened in tandem to accept the
-      -- heterogeneous tycon-application case (lvX = predLv lvF),
-      -- so @Fin n@ — a type at level 1 applied to a value at
-      -- level 0 — type-checks at level 1.
-      "data Nat : *0 { Z : Nat; S : Nat -> Nat };\
-      \data Fin (n : Nat) : *0 { FZ : Fin n; FS : Fin n -> Fin n }"
-      ["FZ", "FS", "Z", "S"]
-  , accepts "GADT sketch: real-Fin with result refinement (Fin Z / Fin (S n))"
-      -- The /honest/ Fin: @FZ@'s result type is @Fin Z@ (refined
-      -- to the zero index), @FS@'s result is @Fin (S n)@ (refined
-      -- to a successor).  This is the first end-to-end case that
-      -- exercises both halves of arrow-kinded data: kind-annotation
-      -- consumption (n at value level) and heterogeneous app
-      -- (Fin applied to Z / S n).  Previously failed with
-      -- 'LevelTear' at the @Fin Z@ / @Fin (S n)@ checks.
+  , accepts "GADT: Fin (n : Nat) with refining ctors — FZ : Fin Z; FS : Fin n -> Fin (S n)"
+      -- The canonical refining GADT.  @FZ@'s result refines
+      -- @n@ to @Z@; @FS@'s refines to @S n@ with @n@ a
+      -- universally-quantified type variable at the ctor's
+      -- scope (the kind-annotated parent param's @n@ — see
+      -- HypLinf for the @(n : Nat)@ ↦ @predLv (level of Nat)@
+      -- binding rule and the loosened @app@ that lets the
+      -- type-constructor application @Fin (S n)@ type-check
+      -- across levels).  Pattern matching consumes this
+      -- declaration's 'CtorSig' to refine the scrutinee's
+      -- index at each arm.
       "data Nat : *0 { Z : Nat; S : Nat -> Nat };\
       \data Fin (n : Nat) : *0 { FZ : Fin Z; FS : Fin n -> Fin (S n) }"
       ["FZ", "FS", "Z", "S"]
-  , accepts "GADT sketch: real-Expr (typed AST with result refinement)"
-      -- An honest typed-AST GADT shape: @Lit@'s result is the
-      -- specific @Expr a@, @App@ chains two @Expr@s through an
-      -- arrow.  Same machinery as real-Fin.
+  , accepts "GADT: Expr (a : Bool) with refining ctors — Lit : Expr T; Pair : Expr T -> Expr F -> Expr F"
+      -- Typed-AST shape: @Lit@'s result refines @a@ to @T@;
+      -- @Pair@ takes a "true" sub-expression and a "false"
+      -- sub-expression, producing a "false" one (an arbitrary
+      -- type-level rule that exercises the same refinement
+      -- machinery as Fin without needing arithmetic).
       "data Bool : *0 { T : Bool; F : Bool };\
       \data Expr (a : Bool) : *0 { Lit : Expr T; Pair : Expr T -> Expr F -> Expr F }"
       ["Lit", "Pair", "T", "F"]
@@ -247,14 +229,14 @@ tests =
     -- by @c a b ...@ against a scrutinee of type @D s1 ... sm@
     -- unifies each @si@ with the corresponding @ri@ in the sig.
   , inspectCtorSigs
-      "CtorSig: real-Fin refinements (FZ ↦ [Z]; FS ↦ [S n])"
+      "CtorSig: Fin refinements (FZ ↦ [Z]; FS ↦ [S n])"
       "data Nat : *0 { Z : Nat; S : Nat -> Nat };\
       \data Fin (n : Nat) : *0 { FZ : Fin Z; FS : Fin n -> Fin (S n) }"
       [ ("FZ", ["Z"])
       , ("FS", ["S n"])
       ]
   , inspectCtorSigs
-      "CtorSig: real-Expr refinements (Lit ↦ [T]; Pair ↦ [F])"
+      "CtorSig: Expr refinements (Lit ↦ [T]; Pair ↦ [F])"
       "data Bool : *0 { T : Bool; F : Bool };\
       \data Expr (a : Bool) : *0 { Lit : Expr T; Pair : Expr T -> Expr F -> Expr F }"
       [ ("Lit",  ["T"])
@@ -388,52 +370,22 @@ tests =
     -- Both elaborate at LVar isoPath at the level layer; the
     -- difference is what's stored in the TyView shape.
 
-  -- --- Doubly blocked: arrow-kinded data + GADT refinement ------
+  -- --- Still ahead: Refl / propositional equality ------------------
   --
-  -- Real Fin / Expr / Vec aren't even parseable today; they need
-  -- two orthogonal features beyond mutual references:
+  -- The remaining canonical refining GADT not yet exercised here is
+  -- propositional equality:
   --
-  -- 1. **Arrow-kinded data declarations.**  Real Fin is declared
-  --    @data Fin : Nat -> *0 where ...@ — its kind is an arrow,
-  --    not a flat universe.  Today the kind-annotation grammar
-  --    only accepts @*n@, @∀l. *(l + k)@, or a self-referential
-  --    'TyConRef'.  Adding arrow kinds requires both parser
-  --    surface (post-':' expression grammar gains '->'-shapes)
-  --    and elaborator semantics (HypLinf's predLv treatment of
-  --    arrow-kinded data; HypTinf / HypTwr's view of an
-  --    arrow-kinded parent for kind coherence).
-  --
-  -- 2. **Per-ctor result-type refinement.**  Real Fin's @FZ : Fin
-  --    (S n)@ has a result type that DIFFERS from the parent
-  --    declaration's name applied to its formal parameters.
-  --    Today ctorDecl just stores the parsed annotation verbatim;
-  --    there's no machinery to enforce "ctor returns the parent
-  --    tycon with the right number of arguments" /nor/ to refine
-  --    the index inside a pattern-match arm.  Refinement-aware
-  --    meet (the bind-direction guard via TyProc-meta identity,
-  --    prepared by the v0.1.0 TyView → TyProc lift) is the
-  --    substrate; the elaborator-side work is the per-arm scope
-  --    where the refinement applies.
-  --
-  -- Sketches of what real Fin / Expr would look like (NOT
-  -- runnable today; here for forward documentation):
-  --
-  --     data Fin : Nat -> *0 where
-  --       FZ : Fin (S n)
-  --       FS : Fin n -> Fin (S n)
-  --
-  --     data Expr : *0 -> *0 where
-  --       Lit  : Int  -> Expr Int
-  --       If   : Expr Bool -> Expr a -> Expr a -> Expr a
-  --       App  : Expr (a -> b) -> Expr a -> Expr b
-  --
-  --     data (~) : forall l. *l -> *l -> *l where
+  --     data Refl : forall l. *l -> *l -> *l where
   --       Refl : a ~ a
   --
-  -- All three drop into place once arrow-kinded data + per-ctor
-  -- result refinement lands, with no further Tower-level
-  -- accommodations needed (the refinement-vs-existential
-  -- distinction is already operational through TyProc identity).
+  -- It needs surface syntax for /two/ kind-annotated parameters
+  -- whose kinds are universe-polymorphic, plus a binary @~@ form
+  -- (or a prefix @Refl@) — currently we accept only the prefix
+  -- shape @Refl a b@, which is fine, but the level-polymorphism
+  -- on both params still needs work in the kind-annotation
+  -- grammar.  Once that lands, 'Refl a a' becomes the canonical
+  -- "Build sees a=a so the dissect-side equation is trivial"
+  -- test for the refinement-as-hyperfunction machinery.
   ]
 
 -- | Helper: parse + elaborate end-to-end via HypLinf → HypTwr; assert
