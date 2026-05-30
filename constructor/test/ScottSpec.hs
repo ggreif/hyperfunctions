@@ -57,6 +57,17 @@ tests =
       \data Foo : *0 { Pack : \8707 m . m -> Foo };\
       \let rt = case Pack T { Pack x -> Pack x }"
       "(Pack <existential>)"
+
+  , runsWith
+      "Scott codegen: Maybe parametric — non-refining"
+      -- Parametric (a) data type with no per-ctor refinement.
+      -- Scott uses an index-parameterised x but every branch
+      -- lands at the SAME index (the param), so it degenerates
+      -- to "regular Scott with a type variable carried through".
+      "data Bool : *0 { T : Bool };\
+      \data Maybe (a : *0) : *0 { Nothing : Maybe a; Just : a -> Maybe a };\
+      \let rt = case Just T { Nothing -> Nothing; Just x -> Just x }"
+      "(Just <unrecognised a>)"
   ]
 
 runsWith :: String -> Text -> String -> (String, IO Bool)
