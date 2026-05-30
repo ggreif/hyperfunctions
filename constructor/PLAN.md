@@ -622,6 +622,39 @@ The arc proper is now complete.  Two follow-ups sit at the seam:
   anticipating exactly this move (though now permanently dormant
   given A's deprecation).
 
+- **Horizontal lifted from 'TyView' to 'TyProc' (landed,
+  v0.1.0).**  'Tower''s horizontal slot is now a 'TyProc' (a
+  'Hyper'-valued process), matching how 'TyAppV' / 'TyArrV'
+  already store their children.  Three reasons this is the right
+  move before GADTs land:
+
+  1. **Symmetry with compound shapes.**  The parent layer and
+     child layer become the same kind of thing; hPure-wrapping at
+     every meet-call site disappears.  'horizontalView :: Tower
+     -> TyView' (= 'hRun . horizontal') is the round-trip for
+     callers that want the raw view.
+
+  2. **Process identity carries refinement-vs-existential.**  The
+     Motoko @gabor/gadt@ experiment learned the hard way that
+     refinements introduced by GADT pattern-matching (e.g. @n ~
+     S m@) must never equate to existentially-quantified type
+     variables — the existential leaks out of its match arm if
+     they do.  Same 'TyMetaV' shape, different scoping rules;
+     they need distinguishing identity.  'TyProc' has process
+     identity beyond its 'TyView' shape — different self-
+     applications, different identities.  The bind-direction
+     guard the Motoko unifier retrofitted becomes a property of
+     the hyperfunction encoding rather than an ad-hoc check.
+
+  3. **Future-proof for option α / γ.**  Promoting horizontal to
+     'TyProc' is one step toward 'Tower ≅ Hyper Tower Tower'
+     (option γ from PLAN's tower-encoding choices) without
+     committing to it now.
+
+  Version bumped 0.0.0 → 0.1.0 to mark the data-shape change
+  (Tower is no longer the same datatype; downstream consumers
+  that pattern-match it need updating).
+
 - **Tower-aware occurs check (landed).**  Two layers:
     - **Structural occurs in 'TyProc.meet'.**  Before binding @m
       := v@, 'meet' calls 'occurs s m v' which walks @v@'s

@@ -29,6 +29,7 @@
 --     this axis with the @*n@-stable-tail termination condition.
 module Constructor.Tower
   ( Tower (..)
+  , horizontalView
     -- * Kind environment
   , KindEnv
   , emptyKindEnv
@@ -66,14 +67,47 @@ import Constructor.TyProc
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 
--- | A Tower is its horizontal 'TyView' at the current rung paired
+-- | A Tower is its horizontal 'TyProc' at the current rung paired
 --   with the (lazily-evaluated) Tower one rung above.  The vertical
 --   slot is intentionally lazy — this is codata, finite generators
 --   yielding potentially-infinite unfoldings.
+--
+--   Why 'TyProc' (a 'Hyper'-valued process) rather than the raw
+--   'TyView'?  Three reasons:
+--
+--   1. **Symmetry with compound shapes.**  'TyAppV' and 'TyArrV'
+--      already store their children as 'TyProc's.  Storing the
+--      horizontal as a 'TyProc' too means the rung-0 layer and the
+--      child layer are the same kind of thing, eliminating
+--      hPure-wrapping at every meet-call site.
+--
+--   2. **Process identity carries refinement-vs-existential.**  When
+--      GADT pattern-matching arrives, a meta introduced by a GADT
+--      refinement (e.g. @n ~ S m@) is structurally distinct from one
+--      introduced by an existential ctor field — same 'TyMetaV'
+--      shape, different scoping rules.  The Motoko GADT experiment
+--      learned the hard way that mistaking one for the other leaks
+--      existentials out of their match arms (see the gabor/gadt
+--      invariant).  A 'TyProc' has process identity beyond its view
+--      — different binder-paths give different selves, even when
+--      both hRun to 'TyMetaV' shapes.  The bind-direction guard the
+--      Motoko experiment retrofitted into the unifier becomes a
+--      natural property of the hyperfunction encoding here.
+--
+--   3. **Future-proof for option α / γ.**  Promoting horizontal to
+--      'TyProc' is one step toward 'Tower ≅ Hyper Tower Tower' if
+--      that ever resurfaces, without committing to it now.
 data Tower = Tower
-  { horizontal :: !TyView
+  { horizontal :: !TyProc
   , vertical   :: Tower
   }
+
+-- | Convenience: extract the horizontal 'TyView' of a Tower by
+--   self-applying its 'TyProc'.  This is the inverse of constructing
+--   via @Tower (hPure v) ...@ when the horizontal is a known
+--   constant view (the common case in v0).
+horizontalView :: Tower -> TyView
+horizontalView = hRun . horizontal
 
 -- | Map from a declared type-constructor name to its kind annotation
 --   (the @K@ in @data X : K@) as a 'TyProc'.  Built by 'HypTinf'
@@ -164,9 +198,7 @@ kindOf s env v0 = case resolveView s v0 of
 --   via 'meetTowers' (which regenerates each climb under the current
 --   Subst rather than walking the frozen 'vertical' chain).
 liftTower :: Subst -> KindEnv -> TyProc -> Tower
-liftTower s env p =
-  let v = hRun p
-  in Tower v (towerOfView s env (kindOf s env v))
+liftTower s env p = Tower p (towerOfView s env (kindOf s env (hRun p)))
 
 -- | Coalgebraic unfolding: the Tower whose horizontal is the given
 --   view and whose vertical is 'kindOf' applied repeatedly under
@@ -176,7 +208,7 @@ liftTower s env p =
 --   TyConV-stable tail bumps the deck-shift offset; the structural
 --   layer is finite).
 towerOfView :: Subst -> KindEnv -> TyView -> Tower
-towerOfView s env v = Tower v (towerOfView s env (kindOf s env v))
+towerOfView s env v = Tower (hPure v) (towerOfView s env (kindOf s env v))
 
 -- | Convenience: the universe-only tower starting at a given level.
 --   Special case of @towerOfView emptySubst emptyKindEnv (TyUnivV lv)@
@@ -200,7 +232,7 @@ climb = vertical
 --
 --   (regardless of @env@ — the env affects only the vertical).
 projectFirstRung :: Tower -> TyExpr
-projectFirstRung = viewToTy . horizontal
+projectFirstRung = viewToTy . horizontalView
 
 -- | Tower-aware unification (Tower arc step "tower-aware meet").
 --
@@ -237,7 +269,7 @@ projectFirstRung = viewToTy . horizontal
 meetTowers :: KindEnv -> Subst -> Tower -> Tower -> Either TyErr Subst
 meetTowers env = go
   where
-    go s h1Tower h2Tower = step s (horizontal h1Tower) (horizontal h2Tower)
+    go s h1Tower h2Tower = step s (horizontalView h1Tower) (horizontalView h2Tower)
 
     step s h1 h2
       -- *n-stable tail: both rungs are TyUnivV at the same level.
@@ -327,8 +359,8 @@ compareTowers = go
       | sameView h1 h2                   = go (vertical t1) (vertical t2)
       | otherwise                        = Left (TyMismatch (viewToTy h1) (viewToTy h2))
       where
-        h1 = horizontal t1
-        h2 = horizontal t2
+        h1 = horizontalView t1
+        h2 = horizontalView t2
 
     sameView v1 v2 = case (v1, v2) of
       (TyConV n1 p1 o1, TyConV n2 p2 o2) -> n1 == n2 && p1 == p2 && o1 == o2

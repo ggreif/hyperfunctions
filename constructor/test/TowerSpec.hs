@@ -38,7 +38,7 @@ import Constructor.Tower
   ( climb
   , compareTowers
   , emptyKindEnv
-  , horizontal
+  , horizontalView
   , kindOf
   , liftTower
   , meetTowers
@@ -71,9 +71,9 @@ tests =
   , ( "Tower: vertical stream above Bool — *0, *1, *2"
     , let boolP = Path [PsProgDecl 0]
           tw    = liftTower emptySubst emptyKindEnv (tyToProc (TyCon "Bool" boolP))
-          rung1 = viewToTy (horizontal (climb tw))
-          rung2 = viewToTy (horizontal (climb (climb tw)))
-          rung3 = viewToTy (horizontal (climb (climb (climb tw))))
+          rung1 = viewToTy (horizontalView (climb tw))
+          rung2 = viewToTy (horizontalView (climb (climb tw)))
+          rung3 = viewToTy (horizontalView (climb (climb (climb tw))))
       in do
         ok1 <- expectEq rung1 (TyUniv (S (S Z)))
         ok2 <- expectEq rung2 (TyUniv (S (S (S Z))))
@@ -82,9 +82,9 @@ tests =
     )
   , ( "Tower: universeStream Z — Z, S Z, S (S Z), …"
     , let s     = universeStream Z
-          rung0 = viewToTy (horizontal s)
-          rung1 = viewToTy (horizontal (climb s))
-          rung2 = viewToTy (horizontal (climb (climb s)))
+          rung0 = viewToTy (horizontalView s)
+          rung1 = viewToTy (horizontalView (climb s))
+          rung2 = viewToTy (horizontalView (climb (climb s)))
       in do
         ok0 <- expectEq rung0 (TyUniv Z)
         ok1 <- expectEq rung1 (TyUniv (S Z))
@@ -99,7 +99,7 @@ tests =
           deepClimb n t = deepClimb (n - 1 :: Int) (climb t)
           deep  = deepClimb 10 s
           want  = TyUniv (foldr (\_ acc -> S acc) Z [1..10 :: Int])
-      in expectEq (viewToTy (horizontal deep)) want
+      in expectEq (viewToTy (horizontalView deep)) want
     )
 
     -- --- End-to-end on parsed nested data --------------------------

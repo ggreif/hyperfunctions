@@ -41,7 +41,7 @@ module Constructor.HypTwr
   , hypTwrCtorTypes
   ) where
 
-import Constructor.HyperLite (hPure)
+import Constructor.HyperLite (hRun)
 import Constructor.Level (Lv (..), starLevel)
 import Constructor.Path (Path)
 import Constructor.Sort (Sort (..))
@@ -98,7 +98,7 @@ data HypTwrResult = HypTwrResult
 --   TyExpr' on the metavariable-free corpus, viewed through their
 --   respective extractors.
 hypTwrCtorTypes :: HypTwrResult -> Either TyErr (Map Name TyExpr)
-hypTwrCtorTypes r = traverse (materialize (hypTwrSubst r) . hPure . horizontal)
+hypTwrCtorTypes r = traverse (materialize (hypTwrSubst r) . horizontal)
                              (hypTwrCtors r)
 
 newtype HypTwr (a :: Sort -> Type) (s :: Sort) = HypTwr
@@ -141,7 +141,7 @@ instance Lang HypTwr where
         -- TyView we'll cache in kindEnv (so 'kindOf' for this tycon
         -- returns its kind annotation).
         let kindTower = exprTower eVal
-            kindProc  = hPure (horizontal kindTower)
+            kindProc  = horizontal kindTower
         -- Tower-aware kind coherence (lifted from HypTinf): if nested
         -- inside another data, this annotation tower must meet the
         -- parent's TyConV-tower coinductively.
@@ -149,7 +149,7 @@ instance Lang HypTwr where
           Nothing -> Right env0
           Just (parentName, parentPath) ->
             let parentTower = leafTower env0 (TyConV parentName parentPath Z)
-                memberTower = leafTower env0 (horizontal kindTower)
+                memberTower = leafTower env0 (hRun (horizontal kindTower))
             in do
               subst' <- meetTowers (hypTwrEnvKindEnv env0)
                                    (hypTwrEnvSubst env0)
@@ -191,8 +191,8 @@ instance Lang HypTwr where
   arr _ann a b = HypTwr $ \env -> do
     (va, env1) <- runHypTwr a env
     (vb, env2) <- runHypTwr b env1
-    let aProc = hPure (horizontal (exprTower va))
-        bProc = hPure (horizontal (exprTower vb))
+    let aProc = horizontal (exprTower va)
+        bProc = horizontal (exprTower vb)
         tower = leafTower env2 (TyArrV aProc bProc)
     pure (HypTwrExpr tower, env2)
 
@@ -203,8 +203,8 @@ instance Lang HypTwr where
   app _ann _appPath f x = HypTwr $ \env -> do
     (vf, env1) <- runHypTwr f env
     (vx, env2) <- runHypTwr x env1
-    let fProc = hPure (horizontal (exprTower vf))
-        xProc = hPure (horizontal (exprTower vx))
+    let fProc = horizontal (exprTower vf)
+        xProc = horizontal (exprTower vx)
         tower = leafTower env2 (TyAppV fProc xProc)
     pure (HypTwrExpr tower, env2)
 
