@@ -766,3 +766,215 @@ seam without overcommitting: the `TyView` shape (including its
 `TyMetaV` slot) is the data structure both for commit 4's
 extension-free elaboration and for commit 5's unification.  Adding
 unification logic later doesn't reshape the algebra.
+
+## The singleton-family arc (post-Tower)
+
+After the Tower arc completed, a second arc grew around the
+covering-space framing's implications for *singleton-style* data
+declarations.  Iso-cute, Swap, Mirror, Iso-sep — all programs where
+the ctor's "type" is its own name (or a sibling's name) at the next
+rung up the cover.  None of these are standard Haskell-GADTs; they
+exploit the implicit promotion that the covering-space ladder
+provides automatically.  This section records the substantial design
+crystallisations from the arc.
+
+### `⋮` is the typing tower as glyph
+
+`c ⋮` is shorthand for `c : c` — the typing-tower glyph (U+22EE
+VERTICAL ELLIPSIS) literally depicts the upward stream of rungs
+that `predLv (LVar p) = LVar p` stabilises.  Three vertical dots
+= the entire stable codata-tail.  Each character of the notation
+has algebraic content:
+
+- `:` is one rung (a single deck transformation).
+- `⋮` is the stable upward stream as glyph — codata depicted
+  compactly.
+
+The parser desugaring is one line per position (data line, ctor
+line, parameter slot).  No elaborator change is needed because
+the body-mutual machinery + `predLv` fixpoint already supports
+the desugared form.  The shorthand is *the operational support
+admitting the notation that names it* — the substrate being
+honest enough to license a one-character abbreviation IS the
+test that the substrate is correct.  See git-note on **c94550d**.
+
+### Body-mutual + top-level-mutual: prescan + parent-fallback
+
+Two parallel implementations of "implicit mutual recursion":
+
+- **Body-mutual** (siblings inside a `data` body): parser
+  `lookAhead`-prescans the body, harvests every sibling name into
+  `tcBinders` before any sibling decl is elaborated.  HypLinf's
+  `tyConRef` has a *parent-fallback* — when env-lookup misses and
+  we're inside a data body, return parent's level-process.
+  Together: `data Swap : Swap { Left : Right; Right : Left }`
+  elaborates with each ctor at parent's parametric level.
+
+- **Top-level-mutual** (sibling data decls in a program):
+  `program` does the same prescan trick over the top-level decls.
+  HypLinf's `tyConRef` gets a *top-level-forward-ref-fallback* —
+  when env-lookup misses AND there's no parent, return `LVar
+  path` (the parametric level that self-stratified data settles
+  at via the `predLv` fixpoint).  Sound for self-towering targets;
+  user-reorderable for concrete-leveled forward refs.
+
+Three layers of `tyConRef`'s case analysis, in priority:
+1. Env hit — standard backward reference.
+2. Parent set → parent's level — body-mutual sibling.
+3. Top-level → `LVar path` — top-level forward reference to a
+   self-towering data.
+
+All three accept names the *parser* already vetted as in-scope
+(prescan + tcBinders).  Typos like `Fridge : Frigde` (in Mirror)
+still surface as `Var` (unscoped name) and HypLinf rejects with
+`Unbound` — the surgical-rejection property the test corpus
+witnesses.
+
+### Kind-annotated parameters and the parser-ε
+
+`data Fin (n : Nat) : *0 { ... }` and `data Selfie (a⋮) ⋮ { ... }`
+— `Lang.dataDecl` takes `[(Name, Maybe (r a 'SExpr))]` for
+parameters.  The `Maybe` IS the parser-ε: `Nothing` for bare
+param (no kind annotation; carrier picks default), `Just k` for
+explicit kind expression.
+
+Parser-ε framing: the optional kind annotation IS the empty
+production in the grammar.  The kind isn't *missing*; it's
+*unspecified*, and the elaborator picks how to interpret it.
+Today: bare params default to `*0`.  Future: kind inference at
+the ε position (the param's actual kind from how it's used in
+ctor types — same machinery as parent-fallback, just at the
+kind coordinate).
+
+The user observation: `Swap` (as a data name) is conceptually
+the SOLE PARAMETER of an anonymous outer `ε`.  I.e., `data Swap
+⋮ { ... }` ≡ `data ε (Swap⋮) { ... }`.  The "data head" and
+"parameter" slots are operationally the same — what makes them
+distinct in the parser is positioning, not algebra.  The
+covering-space framing doesn't care which slot the name lives
+in.
+
+### Iso : Iso isn't promotion — it's *the level coordinate
+working as designed*
+
+Recorded as git-note on **78f00f4**.  The conclusion:
+
+> It's not blocked by missing DataKinds-style promotion — there
+> shouldn't be any promotion step.  It's blocked by the parser
+> not knowing that ctor names inside a data body's annotations
+> should resolve to the implicitly-promoted type at the next
+> rung up.  Iso-cute is *not* a separate feature from mutual
+> references; it's the same feature, viewed through the lens of
+> the level coordinate.
+
+DataKinds-style promotion (Haskell) is needed because Haskell's
+universe structure isn't stratified.  Our covering-space ladder
+makes the stratification *the* structure rather than *an extra*
+structure.  The same name inhabits multiple rungs of the cover,
+each at its own level; declaring at one rung automatically
+populates the next.  No explicit promotion step.  See note on
+78f00f4.
+
+### Self-towering algebra: fundament-witness ↔ all-rung presence
+
+The deepest algebraic insight from the arc, surfaced while
+discussing step 3b's kind-coherence check:
+
+> For self-towering data, fundament-level presence IS proof of
+> all-rung presence.
+
+A ctor `c` registered in `hypEnvCtors` of parent `P` (where `P`
+is self-towering, `kind(P) = P`) is *witnessed* at the fundament
+level.  By self-towering, `kindOf(c) = P`, `kindOf(P) = P`
+(self-ref with bumped offset), and so on indefinitely.  The
+single fundament-level registration propagates up every rung.
+
+Operationally: `hypEnvCtors` is the witness of "this ctor exists
+at all rungs".  Step 3b's kind-coherence check doesn't need a
+separate prescan-supplied sibling list — it just reads off the
+fundament:
+
+```haskell
+ctorDecl _ann name e = HypTinf $ \env -> do
+  ...
+  let env' = env
+        { hypEnvCtors   = Map.insert name proc_ (hypEnvCtors env)
+        , hypEnvKindEnv = Map.insert name parentKindProc
+                                     (hypEnvKindEnv env)
+          -- ^ self-witness at the kind layer; the body's
+          --   kind-coherence check (post-threading) reads this
+          --   to resolve sibling-ctor references via 'kindOf'.
+        }
+  ...
+```
+
+Each `ctorDecl` writes ONE entry to kindEnv (its own, at
+parent's kind).  The post-threading kind-coherence check sees a
+fully populated kindEnv by induction over the threading — mutual
+references included.  No prescan-passed siblings.  No
+`Lang.dataDecl` interface change.  No carrier-side knowledge of
+the body's name structure.
+
+The mistake step 3a tried to fix was *pre-replicating* the
+fundament-witness across siblings before the fundament itself
+existed.  But the fundament IS the witness — once you let
+threading complete, you have it.  Working *against* the algebra
+rather than *with* it.  The correct step 3b reduces to about 30
+lines: each `ctorDecl` registers itself; post-threading walk
+checks each ctor's annotation tower against parent's tower.
+
+### Step 3b — the actual plan
+
+When step 3b lands:
+
+1. **HypTinf.ctorDecl / HypTwr.ctorDecl** — each writes
+   `ctorName → parentKindProc` to `kindEnv` alongside its
+   existing `hypEnvCtors` write.  One line addition per
+   carrier.
+2. **Post-threading kind-coherence pass** — in
+   `HypTinf.dataDecl` / `HypTwr.dataDecl`, after `threadDecls`,
+   iterate over the body ctors just registered.  For each
+   ctor's annotation, build `kindOf(ctorAnnot)`'s tower and
+   `meetTowers` it against the parent's kind tower.  Failures
+   surface as `TyMismatch` or a new `TyCtorKindMismatch`.
+3. **Tests** — positive and negative cases.  Iso-cute / Swap /
+   Mirror all pass (kindOf of sibling = parent's kind = parent's
+   tower).  Reject `data Foo : *0 { c : *1 }` (kindOf(*1) = *2
+   ≠ *0).
+
+This is the smallest meaningful step 3b.  Step 3c (per-ctor
+existentials `∃ m. T` with refinement-on-match) is a separate
+arc on top, but the substrate is now sized for it (the v0.1.0
+TyView → TyProc lift gives refinement-metas distinguishable
+process identity from existential-metas — the gabor/gadt
+invariant becomes structural rather than ad-hoc).
+
+### Status snapshot at PLAN.md compaction
+
+Twelve algebraic Tower-arc commits + parser fix + GADT sketches
++ step 1 (kind-annotated params) + body-mutual + top-level-mutual
++ `⋮` shorthand.  Three git-notes on origin (07056ed,
+78f00f4, c94550d) record galaxy-brain, Iso-revelation, and
+typing-tower-glyph respectively.
+
+Reachable GADT-sketch programs (all elaborate end-to-end through
+parser → HypLinf → HypTwr → ctor extraction):
+
+| program | shape |
+|---|---|
+| fake-Fin, fake-Expr | parametric baselines |
+| `data Weird : Weird { … }` | self-towering Weird-style |
+| `data Iso : Iso { GetOne : Iso; … }` | Iso flat |
+| `data Iso : Iso { One : One; … }` | Iso-cute singleton |
+| `data Swap : Swap { Left : Right; Right : Left }` | mutual ctor-as-type |
+| `data Mirror : ∀l. *l { Cup : Cup; … }` | universe-poly singleton |
+| `data Iso : Iso { … }; data One : Iso { … }; …` | Iso-sep (top-level mutual) |
+| `data Fin (n : Nat) : *0 { … }` | kind-annotated params |
+| `data Selfie (a⋮) ⋮ { … }` | self-towering parameter |
+
+Plus all `⋮`-shorthand variants of each.
+
+Blocked: real Fin / Expr / `Refl` with per-ctor result
+refinement and existentials — needs arrow-kinded data + step 3c.
+
+102 tests green.
