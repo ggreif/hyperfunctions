@@ -33,6 +33,7 @@ import Constructor.Level (Lv (..), starLevel)
 import Constructor.Path (Path, PathStep (..), extendPath)
 import Constructor.Sort (Sort (..))
 import Constructor.Syntax (Lang (..), Name)
+import Constructor.Tower (compareTowers, towerOfView)
 import Constructor.TyExpr (TyExpr)
 import Constructor.TyProc
   ( Subst
@@ -67,10 +68,15 @@ data HypTinfEnv = HypTinfEnv
     --   vertical of a Tower.
   , hypEnvCtors     :: !(Map Name TyProc)
   , hypEnvSubst     :: !Subst
+  , hypEnvParent    :: !(Maybe (Name, Path))
+    -- ^ Enclosing @data X : K@ context, if any.  Set by 'dataDecl'
+    --   before threading its body; consumed by nested 'dataDecl'
+    --   instances to enforce tower-aware kind coherence (Tower arc
+    --   step 3).  'Nothing' at top level.
   }
 
 emptyHypTinfEnv :: HypTinfEnv
-emptyHypTinfEnv = HypTinfEnv Map.empty Map.empty Map.empty emptySubst
+emptyHypTinfEnv = HypTinfEnv Map.empty Map.empty Map.empty emptySubst Nothing
 
 data HypTinfResult = HypTinfResult
   { hypTinfDataTypes :: !(Map Name Int)
@@ -150,7 +156,7 @@ instance Lang HypTinf where
     env' <- threadDecls ds env
     pure (HypTinfProg, env')
 
-  dataDecl _ann _declPath name params e ds = HypTinf $ \env ->
+  dataDecl _ann declPath name params e ds = HypTinf $ \env ->
     case Map.lookup name (hypEnvDataTypes env) of
       Just _  -> Left (TyDuplicateType name)
       Nothing -> do
@@ -158,12 +164,28 @@ instance Lang HypTinf where
         -- store; consumed by Constructor.Tower.kindOf later.
         (eVal, env0) <- runHypTinf e env
         let kindProc = exprProc eVal
-            env1 = env0
+        -- Tower-aware kind coherence (Tower arc step 3): if we are
+        -- nested inside another @data X : K { ... }@, this data's
+        -- kind annotation must agree with the parent's TyConV-tower
+        -- coinductively.  The parent's tower's rung 1 is K (looked up
+        -- via 'kindOf' from the env we built when elaborating X), so
+        -- a member with a different annotation diverges at rung 0
+        -- already (e.g. @data Ty2 : *0@ vs parent @TyConV "Type"@).
+        () <- case hypEnvParent env0 of
+          Nothing                     -> Right ()
+          Just (parentName, parentPath) ->
+            let parentTower = towerOfView (hypEnvKindEnv env0)
+                                          (TyConV parentName parentPath)
+                memberTower = towerOfView (hypEnvKindEnv env0)
+                                          (hRun kindProc)
+            in compareTowers memberTower parentTower
+        let env1 = env0
               { hypEnvDataTypes = Map.insert name (length params) (hypEnvDataTypes env0)
               , hypEnvKindEnv   = Map.insert name kindProc        (hypEnvKindEnv env0)
               }
-        env2 <- threadDecls ds env1
-        pure (HypTinfDecl Nothing, env2)
+            savedParent = hypEnvParent env1
+        env2 <- threadDecls ds (env1 { hypEnvParent = Just (name, declPath) })
+        pure (HypTinfDecl Nothing, env2 { hypEnvParent = savedParent })
 
   ctorDecl _ann name e = HypTinf $ \env -> do
     (val, env1) <- runHypTinf e env

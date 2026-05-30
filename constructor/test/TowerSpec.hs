@@ -1,7 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TypeApplications #-}
 
--- | Tower-arc commit-1 scaffold tests.  Exercises:
+-- | Tower-arc scaffold tests.  Exercises:
 --
 --   * 'liftTower' / 'projectFirstRung' parity with 'procToTy'
 --     (the invariant that justifies the lift)
@@ -16,12 +16,10 @@
 --     'HypTinf', lift each ctor's 'TyProc' to a Tower, verify
 --     first-rung parity against the materialised type
 --
---   * an ill-kinded mutant (Ty2 declared with kind @*0@ inside @Type@'s
---     body): currently accepted because the kind-coherence check is
---     not yet implemented.  This test is a regression witness for the
---     Tower arc step 3 — when tower-aware 'meet' lands, the mutant
---     will start being rejected with a kind-mismatch; flip the
---     'expectAccept' to 'expectKindMismatch' then.
+--   * Tower arc step 3 — tower-aware kind coherence.  An ill-kinded
+--     mutant (@data Ty2 : *0@ nested inside @data Type : *1@) is
+--     rejected at elaboration time with a 'TyMismatch' between
+--     Ty2's annotation tower and the parent's TyConV-tower.
 module TowerSpec (tests) where
 
 import Constructor.HypTinf
@@ -33,6 +31,7 @@ import Constructor.HypTinf
 import Constructor.Level (Lv (..))
 import Constructor.Parser (parseProgram)
 import Constructor.Path (Path (..), PathStep (..))
+import Constructor.Tinf (TyErr (..))
 import Constructor.Tower
   ( climb
   , emptyKindEnv
@@ -132,7 +131,7 @@ tests =
                ok2 <- expectEq projected want
                pure (ok1 && ok2)
     )
-  , ( "Tower: nested data (ill-kinded mutant — currently accepted)"
+  , ( "Tower: nested data (ill-kinded mutant — rejected by step 3)"
     , -- data Type : *1 { Constr : Type; data Ty2 : *0 { Foo : Ty2 } }
       --
       -- Ty2 declares its kind as *0 rather than Type.  Both Constr
@@ -141,16 +140,16 @@ tests =
       -- kind-namespace: it inhabits *0, not Type.  This is the
       -- textbook kind mismatch that level inference cannot see.
       --
-      -- Today HypTinf accepts the program (no kind coherence check
-      -- is implemented).  Tower arc step 3 will introduce tower-aware
-      -- `meet` with directed vertical unification, at which point
-      -- this mutant will be rejected with a kind mismatch.
-      --
-      -- @TODO(tower-arc-step-3): flip this from 'expectAccept' to
-      -- 'expectKindMismatch' once tower-aware meet lands.
-      withHypTinf
-        "data Type : *1 { Constr : Type; data Ty2 : *0 { Foo : Ty2 } }"
-        $ \_r -> pure True
+      -- Tower arc step 3 introduced tower-aware kind coherence in
+      -- 'HypTinf.dataDecl': a nested data's annotation tower must
+      -- agree coinductively with the parent's TyConV-tower.  Here
+      -- Ty2's tower starts at @TyUnivV *0@ while the parent's starts
+      -- at @TyConV "Type"@ — sameView returns False at rung 0, so
+      -- elaboration fails with TyMismatch.
+      let typeP = Path [PsProgDecl 0]
+      in expectKindMismatch
+           "data Type : *1 { Constr : Type; data Ty2 : *0 { Foo : Ty2 } }"
+           (TyUniv (S (S Z))) (TyCon "Type" typeP)
     )
 
     -- --- Step-2 kindOf coalgebra ----------------------------------
@@ -173,33 +172,19 @@ tests =
               k     = kindOf (hypTinfKindEnv r) (TyConV "Type" typeP)
           in expectEq (viewToTy k) (TyUniv (S (S (S Z))))
     )
-  , ( "kindOf: well-kinded vs ill-kinded Ty2 — rung-1 divergence \
-       \(future step-3 catches this)"
-    , -- Demonstrate the property step 3 will exploit: the two Ty2
-      -- declarations produce kind-towers that differ at rung 1.
-      -- This test passes today (no rejection), but the divergence
-      -- IS observable now via kindOf.
+  , ( "kindOf: well-kinded Ty2's rung 1 is TyConV \"Type\""
+    , -- The property step 3 exploits: under a well-kinded program,
+      -- kindOf walks one rung up to TyConV "Type" (the parent's
+      -- name), and from there to *1 — which then agrees with the
+      -- parent's TyConV-tower coinductively.  The ill-kinded mutant
+      -- is now caught earlier by 'HypTinf.dataDecl' (see the
+      -- preceding test); here we just record the well-kinded shape.
       withHypTinf
         "data Type : *1 { Constr : Type; data Ty2 : Type { Foo : Ty2 } }"
-        $ \rWK -> withHypTinf
-          "data Type : *1 { Constr : Type; data Ty2 : *0 { Foo : Ty2 } }"
-          $ \rIK ->
-            let ty2P = Path [PsProgDecl 0, PsDeclIdx 1]
-                ty2V = TyConV "Ty2" ty2P
-                wkK  = kindOf (hypTinfKindEnv rWK) ty2V  -- expects: TyConV "Type"
-                ikK  = kindOf (hypTinfKindEnv rIK) ty2V  -- expects: TyUnivV *0
-            in do
-              -- Well-kinded: rung 1 is TyConV "Type"
-              ok1 <- expectEq (viewToTy wkK)
-                       (TyCon "Type" (Path [PsProgDecl 0]))
-              -- Ill-kinded: rung 1 is TyUnivV *0
-              ok2 <- expectEq (viewToTy ikK)
-                       (TyUniv (S (S Z)))
-              -- They differ.  Step 3 will reject the ill-kinded case
-              -- because rung 1 of Ty2's kind-tower doesn't match
-              -- rung 1 of (the parent body's expected kind for its
-              -- members).  Today we just observe the divergence.
-              pure (ok1 && ok2)
+        $ \r ->
+          let ty2P = Path [PsProgDecl 0, PsDeclIdx 1]
+              k    = kindOf (hypTinfKindEnv r) (TyConV "Ty2" ty2P)
+          in expectEq (viewToTy k) (TyCon "Type" (Path [PsProgDecl 0]))
     )
   ]
 
@@ -218,6 +203,23 @@ expectEq got want
   | got == want = pure True
   | otherwise   = reportFail $
       "expected: " <> show want <> "\n  got:      " <> show got
+
+-- | Run a source program through 'HypTinf' and expect a 'TyMismatch'
+--   carrying the given (member, parent) views materialised to TyExpr.
+--   Used to assert that tower-aware kind coherence (Tower arc step 3)
+--   rejects an ill-kinded mutant with the right shape.
+expectKindMismatch :: Text -> TyExpr -> TyExpr -> IO Bool
+expectKindMismatch src wantMember wantParent =
+  case parseProgram @HypTinf @(Const ()) "<tower-mismatch>" src of
+    Left e -> reportFail $ "parse error: " <> errorBundlePretty e
+    Right p -> case hypTinfProgram p of
+      Left (TyMismatch m k)
+        | m == wantMember && k == wantParent -> pure True
+        | otherwise -> reportFail $
+            "expected TyMismatch " <> show wantMember <> " " <> show wantParent
+            <> "\n  got: TyMismatch " <> show m <> " " <> show k
+      Left err -> reportFail $ "expected TyMismatch, got: " <> show err
+      Right _  -> reportFail "expected elaboration failure, but it succeeded"
 
 reportFail :: String -> IO Bool
 reportFail msg = putStrLn ("    " <> msg) >> pure False

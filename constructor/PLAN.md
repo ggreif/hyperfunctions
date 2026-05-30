@@ -530,27 +530,35 @@ the design depends on.
 
 #### The four-commit Tower arc
 
-1. **`Tower` lift + parity scaffold.**  Introduce `Tower` per (β).
-   Lift the existing level-layer's `Lv`-per-node info into vertical
-   rungs of a per-term Tower; lift `TyProc` into the horizontal
-   slot.  New module `Constructor.Tower`; no carrier changes yet.
-   Parity tests verify "extract first-rung-view from a Tower
-   matches today's `procToTy` output."
+1. **`Tower` lift + parity scaffold (landed).**  Introduced `Tower`
+   per (β).  Lifted the existing level-layer's `Lv`-per-node info
+   into vertical rungs of a per-term Tower; lifted `TyProc` into the
+   horizontal slot.  New module `Constructor.Tower`; no carrier
+   changes.  Parity tests verify "extract first-rung-view from a
+   Tower matches today's `procToTy` output."
 
-2. **Coalgebraic `infer` step.**  One unfold of the Tower's
-   vertical given the horizontal — the elementary kind-inference
-   move.  Re-applied, it's super-kind inference.  This is the
-   commit where "kind inference" becomes a real notion in the
-   codebase: not as a separate pass, but as a coalgebraic step
-   re-indexable by rung.
+2. **Coalgebraic `infer` step (landed).**  One unfold of the
+   Tower's vertical given the horizontal — `kindOf : KindEnv ->
+   TyView -> TyView`, the elementary kind-inference move.
+   Re-applied, it's super-kind inference.  `HypTinf` now collects
+   `hypEnvKindEnv` while elaborating each `data X : K`'s annotation,
+   so `kindOf` consults declared kinds rather than the synthetic
+   universe stream of commit 7.  This is the commit where "kind
+   inference" became a real notion in the codebase: not as a
+   separate pass, but as a coalgebraic step re-indexable by rung.
 
-3. **Tower-aware `meet`.**  Unification splits along the axis:
-   groupoid-style on the horizontal (today's `meet`, lifted),
-   directed/subtyping-style on the vertical.  The occurs check
-   folds naturally in here (vertical unification of cyclic
-   substitutions).  This is where A genuinely cannot follow —
-   it can't represent the vertical without bolting on the level
-   layer separately.
+3. **Tower-aware kind coherence (landed).**  `compareTowers ::
+   Tower -> Tower -> Either TyErr ()` walks two Towers rung-by-rung
+   along the vertical axis; termination is guaranteed by the
+   `*n`-stable-tail (the `x^0 = 1` collapse from the covering-space
+   framing).  `HypTinf.dataDecl` threads a `Maybe (Name, Path)`
+   parent context and, on a nested `data Y : K_Y` inside `data X :
+   K`, builds Y's annotation tower against the parent's
+   TyConV-tower; mismatch (e.g. `data Ty2 : *0` inside `data Type :
+   *1`) is rejected with `TyMismatch` at elaboration time.  The
+   horizontal-meet retrofit (today's `meet`, lifted onto Towers)
+   and the directed-vertical unifier for occurs checks are
+   deferred to a subsequent commit.
 
 4. **`HypTwr` carrier.**  New `Lang` instance emitting Towers in
    place of `TyProc`s, paralleling `HypTinf`.  Existing parity
