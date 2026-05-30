@@ -139,6 +139,139 @@ No impedance gap between Scott-the-encoding, (γ)-the-algebra,
 and Wasm-the-target, because all three speak the same shape.
 The calling convention IS the encoding IS the algebra.
 
+## Scott + Wasm tail call: the perfect runtime pairing
+
+Concrete Wasm-instruction mapping for the (γ)-spectrum:
+
+| (γ) shape | Wasm instruction | when applicable |
+|---|---|---|
+| inlining (identity) | `br_table` over inlined blocks | all callees of eliminator statically known |
+| tail call | `return_call` / `return_call_indirect` | callee replaces caller's frame |
+| standard call | `call` / `call_indirect` | full protocol with frame save/restore |
+| curried funcref | `table.set` + `call_indirect` | result is a callable, vertical rung emitted explicitly |
+
+Scott encoding's eliminator dispatch is the **textbook
+candidate for `return_call`**: every arm tail-calls its
+continuation by construction.  And when *all* callees of the
+eliminator are known at codegen time, the dispatch table
+collapses to inlined blocks selected by `br_table` — a
+zero-overhead variant.  Scott's structural fit with Wasm tail
+calls is not coincidental: both are the same (γ) algebra
+expressed in different vocabularies.
+
+## Layer 4: opetopes, socle, and the suspension move
+
+Finster's opetopes give another reading of (γ).  Opetopes are
+inductively built from corollas; finite opetopes end in a
+corolla (terminate), infinite ones stabilise coinductively
+(minimal Kolmogorov complexity, information content finite).
+That's (γ) — the lateral/vertical product, with the corolla
+as base case.
+
+The twist Finster adds is the **suspension** operation: take a
+finite vertical footing (a "socle") and *sink it into the
+horizontal*.  The resulting cell at dimension −1 is what
+Finster calls a "type" — a nominal thing, named at a lower
+dimension.
+
+In (γ) terms, suspension *manufactures names*.  It says:
+"here is a vertical column with a fixed bottom; collapse the
+column into a single named horizontal cell."  This is exactly
+what happens at every named socle in our type system —
+`Bool`, `Nat`, `Fin`, etc. each *are* a confined vertical
+footing made nominal.
+
+### Naturality squares live at every rung, not just the socle
+
+A naturality square in (γ) is the commutativity
+`kindOf ∘ meet ≡ meet ∘ kindOf` — lateral walk and vertical
+climb commute.  This is a universal algebraic property: it
+holds at *every* rung where both operations are defined.
+
+So squares aren't anchored at the socle.  They exist at every
+rung.  What makes the *socle* square special is that its
+corners carry **observable names** (`Bool`, `Nat`, …); squares
+higher up have corners that are terms in the algebra (e.g.,
+`meet (TyArr Bool Bool) (TyArr a a)`).
+
+The socle is a *moveable floor*, not an absolute one.
+Suspension is the operation that promotes a higher square's
+algebraic corner into a name — i.e., *raises the socle by one
+rung*.  After suspension that corner is nominal, and the rung
+beneath inherits it as named.
+
+Inlining is one instance: the (γ) rung corresponding to the
+call boundary gets suspended-and-fused into the use site.  The
+protocol is named at compile time, then immediately seen as
+redundant; the iso between caller-half and callee-half
+collapses.  Each layer of inlining is one suspension that
+raises the socle by one rung, until the (γ) has identity
+shape.
+
+## Layer 5: large eliminations as the other socle move
+
+Runtime values sit at the lowest rung — that is where
+computation happens.  Suspension à la Finster sinks vertical
+footing *down* into a horizontal cell, manufacturing a name at
+a lower dimension.  Large eliminations do something that *can
+be read either way*:
+
+- **From below (socle extension upward):** the socle annexes
+  the rung above by establishing an iso between value-rung
+  structure and type-rung structure.  The runtime stays where
+  it is, but its *reach* extends up.
+- **From above (suspension downward):** the upper rung is
+  pinched down into the socle.  Same iso, viewed as collapsing
+  the higher rung into a named lower cell.
+
+Both readings describe one operation.  A data declaration with
+DataKinds promotion (`data Nat⋮ { Z⋮; S : n -> S n }`) is
+exactly the iso-witness: runtime `Nat` and kind `Nat` are
+*the same data*, structural recursion shared across the
+fused rung.
+
+In (γ) terms: ordinarily rungs are independent and connected
+only by `kindOf`.  A large elim **fuses two adjacent rungs
+through an iso**.  After fusion, a function `Nat → Type` is no
+longer diagonal — it is horizontal at the merged rung.  The
+(γ) has gotten *shorter*.
+
+### Erasure at runtime
+
+The runtime is at the lowest rung — values, computation, Wasm
+instructions.  Socle extensions add compile-time content but
+**erase to identity at runtime**, because the iso says the
+runtime side already carries everything observable.  A
+`Fin (S Z) → Bool` doesn't need to inspect its index at
+runtime — the index is fused with the runtime Nat, and the
+function discharges via Scott dispatch on the runtime data
+alone.  The type-rung half exists for the typechecker; the
+codegen drops it.
+
+So the picture sharpens:
+
+- **Suspension downward (Finster)** = manufacture a *name* by
+  confining the rung above into the socle.  This is how types
+  get *born*.
+- **Socle extension upward (large elim)** = manufacture an
+  *iso* by declaring the rung above structurally identical to
+  the socle.  This is how types get *computed on*.  Read from
+  above, this is the same move as suspension; read from below,
+  it's annexation.
+- Together these are the (γ)-algebra's ways of dealing with
+  the vertical: pinch it into a name, fuse it into a
+  redundancy, or (equivalently) absorb it from below.
+- Inlining is yet another instance of the same: suspend the
+  call boundary, fuse it into the use site.
+
+The runtime never moves.  It just hosts more and more of the
+tower as socle moves get applied — large elims first, then
+inlining decisions, then refinements — until the (γ) has been
+compressed to whatever fits in `funcref` + tables + `br_table`
++ `return_call`.  The compiler's job is to perform as many
+socle moves as it can prove the iso for, because every fused
+rung is one fewer dispatch at runtime.
+
 ## TL;DR
 
 - Kidney/Wu: calling convention = Hyper.  Correct but flat.
@@ -147,3 +280,12 @@ The calling convention IS the encoding IS the algebra.
   with shared epilogue; CPS is (γ) reified.  All variations
   of the same algebra.
 - Codegen choices = algebraic simplifications of (γ).
+- Scott + Wasm `return_call` is a structural pairing, not a
+  coincidence; known-callee inlining collapses Scott to
+  `br_table`.
+- Naturality squares hold at every rung; the socle is a
+  *moveable floor*.  Suspension and socle extension are the
+  same operation from two viewpoints — one names the rung
+  above, the other fuses it into the rung below.  Either way
+  the (γ) shrinks by one rung, and that's exactly what the
+  runtime sees as erasure.
