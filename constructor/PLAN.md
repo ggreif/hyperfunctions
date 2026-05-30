@@ -1077,3 +1077,178 @@ Blocked: real Fin / Expr / `Refl` with per-ctor result
 refinement and existentials — needs arrow-kinded data + step 3c.
 
 102 tests green.
+
+## Arrow-kinded data + saturation + pattern-matching scaffolding
+
+### Arrow-kinded data — landed (ad1e8ca)
+
+Two coordinated HypLinf changes close the level-layer gap that
+the ctor-propagation note flagged:
+
+1. `dataDecl` consumes parameter kind annotations.  An
+   annotated param `(p : K)` binds `p` at `predLv (level of K)`
+   — i.e., as a /value/ of K.  Unannotated params keep the
+   bare-param fallback (bound at the data's own level), so
+   `data Fin n` retains the universe-polymorphic shorthand the
+   singleton-family tests depend on.
+
+2. `app` is loosened to accept the heterogeneous tycon-app
+   case: `level(x) == predLv (level(f))` is now valid, with
+   result at `level(f)`.  This is exactly "kind `K -> *l`
+   applied to a value of `K`" — `Fin@1` applied to `(S n)@0`
+   yields `Fin (S n)` at level 1.
+
+What that unlocks: real GADTs elaborate end-to-end.
+
+  data Nat : *0 { Z : Nat; S : Nat -> Nat };
+  data Fin (n : Nat) : *0 { FZ : Fin Z; FS : Fin n -> Fin (S n) }
+
+…and an analogous `Expr (a : Bool)` with `Lit : Expr T` and
+`Pair : Expr T -> Expr F -> Expr F`.
+
+### Saturation check — landed (c04c7fe)
+
+`HypTwr.ctorDecl` peels each ctor's annotation through arrows,
+then through application spine, to extract `(headView, args)`.
+Three rejection variants:
+
+  * `TyCtorBadResult`  — head isn't a `TyConV` at all
+  * `TyCtorWrongHead`  — head is a `TyConV` ≠ parent (only when
+                          parent arity ≥ 1; nullary parents get
+                          the singleton-family relaxation)
+  * `TyCtorWrongArity` — head matches parent but applied to
+                          wrong number of arguments
+
+Singleton-family relaxation: nullary parents (Iso, Swap, Weird)
+accept any `TyConV`-headed result.  Covering-space-framing
+content: with no parent params, sibling-as-result is
+operationally indistinguishable.
+
+### CtorSig extraction — landed (25a3e00)
+
+`extractCtorSig :: Subst -> Tower -> Maybe CtorSig` exposes
+each ctor's structured signature:
+
+  CtorSig
+    { ctorInputs      :: [TyProc]   -- args to consume when
+                                    --   /assembling/ this ctor
+    , ctorRefinements :: [TyProc]   -- one per parent param,
+                                    --   refining the scrutinee
+                                    --   at /dissection/ time
+    }
+
+Computed lazily on the ctor's tower (the saturation check's
+peeling logic is shared via `peelCtorTower`).  Free type vars
+in inputs/refinements that name a parent parameter are
+universally quantified at the ctor — they become existentials
+in the pattern-match arm where the ctor is matched on.
+
+CtorSig is /the/ substrate the pattern-matching machinery
+consumes.  At each match site the elaborator zips the
+scrutinee's actual parameter values against the static
+refinement spine; the resulting equations are the arm's
+substitution.
+
+### Sort/Lang scaffolding for pattern matching — landed (d67dcbe)
+
+`Sort` gains a value-level branch parameterised by a `Mode`:
+
+  data Mode = Build | Dissect
+  data Sort = SProg | SDecl | SExpr | SVal Mode | SArm
+
+`Lang` extended with:
+
+  * `valDecl` — `let name = body` (Build only)
+  * `valVar`  — variable / pattern binder (mode-polymorphic)
+  * `valWild` — wildcard `_` (Dissect only)
+  * `valCtor` — ctor application (mode-polymorphic)
+  * `case_`   — `case scrutinee { … }` (Build only)
+  * `arm`     — `pat -> body`, with `pat :: 'SVal 'Dissect` and
+                `body :: 'SVal 'Build` — the asymmetry across
+                `->` is in the signature directly
+
+Bipartite parsers (ctor app, var, paren-group, at-binder when
+it lands) are mode-polymorphic at the Haskell type level — one
+combinator serves both pattern and value position.
+Mode-specific forms (wildcard, lambda, nested case) instantiate
+the mode in their Lang signature, so Haskell catches
+"wildcard slipped into a value expression" at the call site.
+
+### Parser for `let` + `case` — landed (ded83fa)
+
+Surface syntax:
+
+  let name = <build-expr>;
+  case <scrutinee> { <pat> -> <body>; <pat> -> <body> }
+
+Parser additions:
+
+  * `valCtors :: Map Name Path` and `valVars :: Map Name Path`
+    threaded through `Binders`.  `ctorDecl` propagates ctor
+    names to outer `valCtors` (parallel to the tcBinders
+    propagation from 49525c3).
+  * Body prescan refined to mark each entry as nested-data
+    vs ctor — only ctors propagate to outer `valCtors`.
+  * Program prescan skips `let` decls (sequentially scoped,
+    no forward-reference support needed).
+  * `build` / `dissect` / `armP` / `caseExpr` combinators,
+    sharing `valAtom` / paren-group machinery.
+
+### HypTwr value-level walk — landed (74dcde6)
+
+Drives let + case through HypTwr directly — bypassing HypLinf,
+since the level layer has nothing to infer at value level (the
+future is on the HypTwr rails).  Scope-only at this commit:
+
+  * `valDecl` binds the name; rejects duplicates.
+  * `valVar` dispatches on runtime `ElabMode`: Build looks up
+    and rejects unbound (`TyUnbound`); Dissect introduces a
+    fresh binder visible to the arm body.
+  * `arm` flips env to `ElabDissect` for the pattern, restores
+    to `ElabBuild` for the body, then restores outer scope so
+    pattern binders don't leak.
+  * Parser made permissive: unresolved names emit `valVar` with
+    the current path as fallback — HypTwr is the single
+    authority on unbound diagnostics.
+
+What's deferred to the next slice:
+
+  * Real type checking against `CtorSig` (saturation of
+    inputs, refinement of scrutinee indices)
+  * `at`-patterns (`top@Foo _`) and `at`-expressions
+    (`top@Just top` for cyclic data; DPS-friendly per the
+    user's pointer to Motoko's TRMC PR)
+  * `λ`, function application at the value level
+  * Lambda-encoding fixpoint vs heap-cell fixpoint divergence
+    when encodings come up
+
+### Renamed: GadtSketchSpec → GadtSpec (87ff3c7)
+
+Most cases (Iso/Weird/Swap/Mirror singletons, real-Fin,
+real-Expr, kind-annotated params, ∃) elaborate genuine
+end-to-end singleton or refining GADTs.  Two `fake-*`
+placeholders remain as parametric-baseline canaries.
+
+### Status snapshot, post-arrow-kinded-data + scope-walk
+
+Reachable today (all elaborate end-to-end):
+
+| program | shape |
+|---|---|
+| everything in the previous snapshot | (still works) |
+| `data Fin (n : Nat) : *0 { FZ : Fin Z; FS : Fin n -> Fin (S n) }` | real GADT with refinement |
+| `data Expr (a : Bool) : *0 { Lit : Expr T; Pair : Expr T -> Expr F -> Expr F }` | typed-AST GADT |
+| `let x = case T { T -> F; F -> T }` | value-level case (scope-only) |
+| `let prev = case S Z { Z -> Z; S n -> n }` | pattern binder in arm body |
+
+Rejected today (saturation):
+
+| shape | error |
+|---|---|
+| `data Foo (a : *1) : *1 { c : a }` | `TyCtorBadResult` |
+| `data Foo (a : Nat) : *0 { d : Foo Z -> Nat }` | `TyCtorWrongHead` |
+| `data Foo (a : Nat) : *0 { d : Foo }` | `TyCtorWrongArity` |
+| unbound value-level name in let body | `TyUnbound` |
+| pattern binder leaking past arm | `TyUnbound` |
+
+119 tests green.
