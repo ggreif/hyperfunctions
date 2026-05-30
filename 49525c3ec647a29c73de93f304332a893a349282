@@ -1,0 +1,80 @@
+# Ctor propagation: parser-layer realisation of "fundament-witness ↔ all-rung presence"
+
+A small parser change — propagate body ctor names to outer
+`tcBinders` when a `data` declaration finishes — collapses a
+chunk of design space:
+
+## What the change fixes
+
+Before: in `data Nat { Z : Nat; S : Nat -> Nat }; data Fin (n :
+Nat) : *0 { FZ : Fin (S n) }`, the `S` in `Fin (S n)` parsed as
+`Var "S"` — the unresolved fallback.  HypLinf would reject it
+with `Unbound`.
+
+After: `S` parses as `TyConRef "S" SPath` — a type-level
+constructor, addressed at Nat's body slot 1.  Same identifier as
+Nat's ctor S, just at one rung up the cover.
+
+## Why it's deeper than a "fix"
+
+This is the parser realising what the covering-space framing
+already promises algebraically.  Each value-level ctor `c` is
+ALSO a type at one rung up — fundament-witness propagating to
+every upper rung.  The parser was *hiding* this by scoping ctors
+to their parent's body and dropping them on body close.
+Propagating them out exposes the algebra's invariant at the
+syntactic layer.
+
+The covering-space framing said: a single fundament-level
+registration witnesses presence at every rung.  The parser,
+once corrected, says the same — once a ctor exists in
+`hypEnvCtors`, it's *also* a type-level constructor in
+`tcBinders`, and the two namespaces share the identifier.
+
+## Bonus: uppercase-convention is moot
+
+Before this change, the question hung: should we adopt
+Haskell/Ωmega's lexical case convention (uppercase = fixed
+tycon ref, lowercase = parameter binding) so that `data Head
+Param { … }` could mean "Head indexed by Param" without the
+`(P : Param)` kind-annotation ceremony?
+
+After this change: no.  The kind-annotated-param syntax `(P :
+K)` already gives users the explicit "P inhabits K" expression.
+Ctor propagation handles the *other* half of the use case
+(ctors referenced as type-level constructors, like `S n`).
+Bare params remain variables; case-based magic isn't needed.
+
+This is the second time in this arc that a queued
+"convention/promotion ceremony" turned out to be moot once the
+covering-space framing was followed through:
+
+1. **Iso-cute `One : One`** — looked like DataKinds-style
+   promotion was needed; turned out the level-coordinate already
+   does it.  (Recorded on 78f00f4.)
+2. **Uppercase convention** — looked like a lexical convention
+   was needed for fixed-type-in-param-slot; turned out
+   `(P : K)` + ctor propagation cover both cases.  (Recorded
+   here.)
+
+Pattern: each time we reach for an extra mechanism, examining
+whether the substrate already supplies the answer reveals that
+it does.  The covering-space framing is *load-bearing* — it
+keeps doing more work than we credit it for, and the syntactic
+ceremonies we'd otherwise need are simply absorbed.
+
+## What's still pending
+
+Even with `S` resolving as `TyConRef`, end-to-end elaboration of
+`Fin (S n)` trips at HypLinf's homogeneous-app check: Fin is at
+level 1 (a type at *0's predecessor); S is at level 0 (a value
+at Nat's predecessor).  `Fin (S n)` applies Fin to (S n) which
+is at level 0 — different from Fin's level 1.  `LevelTear`.
+
+The fix isn't parser-side.  Arrow-kinded data (`Fin : Nat ->
+*0`) lets the level layer know Fin's argument should be at
+Nat's level (level 1, post-predLv).  Or level-unification with
+parametric levels could bridge.  Either is its own arc.
+
+The parser change here is the SHAPE-layer fix; the LEVEL-layer
+fix is the next move when real GADTs land.
