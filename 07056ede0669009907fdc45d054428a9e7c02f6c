@@ -1,0 +1,114 @@
+# Next-arc thoughts after the tower-aware occurs check landed
+
+Drafted while reflecting on the ten-commit Tower arc; saved as a
+git-note for posterity at the "galaxy-brain moment."
+
+## On the pattern-matching + codegen direction
+
+The instinct is good. A few thoughts to sharpen the sequencing.
+
+**Required prerequisite: there's no expression layer yet.** The
+grammar today is `data`-decls with type expressions in annotations.
+Pattern matching needs *value-level* terms to match on — lambdas,
+value-constructor applications, variables. So before patterns, the
+carrier methods grow `lam`, `con`, `letE`, `var-at-value-level`,
+etc. The Tower work is type-side; the value-side is a fresh axis.
+
+**Single-skin-peel is a great call.** It's the smallest
+semantically-honest pattern shape — one ctor pattern per `match`,
+children bound as fresh names, nesting via composition. Avoids
+Coq's full nested-match elaboration (where you trade simplicity for
+ergonomics; we don't need ergonomics yet). Each peel maps cleanly
+to one elimination in the lambda-encoding.
+
+**On Haskell vs Wasm as target.** They're not equivalent in what
+they recover from the work done so far:
+
+- **Haskell** preserves the algebraic structure. Constructors →
+  data declarations, Lang methods → an interpreter, Tower's kind
+  info → DataKinds promotion, our path-discipline →
+  Stern-Gerlach-friendly naming. The Tower work *pays off* — typing
+  structure carries through.
+- **Wasm** is structural-only. You'd flatten to a
+  Haskell-Core-without-types compilation followed by emission. The
+  constructor-language work becomes backend-agnostic
+  infrastructure. Honest, but it doesn't *test* anything you've
+  built.
+
+If the point is to keep validating the theory, Haskell is the
+better target. If the point is to have something running on the IC
+(or anywhere lean), Wasm. They're different goals, not different
+paths to the same goal.
+
+## Suggestions that might preempt or reorder the arc
+
+**1. Close `data Weird : Weird` end-to-end through HypLinf (tiny,
+completes a story).** PLAN.md flags the two-line accommodation:
+pre-bind `n` to `LVar declPath` before elaborating its kind
+annotation, and `predLv (LVar p) = Just (LVar p)` (or a fixpoint
+special case). That makes the Weird-tower navigable from parser
+through both type-inference carriers. The Tower-layer support is
+already there. Half a session.
+
+**2. GADT pattern matching, not ADT.** This one is non-obvious but
+the memory file's "engine/propeller" framing already lays the
+groundwork: "the engine, while running, constrains a blade against
+a specific pattern (the discriminant) within the match arm. Inside
+the arm, the propeller is locally pinned." That's GADT refinement,
+and the Tower's path-discipline + ∀-handling are *exactly* the
+substrate it needs. Plain-ADT pattern matching is a strict subset;
+if you target GADTs you get ADTs free, and the work you've done
+starts informing pattern elaboration (the refinement-mid-arm is a
+substitution extension along the directed `:` arrow — same
+machinery `meetTowers` uses).
+
+If you go plain ADTs first you've done two arcs to land at the same
+place. If you go GADTs first you've maximally exercised what's
+there.
+
+**3. Lift metas into the Tower's horizontal slot.** Currently
+`Tower { horizontal :: !TyView, vertical :: Tower }` — but
+`TyView`'s `TyMetaV` slot is a bare identity, no `TyProc` sharing.
+Promoting to `TyProc` in the horizontal would make
+metas-with-process-identity flow across rungs, which is what
+unification through a value-level pattern match will need (the
+match-arm's local refinement IS a meta-binding shared with the
+outer scope). Mid-difficulty; preserves the option-β shape; sets up
+GADTs cleanly.
+
+**4. Atkey-Noether connection made explicit.** Pick one
+parametricity property of our system (substitution naturality is
+the obvious candidate — we just proved a square commutes) and write
+it down as a conservation law. Memory file has the gesture; making
+it concrete would be its own small arc and would arm you for
+talking about the work in the academic register if that's a thing
+you want.
+
+## Recommendation if forced to pick one
+
+GADTs first (option 2), framed via single-skin-peel pattern
+matching. Why:
+
+- Maximal use of what's there. The Tower + path-discipline +
+  naturality + occurs check were each motivated by hand-wavy
+  "you'll want this for X" justifications; GADT refinement is the X
+  that actually closes those loops.
+- The expression layer comes along for the ride (you need it for
+  patterns).
+- Codegen to Haskell becomes natural after — Haskell-GADTs are the
+  obvious target, you've been speaking that language all along.
+- It's the most ambitious of the options, which means it'll either
+  succeed (great) or fail in *informative* ways (also great —
+  failures past this point will be theory-level, not
+  engineering-level, which is the kind of failure that's actually
+  worth having).
+
+ADT pattern matching as a smaller intermediate would also be
+defensible — it's lower risk and gives you a working
+pattern-matching language faster. But the project has been
+operating at full speed; "lower risk" might be a category error
+here.
+
+The trade-off: GADTs are harder. If the next session has limited
+budget, single-skin-peel ADTs are the cleaner pickup point, and
+GADTs are the session after.
