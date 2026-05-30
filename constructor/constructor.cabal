@@ -39,9 +39,11 @@ library
     Constructor.AST
     Constructor.Parser
     Constructor.Hs
+    Constructor.Scott
   build-depends:
     , base        >= 4.18 && < 5
     , containers  >= 0.6  && < 0.9
+    , mtl         >= 2.2  && < 2.4
     , text        >= 2.0  && < 2.2
     , megaparsec  >= 9.5  && < 9.8
 
@@ -70,6 +72,7 @@ test-suite constructor-test
     GadtSpec
     AxiomsSpec
     HsSpec
+    ScottSpec
   build-depends:
     , base
     , constructor
