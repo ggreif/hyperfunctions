@@ -1,0 +1,83 @@
+# `⋮` is the typing tower as glyph (pun + spec)
+
+## The pun
+
+`⋮` (U+22EE VERTICAL ELLIPSIS) — three vertical dots — depicts
+the typing tower as notation.  In `Fridge ⋮`, the dots ARE the
+rungs of the upward stream: Fridge stacked above Fridge stacked
+above Fridge, the productive codata visualised compactly.  The
+glyph names exactly what the Tower abstraction computes.
+
+It's also a *spec*.  The right semantic reading of `c ⋮` isn't
+"shorthand for `c : c`" — it's:
+
+> Build the tower at this name+path; use its rung-1 as the type
+> annotation.
+
+That's precisely `kindOf` applied to `TyConV c declPath Z`,
+which under self-stratification gives `TyConV c declPath (S Z)`.
+The shorthand and the explicit form coincide because of the
+fixpoint at `predLv (LVar p) = LVar p`: every rung at the
+parametric level looks the same, so `c : c` and `c ⋮` produce
+the same elaboration result, but the *reason* is the tower's
+stable tail, not a textual substitution.
+
+## What it picks out
+
+The stable upward stream of `meetTowers`' termination criterion
+maps onto the three dots:
+
+```
+Fridge       <-- value (ctor at predLv parent)
+  :          <-- one rung up via kindOf
+Fridge       <-- type at parent's level
+  ⋮          <-- the stable codata-tail above, all at the same
+               parametric LVar via the fixpoint
+```
+
+The `:` is one deck transformation.  The `⋮` is the entire
+stable tail above — codata as glyph.  Each character in the
+notation has algebraic content.
+
+## Why no elaborator change is needed
+
+The parser desugars `c ⋮` to `tyConRef ann c lhsPath` directly
+— same AST node the body-mutual prescan + tcBinders extension
+would produce for an explicit `c : c`.  Once `predLv (LVar p) =
+LVar p` gave the level coordinate its fixpoint (for the
+`data Weird : Weird` story), and the body-mutual prescan added
+sibling names to `tcBinders` (for `Iso : Iso { One : One; … }`),
+and HypLinf's parent-fallback let unbound tyConRefs resolve at
+the parent's level — the elaboration of `c ⋮`'s desugaring fell
+out for free.  The shorthand is the surface payoff of three
+prior commits' algebraic work.
+
+## Future extension — parametric `X a ⋮`
+
+Ambiguous between `X a : X` (bare identifier) and `X a : X a`
+(applied to own params).  Different semantics:
+
+- Bare: X is at kind X, a separate beast from `X a`.  The
+  shorthand drops the parameter from the kind side.
+- Applied: X a's kind is X a — fully self-applied
+  stratification, including the parameter.
+
+Today's grammar is nullary-only for `⋮`-style decls; the
+singleton use case (Iso, Swap, Mirror) doesn't need parameters.
+When parametric data wants `⋮`, the design choice picks itself
+based on which reading lands cleanly: `X a` carries the
+parameter into the kind tower naturally if `kindOf` on `App`
+already unfolds via the head's kind (it does — `kindOf env
+(TyAppV f _) = kindOf env (hRun f)`), so the "applied"
+reading is consistent with the existing machinery.  Lean
+toward that when it becomes load-bearing.
+
+## Recorded as pun for posterity
+
+The user's "It's a typing (tower) pun" framing crystallised the
+syntax-as-spec point.  The three-character glyph names the
+algebraic invariant; the parser implements the desugaring; the
+elaborator wasn't touched because the abstraction is already
+load-bearing in the layer below.  This is the cleanest test of
+"did we build the right substrate" we've had — the substrate
+admits the notation that names it.
