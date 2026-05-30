@@ -43,9 +43,9 @@ module Constructor.HypTwr
   , extractCtorSig
   ) where
 
-import Constructor.HyperLite (hRun)
+import Constructor.HyperLite (hPure, hRun)
 import Constructor.Level (Lv (..), starLevel)
-import Constructor.Path (Path)
+import Constructor.Path (Path, PathStep (..), emptyPath, extendPath)
 import Constructor.Sort (Sort (..))
 import Constructor.Syntax (Lang (..), Name)
 import Constructor.Tinf (TyErr (..))
@@ -56,11 +56,14 @@ import Constructor.Tower
   )
 import Constructor.TyExpr (TyExpr)
 import Constructor.TyProc
-  ( Subst
+  ( MetaId (..)
+  , Subst
   , TyProc
   , TyView (..)
   , emptySubst
   , materialize
+  , meet
+  , mkMeta
   , resolveView
   )
 import Data.Kind (Type)
@@ -70,15 +73,17 @@ import qualified Data.Map.Strict as Map
 -- | Per-sort carrier value.  'SExpr' carries a 'Tower' directly; the
 --   ctor decl slot pairs the ctor's name with its tower; the data
 --   decl slot is 'Nothing' (matching 'HypTinf').  Value-level and
---   arm carriers are trivial today — the type/match elaboration on
---   the value-level rails is structural only at this commit (scope
---   correctness); proper type-checking lands next.
+--   arm carriers now also carry 'Tower' payloads: in 'Build' mode
+--   the tower is the expression's inferred type; in 'Dissect' mode
+--   it's a placeholder (a fresh meta) — Dissect-side typing lands
+--   in the next sub-commit, which will replace the placeholder with
+--   the pattern's actual type as derived from the scrutinee.
 data HypTwrVal (s :: Sort) where
   HypTwrExpr  :: !Tower                       -> HypTwrVal 'SExpr
   HypTwrDecl  :: !(Maybe (Name, Tower))       -> HypTwrVal 'SDecl
   HypTwrProg  ::                                  HypTwrVal 'SProg
-  HypTwrSVal  ::                                  HypTwrVal ('SVal m)
-  HypTwrSArm  ::                                  HypTwrVal 'SArm
+  HypTwrSVal  :: !Tower                       -> HypTwrVal ('SVal m)
+  HypTwrSArm  :: !Tower                       -> HypTwrVal 'SArm
 
 -- | Elaboration mode for value-level constructs.  The 'Lang' typeclass's
 --   'SVal' phantom (a type-level 'Mode') tracks Build / Dissect
@@ -98,13 +103,14 @@ data HypTwrEnv = HypTwrEnv
   , hypTwrEnvCtors     :: !(Map Name Tower)
   , hypTwrEnvSubst     :: !Subst
   , hypTwrEnvParent    :: !(Maybe (Name, Path))
-  , hypTwrEnvValVars   :: !(Map Name ())
+  , hypTwrEnvValVars   :: !(Map Name Tower)
     -- ^ Names currently bound at the value level (top-level 'let'
     --   binders, plus pattern-introduced binders inside an arm
-    --   body).  Today the payload is just '()' — no type
-    --   tracking — so this records scope only.  When value-level
-    --   type-checking lands the payload becomes the binder's
-    --   inferred type ('Tower').
+    --   body), each paired with its inferred type ('Tower').
+    --   For let binders the tower is the RHS's Build-mode type;
+    --   for pattern-introduced binders today the tower is a fresh
+    --   meta (Dissect-side typing happens next sub-commit, when
+    --   the scrutinee's type flows in to refine the meta).
   , hypTwrEnvMode      :: !ElabMode
     -- ^ Runtime mode: 'ElabBuild' (the default) flips to
     --   'ElabDissect' while elaborating an arm's pattern, and
@@ -121,9 +127,9 @@ data HypTwrResult = HypTwrResult
   { hypTwrDataTypes :: !(Map Name Int)
   , hypTwrCtors     :: !(Map Name Tower)
   , hypTwrSubst     :: !Subst
-  , hypTwrValVars   :: !(Map Name ())
-    -- ^ Value-level binders defined at the program scope.  Empty
-    --   until 'let' decls land in the elaborated input.
+  , hypTwrValVars   :: !(Map Name Tower)
+    -- ^ Value-level binders defined at the program scope, paired
+    --   with their inferred 'Tower' types.
   }
 
 -- | Extract each ctor's first-rung 'TyExpr' from a 'HypTwrResult'.
@@ -268,6 +274,63 @@ threadVals (x:xs) env = do
   (_, env1) <- runHypTwr x env
   threadVals xs env1
 
+-- | Walk a list of arms, collect each arm's body tower (used by
+--   'case_' to pairwise-meet body types).  Each arm internally
+--   restores the env's val-binders to the outer scope, so the
+--   accumulator only grows with the threaded 'Subst'.
+threadArmBodies
+  :: [HypTwr a 'SArm] -> HypTwrEnv -> Either TyErr ([Tower], HypTwrEnv)
+threadArmBodies []     env = Right ([], env)
+threadArmBodies (a:as) env = do
+  (armVal, env1) <- runHypTwr a env
+  let bodyTower = sArmTower armVal
+  (rest, env2) <- threadArmBodies as env1
+  pure (bodyTower : rest, env2)
+
+-- | Pairwise meet on the first rung of a list of towers.  Used to
+--   force a 'case' expression's arm bodies to agree on a common
+--   result type — each successive pair extends the 'Subst' with
+--   whatever bindings the meet introduces.
+meetAllTowers :: Subst -> [Tower] -> Either TyErr Subst
+meetAllTowers s []           = Right s
+meetAllTowers s [_]          = Right s
+meetAllTowers s (t1:t2:rest) = do
+  s' <- meet s (horizontal t1) (horizontal t2)
+  meetAllTowers s' (t2 : rest)
+
+-- | Extract the type tower from a value-level carrier.
+sValTower :: HypTwrVal ('SVal m) -> Tower
+sValTower (HypTwrSVal t) = t
+
+-- | Extract the body tower from an arm carrier.
+sArmTower :: HypTwrVal 'SArm -> Tower
+sArmTower (HypTwrSArm t) = t
+
+-- | Build a "Parent applied to fresh metas" tower for a ctor's
+--   Build-side use site.  One meta per parent parameter (binder
+--   path = the parameter's def-slot inside the parent, use path =
+--   the ctor's call site).  For a nullary parent (arity 0) the
+--   result is just the parent's 'TyConV' — no application chain.
+--
+--   This is /not/ the eventually-correct result type (which would
+--   substitute the parent's TyVarVs throughout 'CtorSig.refinements'
+--   with these fresh metas); it's a /shape-compatible/ placeholder
+--   that lets arm bodies meet pairwise through metavariable
+--   binding while the refinement-walking machinery is still ahead
+--   of us.  When that lands, this helper grows to consume
+--   'ctorRefinements' directly.
+mkCtorResultTower
+  :: HypTwrEnv -> Name -> Path -> Int -> Path -> Tower
+mkCtorResultTower env parentName parentPath arity callPath =
+  leafTower env (chain (TyConV parentName parentPath Z) 0)
+  where
+    chain hView i
+      | i >= arity = hView
+      | otherwise  =
+          let metaProc = mkMeta (extendPath (PsDataParam i) parentPath) callPath
+              hProc    = hPure hView
+          in chain (TyAppV hProc metaProc) (i + 1)
+
 instance Lang HypTwr where
   prog _ann ds = HypTwr $ \env -> do
     env' <- threadDecls ds env
@@ -357,70 +420,123 @@ instance Lang HypTwr where
     Right (HypTwrExpr (leafTower env (TyUnivV Z)), env)
 
   -- ------------------------------------------------------------------
-  -- Value-level / pattern-match elaboration.  Structural-walk only at
-  -- this commit — scope correctness, no type-checking.  Real
-  -- type-checking against 'CtorSig' is the next step.
+  -- Value-level / pattern-match elaboration.
+  --
+  -- Build-side typing live as of this commit: 'valDecl' bindings
+  -- carry types, 'valVar' Build-mode lookups return the bound
+  -- type, 'case_' meets all arm-body types pairwise so they agree
+  -- on a common result.  Dissect-side typing — unifying the
+  -- pattern's structure against the scrutinee's actual type, and
+  -- propagating the per-arm refinement substitution — lands in
+  -- the next sub-commit.
+  --
+  -- Today's Dissect carriers therefore emit /placeholder/ towers
+  -- (fresh metas); they don't influence Build-side body typing
+  -- in any way that breaks the round-trip axioms because all arm
+  -- bodies meet pairwise regardless.  When real Dissect typing
+  -- lands, the placeholders get replaced with the substituted
+  -- shape derived from the scrutinee, and the round-trips
+  -- automatically strengthen into refinement-correctness checks.
+  --
+  -- Build-side ctor application is /not/ fully typed yet for
+  -- arity-≥1 parents: the per-use instantiation of parent param
+  -- TyVarVs to fresh metas, plus the meet of each arg against
+  -- the instantiated 'ctorInputs', requires a TyVarV-substituting
+  -- walk that lives in the same commit as Dissect refinement.
+  -- For now arity-≥1 ctors return a "Parent applied to fresh
+  -- metas" result and skip the input-side meet — sufficient to
+  -- keep arm-body types unifying through metavariable binding.
   -- ------------------------------------------------------------------
 
-  valDecl _ann _declPath name body = HypTwr $ \env -> do
-    -- Elaborate the body in Build mode (the env default), then bind
-    -- 'name' for subsequent decls.  Duplicate bindings are rejected
-    -- using the same shape as 'TyDuplicateCtor'.
+  valDecl _ann _declPath name body = HypTwr $ \env ->
     case Map.lookup name (hypTwrEnvValVars env) of
       Just _  -> Left (TyDuplicateCtor name)
       Nothing -> do
-        (_, env1) <- runHypTwr body env
-        let env2 = env1
+        (bodyVal, env1) <- runHypTwr body env
+        let bodyTower = sValTower bodyVal
+            env2 = env1
               { hypTwrEnvValVars =
-                  Map.insert name () (hypTwrEnvValVars env1) }
+                  Map.insert name bodyTower (hypTwrEnvValVars env1) }
         Right (HypTwrDecl Nothing, env2)
 
-  valVar _ann name _path = HypTwr $ \env -> case hypTwrEnvMode env of
+  valVar _ann name path = HypTwr $ \env -> case hypTwrEnvMode env of
     ElabBuild ->
-      -- Build mode: name must refer to a let binder or a
-      -- pattern-introduced binder in scope.  (Nullary ctors go
-      -- through 'valCtor' with empty args, not through 'valVar'.)
-      if Map.member name (hypTwrEnvValVars env)
-        then Right (HypTwrSVal, env)
-        else Left (TyUnbound name)
+      case Map.lookup name (hypTwrEnvValVars env) of
+        Just tower -> Right (HypTwrSVal tower, env)
+        Nothing    -> Left (TyUnbound name)
     ElabDissect ->
-      -- Dissect mode: name introduces a fresh binder, in scope for
-      -- the rest of the pattern and the arm body.  Shadowing is
-      -- allowed (the parser produces a fresh 'Path' per pattern
-      -- position; runtime maps just get overwritten on shadow).
-      let env' = env { hypTwrEnvValVars =
-                         Map.insert name () (hypTwrEnvValVars env) }
-      in Right (HypTwrSVal, env')
+      let metaTower = leafTower env (TyMetaV (MetaId path path))
+          env'      = env { hypTwrEnvValVars =
+                              Map.insert name metaTower (hypTwrEnvValVars env) }
+      in Right (HypTwrSVal metaTower, env')
 
-  valWild _ann = HypTwr $ \env -> Right (HypTwrSVal, env)
+  valWild _ann = HypTwr $ \env ->
+    -- Dissect-only by signature; no binder, no scope mutation.
+    -- The placeholder meta uses 'emptyPath' for both slots — a
+    -- known sentinel that the next sub-commit replaces with the
+    -- pattern position's actual path (Lang.valWild gains a Path
+    -- parameter at that point).
+    let placeholderTower = leafTower env (TyMetaV (MetaId emptyPath emptyPath))
+    in Right (HypTwrSVal placeholderTower, env)
 
-  valCtor _ann name _path args = HypTwr $ \env ->
-    case Map.lookup name (hypTwrEnvCtors env) of
-      Nothing -> Left (TyUnbound name)
-      Just _  -> do
-        -- Walk each arg in the current mode; pattern-mode args
-        -- accumulate binders into the env, build-mode args
-        -- don't mutate it.
-        env' <- threadVals args env
-        Right (HypTwrSVal, env')
+  valCtor _ann name callPath args = HypTwr $ \env -> case hypTwrEnvMode env of
+    ElabBuild -> do
+      ctorTower <- maybe (Left (TyUnbound name)) Right
+                     (Map.lookup name (hypTwrEnvCtors env))
+      let subst              = hypTwrEnvSubst env
+          (_, headView, _)   = peelCtorTower subst ctorTower
+      case (extractCtorSig subst ctorTower, headView) of
+        (Just sig, TyConV pName pPath _)
+          | length args /= length (ctorInputs sig) ->
+              Left (TyCtorWrongArity name pName
+                     (length (ctorInputs sig)) (length args))
+          | otherwise -> do
+              -- Walk args in Build mode; per-arg meet against
+              -- ctorInputs is deferred until the substitution
+              -- walk lands (next sub-commit).
+              env' <- threadVals args env
+              let arity = maybe 0 id (Map.lookup pName (hypTwrEnvDataTypes env'))
+                  resultTower = mkCtorResultTower env' pName pPath arity callPath
+              Right (HypTwrSVal resultTower, env')
+        _ -> Left (TyCtorBadResult name)
+    ElabDissect ->
+      case Map.lookup name (hypTwrEnvCtors env) of
+        Nothing -> Left (TyUnbound name)
+        Just _  -> do
+          env' <- threadVals args env
+          -- Placeholder result tower keyed on the ctor's call
+          -- site; tightens to "Parent applied to refinement with
+          -- skolems" in the next sub-commit.
+          let placeholderTower =
+                leafTower env' (TyMetaV (MetaId callPath callPath))
+          Right (HypTwrSVal placeholderTower, env')
 
   case_ _ann scrutinee arms = HypTwr $ \env -> do
     (_, env1) <- runHypTwr scrutinee env
-    env2 <- threadVals arms env1
-    -- Pattern binders introduced inside arms are restored per-arm
-    -- (see 'arm' below); 'case_' only threads the result envs.
-    Right (HypTwrSVal, env2)
+    -- Walk arms, collecting each body's tower.  Pattern binders
+    -- introduced in each arm are restored at arm's exit
+    -- (see 'arm' below), so the threaded env never accumulates
+    -- per-arm bindings.
+    (bodyTowers, env2) <- threadArmBodies arms env1
+    -- All arm-body towers must unify (meet pairwise on the first
+    -- rung).  The case as a whole types at the common tower.
+    finalSubst <- meetAllTowers (hypTwrEnvSubst env2) bodyTowers
+    let env3 = env2 { hypTwrEnvSubst = finalSubst }
+        resultTower = case bodyTowers of
+          (t:_) -> t
+          []    -> leafTower env3 (TyMetaV (MetaId emptyPath emptyPath))
+    Right (HypTwrSVal resultTower, env3)
 
   arm _ann pat body = HypTwr $ \env -> do
-    let savedVars = hypTwrEnvValVars env
-        envD      = env { hypTwrEnvMode = ElabDissect }
+    let savedVars  = hypTwrEnvValVars env
+        savedMode  = hypTwrEnvMode env
+        envD       = env { hypTwrEnvMode = ElabDissect }
     (_, env1) <- runHypTwr pat envD
     let envB = env1 { hypTwrEnvMode = ElabBuild }
-    (_, env2) <- runHypTwr body envB
-    -- Restore the outer value-variable scope so pattern binders
-    -- don't leak past the arm body.
-    let env3 = env2
+    (bodyVal, env2) <- runHypTwr body envB
+    let bodyTower = sValTower bodyVal
+        env3 = env2
           { hypTwrEnvValVars = savedVars
-          , hypTwrEnvMode    = hypTwrEnvMode env  -- preserve outer mode
+          , hypTwrEnvMode    = savedMode
           }
-    Right (HypTwrSArm, env3)
+    Right (HypTwrSArm bodyTower, env3)

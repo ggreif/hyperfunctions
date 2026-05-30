@@ -45,9 +45,10 @@ import Constructor.HypTwr
   )
 import Constructor.LevelInfer (LvErr (..))
 import Constructor.Parser (parseProgram)
+import Constructor.Path (Path (..), PathStep (..))
 import Constructor.Syntax (Name)
 import Constructor.Tinf (TyErr (..))
-import Constructor.TyExpr (prettyTy)
+import Constructor.TyExpr (TyExpr (..), prettyTy)
 import Constructor.TyProc (materialize)
 import Data.Functor.Const (Const (..))
 import qualified Data.Map.Strict as Map
@@ -330,6 +331,17 @@ tests =
       \let prev = case S Z { Z -> Z; S n -> Z };\
       \let leak = n"
       (TyUnbound "n")
+  , rejectsValAtType
+      "Value-level: heterogeneous arm bodies are rejected (Bool vs Nat)"
+      -- Build-side typing now meets all arm bodies pairwise: an
+      -- arm yielding @Bool@ and another yielding @Nat@ no longer
+      -- meet, surfaced as 'TyMismatch'.
+      "data Bool : *0 { T : Bool; F : Bool };\
+      \data Nat : *0 { Z : Nat };\
+      \let bad = case T { T -> T; F -> Z }"
+      (TyMismatch
+        (TyCon "Bool" (Path [PsProgDecl 0]))
+        (TyCon "Nat"  (Path [PsProgDecl 1])))
 
   , accepts "GADT sketch: Iso singleton via separate type decls"
       ("data One : Iso { OneCtor : One };\
