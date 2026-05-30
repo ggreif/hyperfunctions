@@ -288,7 +288,7 @@ work now.
 
 ### Commit 4 (next) — B-side `HypTinf` carrier
 
-Direct sibling of `HypTc` for type inference.  The substrate is no
+Direct sibling of `HypLinf` for type inference.  The substrate is no
 longer a Sheet (or a state-threaded `TyResult`-builder) but a *web of
 type-processes*, each a hyperfunction valued in a one-layer-unfolded
 view of the type:
@@ -306,7 +306,7 @@ data TyView
 type TyProc = Hyper TyView TyView
 ```
 
-The HKT'd carrier mirrors `HypTc`:
+The HKT'd carrier mirrors `HypLinf`:
 
 ```haskell
 data HypTinfVal (s :: Sort) where

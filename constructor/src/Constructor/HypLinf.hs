@@ -6,29 +6,34 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
--- | Architecture B: hyperfunction-driven carrier.  Parallel sibling to
---   'Constructor.Tc' (Architecture A, Sheet-driven).
+-- | Architecture B: hyperfunction-driven level-inference carrier.
+--   Parallel sibling to 'Constructor.Tc' (Architecture A, Sheet-driven
+--   level inference).
 --
 --   The 'Sheet' substrate is replaced by a web of 'Hyper'-valued
---   type-processes.  Each place in the web IS a hyperfunction; two
+--   level-processes.  Each place in the web IS a hyperfunction; two
 --   places are "identified" when their self-applications yield
 --   compatible values.  For v0 (flat levels, no inference variables)
---   the web is shallow — every type-process is 'hPure n' — so the
+--   the web is shallow — every level-process is 'hPure n' — so the
 --   architectural difference doesn't show up in expressive power.
---   It earns its keep when type-inference variables arrive and the
+--   It earns its keep when level-inference variables arrive and the
 --   path-tracing character of hyperfunction self-application starts
 --   carrying real information (the witness of each identification).
 --
 --   The carrier is impredicative in the same shape as 'Constructor.Tc':
 --   each method emits the analysis result and a polymorphic
 --   finally-tagless term decorated by inferred levels in one go.
-module Constructor.HypTc
-  ( HypVal (..)
-  , HypResult (..)
-  , HypTc
-  , hypProgram
-  , hypRunWith
-  , solveLevelsHyp
+--   That polymorphic third slot is what 'Constructor.HypTinf' (B-side
+--   type inference) consumes — specialise at @r ~ HypTinf@ via
+--   'hypLinfRunWith' and the level annotations flow into type
+--   inference as input.
+module Constructor.HypLinf
+  ( HypLinfVal (..)
+  , HypLinfResult (..)
+  , HypLinf
+  , hypLinfProgram
+  , hypLinfRunWith
+  , solveLevelsHypLinf
   ) where
 
 import Constructor.HyperLite (Hyper, hPure, hRun)
@@ -41,57 +46,58 @@ import Data.Kind (Type)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 
--- | A type-process: a hyperfunction that, when self-applied, yields
+-- | A level-process: a hyperfunction that, when self-applied, yields
 --   the level of the place it represents.
 type LvProc = Hyper Lv Lv
 
 -- | Carrier value.  No 'Place' tag — the hyperfunction itself IS the
 --   place; identifications happen via self-application, not via
 --   union-find roots.
-data HypVal (s :: Sort) where
-  HypVExpr :: !LvProc -> HypVal 'SExpr
-  HypVDecl :: !LvProc -> HypVal 'SDecl
-  HypVProg ::            HypVal 'SProg
+data HypLinfVal (s :: Sort) where
+  HypLinfExpr :: !LvProc -> HypLinfVal 'SExpr
+  HypLinfDecl :: !LvProc -> HypLinfVal 'SDecl
+  HypLinfProg ::            HypLinfVal 'SProg
 
-hypExprProc :: HypVal 'SExpr -> LvProc
-hypExprProc (HypVExpr p) = p
+hypLinfExprProc :: HypLinfVal 'SExpr -> LvProc
+hypLinfExprProc (HypLinfExpr p) = p
 
-data HypEnv = HypEnv
-  { hypEnvNames  :: !(Map Name LvProc)
-  , hypEnvParent :: !(Maybe LvProc)
+data HypLinfEnv = HypLinfEnv
+  { hypLinfEnvNames  :: !(Map Name LvProc)
+  , hypLinfEnvParent :: !(Maybe LvProc)
   }
 
-emptyHypEnv :: HypEnv
-emptyHypEnv = HypEnv Map.empty Nothing
+emptyHypLinfEnv :: HypLinfEnv
+emptyHypLinfEnv = HypLinfEnv Map.empty Nothing
 
--- | Solver-facing analysis result.  Just the bound-name → type-process
+-- | Solver-facing analysis result.  Just the bound-name → level-process
 --   map; no Sheet to consult.  Levels are obtained by self-applying
 --   each process via 'hRun'.
-data HypResult = HypResult
-  { hypResultNames :: !(Map Name LvProc)
+data HypLinfResult = HypLinfResult
+  { hypLinfResultNames :: !(Map Name LvProc)
   }
 
--- | The hyperfunction-driven carrier.  Phantom in @a@; impredicative
---   third tuple slot for the polymorphic LvAnnot-decorated term.
-newtype HypTc (a :: Sort -> Type) (s :: Sort) = HypTc
-  { runHypTc :: forall r. Lang r =>
-                HypEnv -> Either LvErr (HypVal s, HypEnv, r LvAnnot s)
+-- | The hyperfunction-driven level-inference carrier.  Phantom in @a@;
+--   impredicative third tuple slot for the polymorphic LvAnnot-
+--   decorated term.
+newtype HypLinf (a :: Sort -> Type) (s :: Sort) = HypLinf
+  { runHypLinf :: forall r. Lang r =>
+                  HypLinfEnv -> Either LvErr (HypLinfVal s, HypLinfEnv, r LvAnnot s)
   }
 
 -- | Analysis only (specialises the polymorphic slot at 'Discard').
-hypProgram :: HypTc a 'SProg -> Either LvErr HypResult
-hypProgram p = do
-  (_, env, _ :: Discard LvAnnot 'SProg) <- runHypTc p emptyHypEnv
-  pure (HypResult (hypEnvNames env))
+hypLinfProgram :: HypLinf a 'SProg -> Either LvErr HypLinfResult
+hypLinfProgram p = do
+  (_, env, _ :: Discard LvAnnot 'SProg) <- runHypLinf p emptyHypLinfEnv
+  pure (HypLinfResult (hypLinfEnvNames env))
 
 -- | Analysis + polymorphic LvAnnot term at the caller's chosen @r@.
-hypRunWith
+hypLinfRunWith
   :: forall r a. Lang r
-  => HypTc a 'SProg
-  -> Either LvErr (HypResult, r LvAnnot 'SProg)
-hypRunWith p = do
-  (_, env, term) <- runHypTc p emptyHypEnv
-  pure (HypResult (hypEnvNames env), term)
+  => HypLinf a 'SProg
+  -> Either LvErr (HypLinfResult, r LvAnnot 'SProg)
+hypLinfRunWith p = do
+  (_, env, term) <- runHypLinf p emptyHypLinfEnv
+  pure (HypLinfResult (hypLinfEnvNames env), term)
 
 -- ----------------------------------------------------------------------
 -- The Lang instance.  Compatibility-of-places becomes "their
@@ -105,61 +111,61 @@ predLv (S n)    = Just n
 predLv (LVar _) = Nothing   -- polymorphic levels: unsupported here; forallLv's
                             -- error default will fire first in practice
 
-bind :: Name -> LvProc -> HypEnv -> Either LvErr HypEnv
+bind :: Name -> LvProc -> HypLinfEnv -> Either LvErr HypLinfEnv
 bind n p env
-  | Map.member n (hypEnvNames env) = Left (Duplicate n)
-  | otherwise = Right env { hypEnvNames = Map.insert n p (hypEnvNames env) }
+  | Map.member n (hypLinfEnvNames env) = Left (Duplicate n)
+  | otherwise = Right env { hypLinfEnvNames = Map.insert n p (hypLinfEnvNames env) }
 
 threadDecls
   :: forall r a. Lang r
-  => [HypTc a 'SDecl]
-  -> HypEnv
-  -> Either LvErr ([r LvAnnot 'SDecl], HypEnv)
+  => [HypLinf a 'SDecl]
+  -> HypLinfEnv
+  -> Either LvErr ([r LvAnnot 'SDecl], HypLinfEnv)
 threadDecls []     env = Right ([], env)
 threadDecls (d:ds) env = do
-  (_, env1, t)  <- runHypTc d env
+  (_, env1, t)  <- runHypLinf d env
   (ts, env2)    <- threadDecls ds env1
   pure (t : ts, env2)
 
-instance Lang HypTc where
-  prog _ann ds = HypTc $ \env -> do
+instance Lang HypLinf where
+  prog _ann ds = HypLinf $ \env -> do
     (ts, env') <- threadDecls ds env
-    pure (HypVProg, env', prog LvAProg ts)
+    pure (HypLinfProg, env', prog LvAProg ts)
 
-  dataDecl _ann declPath n params e ds = HypTc $ \env -> do
-    (ev, env1, polyE) <- runHypTc e env
-    let procE = hypExprProc ev
+  dataDecl _ann declPath n params e ds = HypLinf $ \env -> do
+    (ev, env1, polyE) <- runHypLinf e env
+    let procE = hypLinfExprProc ev
         le    = hRun procE
     ln <- maybe (Left (DataAnnotationTooLow n le)) Right (predLv le)
     let procN = hPure ln
-    env2 <- bind n procN (env1 { hypEnvParent = Just procN })
+    env2 <- bind n procN (env1 { hypLinfEnvParent = Just procN })
     -- Bind each parameter to the data's level for the body's scope.
     -- Save the prior binding for each param name so it doesn't leak
     -- out after the body — different decls reuse the same surface
     -- name ('a' in @data Box a@ and @data Bag a@) without clashing.
-    let savedBindings = [(p, Map.lookup p (hypEnvNames env2)) | p <- params]
+    let savedBindings = [(p, Map.lookup p (hypLinfEnvNames env2)) | p <- params]
         paramEnv = env2
-          { hypEnvNames =
+          { hypLinfEnvNames =
               Map.union (Map.fromList [(p, procN) | p <- params])
-                        (hypEnvNames env2)
+                        (hypLinfEnvNames env2)
           }
     (polys, env3) <- threadDecls ds paramEnv
     let restoredNames =
           foldr (\(p, mOrig) m -> case mOrig of
                    Nothing -> Map.delete p m
                    Just v  -> Map.insert p v m)
-                (hypEnvNames env3) savedBindings
-    pure ( HypVDecl procN
-         , env3 { hypEnvParent = hypEnvParent env1
-                , hypEnvNames  = restoredNames
+                (hypLinfEnvNames env3) savedBindings
+    pure ( HypLinfDecl procN
+         , env3 { hypLinfEnvParent = hypLinfEnvParent env1
+                , hypLinfEnvNames  = restoredNames
                 }
          , dataDecl (LvADecl ln) declPath n params polyE polys
          )
 
-  ctorDecl _ann n t = HypTc $ \env -> do
-    parent <- maybe (Left (CtorOutsideData n)) Right (hypEnvParent env)
-    (tv, env1, polyT) <- runHypTc t env
-    let procT = hypExprProc tv
+  ctorDecl _ann n t = HypLinf $ \env -> do
+    parent <- maybe (Left (CtorOutsideData n)) Right (hypLinfEnvParent env)
+    (tv, env1, polyT) <- runHypLinf t env
+    let procT = hypLinfExprProc tv
         lt    = hRun procT
         lp    = hRun parent
     if lt /= lp
@@ -168,59 +174,59 @@ instance Lang HypTc where
         lc <- maybe (Left (DataAnnotationTooLow n lp)) Right (predLv lp)
         let procC = hPure lc
         env2 <- bind n procC env1
-        pure (HypVDecl procC, env2, ctorDecl (LvADecl lc) n polyT)
+        pure (HypLinfDecl procC, env2, ctorDecl (LvADecl lc) n polyT)
 
-  var _ann x = HypTc $ \env -> case Map.lookup x (hypEnvNames env) of
+  var _ann x = HypLinf $ \env -> case Map.lookup x (hypLinfEnvNames env) of
     Just proc ->
       let lv = hRun proc
-      in Right (HypVExpr proc, env, var (LvAExpr lv) x)
+      in Right (HypLinfExpr proc, env, var (LvAExpr lv) x)
     Nothing -> Left (Unbound x)
 
   -- Look the tycon up by name (level inference ignores the def-path
-  -- internally — bindings live in 'hypEnvNames'), but the polymorphic
-  -- LvAnnot-decorated output preserves the path so downstream
-  -- consumers (HypTinf) can route to their own 'tyConRef' rather
-  -- than to 'var'.
-  tyConRef _ann n path = HypTc $ \env -> case Map.lookup n (hypEnvNames env) of
+  -- internally — bindings live in 'hypLinfEnvNames'), but the
+  -- polymorphic LvAnnot-decorated output preserves the path so
+  -- downstream consumers (HypTinf) can route to their own 'tyConRef'
+  -- rather than to 'var'.
+  tyConRef _ann n path = HypLinf $ \env -> case Map.lookup n (hypLinfEnvNames env) of
     Just proc ->
       let lv = hRun proc
-      in Right (HypVExpr proc, env, tyConRef (LvAExpr lv) n path)
+      in Right (HypLinfExpr proc, env, tyConRef (LvAExpr lv) n path)
     Nothing -> Left (Unbound n)
 
   -- Parameter uses look the param up by name (just like tyConRef),
   -- and likewise re-emit the path in the polymorphic output for
   -- downstream Stern-Gerlach disambiguation.
-  tyParamRef _ann n path = HypTc $ \env -> case Map.lookup n (hypEnvNames env) of
+  tyParamRef _ann n path = HypLinf $ \env -> case Map.lookup n (hypLinfEnvNames env) of
     Just proc ->
       let lv = hRun proc
-      in Right (HypVExpr proc, env, tyParamRef (LvAExpr lv) n path)
+      in Right (HypLinfExpr proc, env, tyParamRef (LvAExpr lv) n path)
     Nothing -> Left (Unbound n)
 
   -- Homogeneous application: f and x must inhabit the same fibre.
   -- The application's level is f's level (= x's by the check).
-  app _ann appPath f x = HypTc $ \env -> do
-    (vf, env1, polyF) <- runHypTc f env
-    (vx, env2, polyX) <- runHypTc x env1
-    let procF = hypExprProc vf
-        procX = hypExprProc vx
+  app _ann appPath f x = HypLinf $ \env -> do
+    (vf, env1, polyF) <- runHypLinf f env
+    (vx, env2, polyX) <- runHypLinf x env1
+    let procF = hypLinfExprProc vf
+        procX = hypLinfExprProc vx
         lvF   = hRun procF
         lvX   = hRun procX
     if lvF /= lvX
       then Left (LevelTear lvF lvX)
       else
         let lv = lvF
-        in Right (HypVExpr procF, env2, app (LvAExpr lv) appPath polyF polyX)
+        in Right (HypLinfExpr procF, env2, app (LvAExpr lv) appPath polyF polyX)
 
-  star _ann w = HypTc $ \env -> do
+  star _ann w = HypLinf $ \env -> do
     let lv   = starLevel w
         proc = hPure lv
-    pure (HypVExpr proc, env, star (LvAExpr lv) w)
+    pure (HypLinfExpr proc, env, star (LvAExpr lv) w)
 
-  arr _ann a b = HypTc $ \env -> do
-    (av, env1, polyA) <- runHypTc a env
-    (bv, env2, polyB) <- runHypTc b env1
-    let procA = hypExprProc av
-        procB = hypExprProc bv
+  arr _ann a b = HypLinf $ \env -> do
+    (av, env1, polyA) <- runHypLinf a env
+    (bv, env2, polyB) <- runHypLinf b env1
+    let procA = hypLinfExprProc av
+        procB = hypLinfExprProc bv
         lvA   = hRun procA
         lvB   = hRun procB
     if lvA /= lvB
@@ -231,27 +237,27 @@ instance Lang HypTc where
         -- (groupoid) reading, this is the trivial identification —
         -- the path from procA to procB is the no-op.
         let lv = lvA
-        in Right (HypVExpr procA, env2, arr (LvAExpr lv) polyA polyB)
+        in Right (HypLinfExpr procA, env2, arr (LvAExpr lv) polyA polyB)
 
   -- The parser resolved binder + use names to 'Path's; the carrier
   -- just uses them.
-  forallLv _ann name binderPath body = HypTc $ \env -> do
-    (bv, env1, polyBody) <- runHypTc body env
-    let procBody = hypExprProc bv
+  forallLv _ann name binderPath body = HypLinf $ \env -> do
+    (bv, env1, polyBody) <- runHypLinf body env
+    let procBody = hypLinfExprProc bv
         lv = hRun procBody
-    pure ( HypVExpr procBody
+    pure ( HypLinfExpr procBody
          , env1
          , forallLv (LvAExpr lv) name binderPath polyBody
          )
 
-  starVar _ann name binderPath offset = HypTc $ \env ->
+  starVar _ann name binderPath offset = HypLinf $ \env ->
     let lv = addOffset (LVar binderPath) offset
         proc = hPure lv
-    in Right (HypVExpr proc, env, starVar (LvAExpr lv) name binderPath offset)
+    in Right (HypLinfExpr proc, env, starVar (LvAExpr lv) name binderPath offset)
 
 -- ----------------------------------------------------------------------
 -- Solver: invoke each name's hyperfunction to extract its level.
 -- ----------------------------------------------------------------------
 
-solveLevelsHyp :: HypResult -> Either LvErr LevelMap
-solveLevelsHyp r = Right (Map.map hRun (hypResultNames r))
+solveLevelsHypLinf :: HypLinfResult -> Either LvErr LevelMap
+solveLevelsHypLinf r = Right (Map.map hRun (hypLinfResultNames r))

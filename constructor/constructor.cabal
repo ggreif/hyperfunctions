@@ -28,7 +28,7 @@ library
     Constructor.HyperLite
     Constructor.HfLvl
     Constructor.Tc
-    Constructor.HypTc
+    Constructor.HypLinf
     Constructor.TyExpr
     Constructor.Tinf
     Constructor.TyProc

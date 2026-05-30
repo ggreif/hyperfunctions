@@ -22,7 +22,7 @@
 --     Ty2's annotation tower and the parent's TyConV-tower.
 module TowerSpec (tests) where
 
-import Constructor.HypTc (HypTc, hypRunWith)
+import Constructor.HypLinf (HypLinf, hypLinfRunWith)
 import Constructor.HypTinf
   ( HypTinf
   , HypTinfResult (..)
@@ -189,18 +189,18 @@ tests =
     )
   ]
 
--- | Pipeline: parser → 'HypTc' (level inference, producing a
+-- | Pipeline: parser → 'HypLinf' (level inference, producing a
 --   polymorphic LvAnnot-decorated term) → 'HypTinf' (type
 --   inference, fed by the LvAnnot input) → 'HypTinfResult'.
 --
 --   This sequencing replaces the older parallel architecture
 --   (each carrier consumed the parser directly) with a typed
 --   dependency: 'HypTinf' now receives level-annotated input from
---   'HypTc' via the impredicative third slot of 'runHypTc'.
+--   'HypLinf' via the impredicative third slot of 'runHypLinf'.
 withHypTinf :: Text -> (HypTinfResult -> IO Bool) -> IO Bool
-withHypTinf src k = case parseProgram @HypTc @(Const ()) "<tower>" src of
+withHypTinf src k = case parseProgram @HypLinf @(Const ()) "<tower>" src of
   Left e  -> reportFail $ "parse error: " <> errorBundlePretty e
-  Right p -> case hypRunWith @HypTinf p of
+  Right p -> case hypLinfRunWith @HypTinf p of
     Left lvErr -> reportFail $ "level inference error: " <> show lvErr
     Right (_, pTinf) -> case hypTinfProgram pTinf of
       Left err -> reportFail $ "type inference error: " <> show err
@@ -218,9 +218,9 @@ expectEq got want
 --   rejects an ill-kinded mutant with the right shape.
 expectKindMismatch :: Text -> TyExpr -> TyExpr -> IO Bool
 expectKindMismatch src wantMember wantParent =
-  case parseProgram @HypTc @(Const ()) "<tower-mismatch>" src of
+  case parseProgram @HypLinf @(Const ()) "<tower-mismatch>" src of
     Left e -> reportFail $ "parse error: " <> errorBundlePretty e
-    Right p -> case hypRunWith @HypTinf p of
+    Right p -> case hypLinfRunWith @HypTinf p of
       Left lvErr -> reportFail $ "level inference error: " <> show lvErr
       Right (_, pTinf) -> case hypTinfProgram pTinf of
         Left (TyMismatch m k)

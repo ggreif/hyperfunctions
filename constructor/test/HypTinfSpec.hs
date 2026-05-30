@@ -16,7 +16,7 @@
 --   commit-5's unifier rewires processes).
 module HypTinfSpec (tests) where
 
-import Constructor.HypTc (HypTc, hypRunWith)
+import Constructor.HypLinf (HypLinf, hypLinfRunWith)
 import Constructor.HypTinf
   ( HypTinf
   , HypTinfResult (..)
@@ -51,16 +51,16 @@ parity :: String -> Text -> (String, IO Bool)
 parity name src = (name, go)
   where
     -- B side is now the sequenced pipeline:
-    -- parser → HypTc (level inference) → HypTinf (type inference).
-    -- HypTc emits a polymorphic 'r LvAnnot s' third tuple slot which
-    -- 'hypRunWith @HypTinf' specialises at the HypTinf carrier to
+    -- parser → HypLinf (level inference) → HypTinf (type inference).
+    -- HypLinf emits a polymorphic 'r LvAnnot s' third tuple slot which
+    -- 'hypLinfRunWith @HypTinf' specialises at the HypTinf carrier to
     -- yield a 'HypTinf LvAnnot 'SProg' term; that term is then run
     -- by 'hypTinfProgram' to extract the type-inference result.
     go = case parseProgram @Tinf @(Const ()) name src of
       Left e -> reportFail (errorBundlePretty e)
-      Right pA -> case parseProgram @HypTc @(Const ()) name src of
+      Right pA -> case parseProgram @HypLinf @(Const ()) name src of
         Left e -> reportFail (errorBundlePretty e)
-        Right pHypTc -> case hypRunWith @HypTinf pHypTc of
+        Right pHypLinf -> case hypLinfRunWith @HypTinf pHypLinf of
           Left lvErr -> reportFail $
             "B-side level inference failed: " <> show lvErr
           Right (_, pB) -> case (tinfProgram pA, hypTinfProgram pB) of

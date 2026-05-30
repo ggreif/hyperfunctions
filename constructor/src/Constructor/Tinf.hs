@@ -24,7 +24,7 @@
 --       level carriers, but here they produce 'TyUniv' stubs (since
 --       a '∀l. *l' /is/ a type expression at universe level).
 --
---   Carriers like 'Lvl' / 'Tc' / 'HypTc' continue to compute /levels/
+--   Carriers like 'Lvl' / 'Tc' / 'HypLinf' continue to compute /levels/
 --   independently; 'Tinf' computes /types/.  A future carrier will
 --   combine them (level + type in one pass) when both are needed
 --   simultaneously.
