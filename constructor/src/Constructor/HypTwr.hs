@@ -46,7 +46,7 @@ module Constructor.HypTwr
 import Constructor.HyperLite (hPure, hRun)
 import Constructor.Level (Lv (..), starLevel)
 import Constructor.Path (Path, PathStep (..), emptyPath, extendPath)
-import Constructor.Sort (Sort (..))
+import Constructor.Sort (Mode (..), Sort (..))
 import Constructor.Syntax (Lang (..), Name)
 import Constructor.Tinf (TyErr (..))
 import Constructor.Tower
@@ -66,9 +66,12 @@ import Constructor.TyProc
   , mkMeta
   , resolveView
   )
+import Control.Monad (foldM)
 import Data.Kind (Type)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
+import Data.Set (Set)
+import qualified Data.Set as Set
 
 -- | Per-sort carrier value.  'SExpr' carries a 'Tower' directly; the
 --   ctor decl slot pairs the ctor's name with its tower; the data
@@ -306,30 +309,72 @@ sValTower (HypTwrSVal t) = t
 sArmTower :: HypTwrVal 'SArm -> Tower
 sArmTower (HypTwrSArm t) = t
 
--- | Build a "Parent applied to fresh metas" tower for a ctor's
---   Build-side use site.  One meta per parent parameter (binder
---   path = the parameter's def-slot inside the parent, use path =
---   the ctor's call site).  For a nullary parent (arity 0) the
---   result is just the parent's 'TyConV' — no application chain.
+-- | Build a 'TyView'-app chain: @head[arg0, arg1, ...]@.  Used by
+--   value-level ctor application to construct the result type
+--   from the parent 'TyConV' plus the (substituted) refinement
+--   TyProcs.  For an empty arg list yields the bare head.
+mkAppChainView :: TyView -> [TyProc] -> TyView
+mkAppChainView h []     = h
+mkAppChainView h (a:as) = mkAppChainView (TyAppV (hPure h) a) as
+
+-- | Elaborate one ctor-app argument in Build mode and meet its
+--   inferred 'TyProc' against the corresponding (already
+--   parent-TyVarV-instantiated) 'ctorInput'.  Threads the env
+--   through, with the updated 'Subst' carrying any bindings the
+--   meet introduced.
+checkValArg
+  :: HypTwrEnv -> (HypTwr a ('SVal m), TyProc) -> Either TyErr HypTwrEnv
+checkValArg env (arg, input) = do
+  (argVal, env1) <- runHypTwr arg env
+  let argProc = horizontal (sValTower argVal)
+  newSubst <- meet (hypTwrEnvSubst env1) input argProc
+  Right (env1 { hypTwrEnvSubst = newSubst })
+
+-- ----------------------------------------------------------------------
+-- TyVarV instantiation for ctor application.
 --
---   This is /not/ the eventually-correct result type (which would
---   substitute the parent's TyVarVs throughout 'CtorSig.refinements'
---   with these fresh metas); it's a /shape-compatible/ placeholder
---   that lets arm bodies meet pairwise through metavariable
---   binding while the refinement-walking machinery is still ahead
---   of us.  When that lands, this helper grows to consume
---   'ctorRefinements' directly.
-mkCtorResultTower
-  :: HypTwrEnv -> Name -> Path -> Int -> Path -> Tower
-mkCtorResultTower env parentName parentPath arity callPath =
-  leafTower env (chain (TyConV parentName parentPath Z) 0)
+-- A ctor's 'CtorSig' references the /parent's parameter names/ via
+-- 'TyVarV' (e.g., FS's input @Fin n@ — the @n@ is the parent Fin's
+-- formal parameter).  Each value-level use of the ctor is a fresh
+-- /instantiation/: the universal n in FS's type becomes a fresh
+-- metavariable per call site, and the meet of each arg against the
+-- corresponding instantiated input drives the unification.
+--
+-- 'collectTyVars' harvests every distinct '(Name, Path)' TyVarV in
+-- a 'TyProc' (modulo 'Subst' chasing).  'mkFreshSubst' allocates
+-- one 'TyProc'-shaped meta per harvested var, keyed on the var's
+-- def-path so all uses of the same parent param across inputs and
+-- refinements share the same meta.  'substTyVarsInProc' walks a
+-- 'TyProc' substituting any 'TyVarV' for the corresponding meta.
+-- ----------------------------------------------------------------------
+
+collectTyVars :: Subst -> TyProc -> Set (Name, Path)
+collectTyVars subst p0 = goView (resolveView subst (hRun p0))
   where
-    chain hView i
-      | i >= arity = hView
-      | otherwise  =
-          let metaProc = mkMeta (extendPath (PsDataParam i) parentPath) callPath
-              hProc    = hPure hView
-          in chain (TyAppV hProc metaProc) (i + 1)
+    goView v = case v of
+      TyVarV n pa -> Set.singleton (n, pa)
+      TyAppV f x  -> goProc f `Set.union` goProc x
+      TyArrV a b  -> goProc a `Set.union` goProc b
+      _           -> Set.empty
+    goProc p = goView (resolveView subst (hRun p))
+
+mkFreshSubst :: Set (Name, Path) -> Path -> Map (Name, Path) TyProc
+mkFreshSubst vars callPath = Map.fromList
+  [ ((n, p), mkMeta p callPath) | (n, p) <- Set.toList vars ]
+
+substTyVarsInView :: Map (Name, Path) TyProc -> TyView -> TyView
+substTyVarsInView m v = case v of
+  TyVarV n p  -> case Map.lookup (n, p) m of
+    Just freshProc -> hRun freshProc
+    Nothing        -> v
+  TyAppV f x  -> TyAppV (substTyVarsInProc m f) (substTyVarsInProc m x)
+  TyArrV a b  -> TyArrV (substTyVarsInProc m a) (substTyVarsInProc m b)
+  TyConV {}   -> v
+  TyMetaV {}  -> v
+  TyUnivV {}  -> v
+
+substTyVarsInProc :: Map (Name, Path) TyProc -> TyProc -> TyProc
+substTyVarsInProc m p = hPure (substTyVarsInView m (hRun p))
 
 instance Lang HypTwr where
   prog _ann ds = HypTwr $ \env -> do
@@ -483,20 +528,34 @@ instance Lang HypTwr where
     ElabBuild -> do
       ctorTower <- maybe (Left (TyUnbound name)) Right
                      (Map.lookup name (hypTwrEnvCtors env))
-      let subst              = hypTwrEnvSubst env
-          (_, headView, _)   = peelCtorTower subst ctorTower
-      case (extractCtorSig subst ctorTower, headView) of
+      let subst0           = hypTwrEnvSubst env
+          (_, headView, _) = peelCtorTower subst0 ctorTower
+      case (extractCtorSig subst0 ctorTower, headView) of
         (Just sig, TyConV pName pPath _)
           | length args /= length (ctorInputs sig) ->
               Left (TyCtorWrongArity name pName
                      (length (ctorInputs sig)) (length args))
           | otherwise -> do
-              -- Walk args in Build mode; per-arg meet against
-              -- ctorInputs is deferred until the substitution
-              -- walk lands (next sub-commit).
-              env' <- threadVals args env
-              let arity = maybe 0 id (Map.lookup pName (hypTwrEnvDataTypes env'))
-                  resultTower = mkCtorResultTower env' pName pPath arity callPath
+              -- Allocate one fresh meta per TyVarV occurring in
+              -- the ctor's inputs and refinements — this is the
+              -- "instantiation at use site" step.  Substitute
+              -- throughout inputs and refinements.
+              let tyVars =
+                    Set.unions (map (collectTyVars subst0) (ctorInputs sig))
+                    `Set.union`
+                    Set.unions (map (collectTyVars subst0) (ctorRefinements sig))
+                  tySubst     = mkFreshSubst tyVars callPath
+                  substInputs = map (substTyVarsInProc tySubst) (ctorInputs sig)
+                  substRefs   = map (substTyVarsInProc tySubst) (ctorRefinements sig)
+              -- For each arg, elaborate in Build and meet its
+              -- first-rung 'TyProc' against the corresponding
+              -- instantiated 'ctorInput'.  Each meet may extend
+              -- 'Subst' with bindings on the freshly-allocated
+              -- metas, propagating the call's type constraints
+              -- across inputs and refinements together.
+              env' <- foldM (checkValArg) env (zip args substInputs)
+              let resultView  = mkAppChainView (TyConV pName pPath Z) substRefs
+                  resultTower = leafTower env' resultView
               Right (HypTwrSVal resultTower, env')
         _ -> Left (TyCtorBadResult name)
     ElabDissect ->

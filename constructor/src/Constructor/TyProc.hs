@@ -1,4 +1,5 @@
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE OverloadedStrings #-}
 
 -- | Type-processes for the B-side type-inference carrier.
 --
@@ -26,6 +27,7 @@ module Constructor.TyProc
   , tyToProc
   , procToTy
   , viewToTy
+  , viewToTySoft
     -- * Metavariables and unification
   , MetaId (..)
   , Subst
@@ -39,7 +41,7 @@ module Constructor.TyProc
 
 import Constructor.HyperLite (Hyper, hPure, hRun)
 import Constructor.Level (Lv (..))
-import Constructor.Path (Path)
+import Constructor.Path (Path, emptyPath)
 import Constructor.Syntax (Name)
 import Constructor.Tinf (TyErr (..))
 import Constructor.TyExpr (TyExpr (..))
@@ -135,6 +137,24 @@ viewToTy (TyMetaV _)   =
   error "Constructor.TyProc.viewToTy: unresolved metavariable; \
         \use 'materialize' with the carrier's 'Subst' instead"
 
+-- | 'Subst'-aware variant of 'viewToTy' used in error paths: chases
+--   bindings through the substitution and renders any remaining
+--   unresolved metavariable as a placeholder 'TyVar' so error
+--   construction never crashes.  The placeholder name @"?meta"@ is
+--   a sentinel — callers that want a hard fail can keep using
+--   'viewToTy' on already-materialised inputs.
+viewToTySoft :: Subst -> TyView -> TyExpr
+viewToTySoft s v = case resolveView s v of
+  TyConV n p _ -> TyCon n p
+  TyVarV n pa  -> TyVar n pa
+  TyAppV f x   -> TyApp (procToTySoft s f) (procToTySoft s x)
+  TyArrV a b   -> TyArr (procToTySoft s a) (procToTySoft s b)
+  TyUnivV l    -> TyUniv l
+  TyMetaV _    -> TyVar "?meta" emptyPath
+
+procToTySoft :: Subst -> TyProc -> TyExpr
+procToTySoft s p = viewToTySoft s (hRun p)
+
 -- | Resolve a 'TyView' against the current 'Subst': if it's a bound
 --   metavariable, follow the redirect chain until a non-meta view or
 --   an unbound meta surfaces.
@@ -181,7 +201,7 @@ meet s p1 p2 = meetView s (resolveView s (hRun p1)) (resolveView s (hRun p2))
         meet s1 b1 b2
       (TyUnivV l1, TyUnivV l2)
         | l1 == l2 -> Right s'
-      _ -> Left (TyMismatch (viewToTy v1) (viewToTy v2))
+      _ -> Left (TyMismatch (viewToTySoft s' v1) (viewToTySoft s' v2))
 
     bind s' m@(MetaId bp up) v
       | occurs s' m v = Left (TyOccursCheck bp up)

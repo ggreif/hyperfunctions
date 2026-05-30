@@ -342,6 +342,19 @@ tests =
       (TyMismatch
         (TyCon "Bool" (Path [PsProgDecl 0]))
         (TyCon "Nat"  (Path [PsProgDecl 1])))
+  , rejectsValAtType
+      "Value-level: parametric ctor arg-type mismatch (S applied to a Bool)"
+      -- Build-side ctor typing instantiates parent param TyVarVs
+      -- to fresh metas and meets each arg against the
+      -- substituted 'ctorInput'.  Here @S@ wants a @Nat@ but
+      -- receives a @T : Bool@ — the meet on the arg fails,
+      -- caught BEFORE the case body unification step.
+      "data Bool : *0 { T : Bool };\
+      \data Nat : *0 { Z : Nat; S : Nat -> Nat };\
+      \let bad = S T"
+      (TyMismatch
+        (TyCon "Nat"  (Path [PsProgDecl 1]))
+        (TyCon "Bool" (Path [PsProgDecl 0])))
 
   , accepts "GADT sketch: Iso singleton via separate type decls"
       ("data One : Iso { OneCtor : One };\

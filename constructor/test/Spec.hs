@@ -208,10 +208,13 @@ cases =
   , ( "let + case — Bool swap"
     , "data Bool : *0 { T : Bool; F : Bool };\
       \let example = case T { T -> F; F -> T }"
-    , let boolP = Path [PsProgDecl 0]
-          tP    = Path [PsProgDecl 0, PsDeclIdx 0]
-          fP    = Path [PsProgDecl 0, PsDeclIdx 1]
-          letP  = Path [PsProgDecl 1]
+    , let boolP   = Path [PsProgDecl 0]
+          letP    = Path [PsProgDecl 1]
+          scrutP  = Path [PsProgDecl 1, PsLetBody, PsCaseScrut]
+          a0PatP  = Path [PsProgDecl 1, PsLetBody, PsCaseArm 0, PsArmPat]
+          a0BodyP = Path [PsProgDecl 1, PsLetBody, PsCaseArm 0, PsArmBody]
+          a1PatP  = Path [PsProgDecl 1, PsLetBody, PsCaseArm 1, PsArmPat]
+          a1BodyP = Path [PsProgDecl 1, PsLetBody, PsCaseArm 1, PsArmBody]
       in Prog u
         [ DataDecl u boolP "Bool" [] (Star u 0)
             [ CtorDecl u "T" (TyConRef u "Bool" boolP)
@@ -219,9 +222,11 @@ cases =
             ]
         , ValDecl u letP "example"
             (Case u
-              (ValCtor u "T" tP [])
-              [ Arm u (ValCtor u "T" tP []) (ValCtor u "F" fP [])
-              , Arm u (ValCtor u "F" fP []) (ValCtor u "T" tP [])
+              (ValCtor u "T" scrutP [])
+              [ Arm u (ValCtor u "T" a0PatP  [])
+                      (ValCtor u "F" a0BodyP [])
+              , Arm u (ValCtor u "F" a1PatP  [])
+                      (ValCtor u "T" a1BodyP [])
               ])
         ]
     )
@@ -229,9 +234,14 @@ cases =
     , "data Nat : *0 { Z : Nat; S : Nat -> Nat };\
       \let prev = case S Z { Z -> Z; S n -> n }"
     , let natP    = Path [PsProgDecl 0]
-          zP      = Path [PsProgDecl 0, PsDeclIdx 0]
-          sP      = Path [PsProgDecl 0, PsDeclIdx 1]
           letP    = Path [PsProgDecl 1]
+          -- Use-site paths for each ctor application:
+          scrutS  = Path [PsProgDecl 1, PsLetBody, PsCaseScrut]
+          scrutZ  = Path [PsProgDecl 1, PsLetBody
+                         , PsCaseScrut, PsCtorAppArg 0]
+          a0PatZ  = Path [PsProgDecl 1, PsLetBody, PsCaseArm 0, PsArmPat]
+          a0BodyZ = Path [PsProgDecl 1, PsLetBody, PsCaseArm 0, PsArmBody]
+          a1PatS  = Path [PsProgDecl 1, PsLetBody, PsCaseArm 1, PsArmPat]
           -- 'n' is bound at the (sole) sub-pattern position of
           -- the second arm's pattern @S n@.  Both the binding
           -- site (inside @S n@) and the reference (in the arm
@@ -247,9 +257,10 @@ cases =
             ]
         , ValDecl u letP "prev"
             (Case u
-              (ValCtor u "S" sP [ ValCtor u "Z" zP [] ])
-              [ Arm u (ValCtor u "Z" zP []) (ValCtor u "Z" zP [])
-              , Arm u (ValCtor u "S" sP [ ValVar u "n" nBinder ])
+              (ValCtor u "S" scrutS [ ValCtor u "Z" scrutZ [] ])
+              [ Arm u (ValCtor u "Z" a0PatZ  [])
+                      (ValCtor u "Z" a0BodyZ [])
+              , Arm u (ValCtor u "S" a1PatS [ ValVar u "n" nBinder ])
                       (ValVar u "n" nBinder)
               ])
         ]

@@ -464,10 +464,14 @@ buildHead
 buildHead path binders = do
   name <- identifier
   case Map.lookup name (valCtors binders) of
-    Just ctorPath -> do
+    Just _ctorDefPath -> do
+      -- Pass the current parse position as the ctor's use-site
+      -- path — distinct per call site, so each value-level use
+      -- of a ctor allocates its own metavariable identities.
+      -- The def-path is recoverable from the carrier's env.
       args <- buildArgs path binders 0
       ann  <- freshBuildAnn
-      pure (valCtor ann name ctorPath args)
+      pure (valCtor ann name path args)
     Nothing -> do
       ann <- freshBuildAnn
       -- Permissive: emit 'valVar' for any non-ctor identifier,
@@ -501,9 +505,9 @@ nullaryBuild
 nullaryBuild path binders = do
   name <- identifier
   case Map.lookup name (valCtors binders) of
-    Just ctorPath -> do
+    Just _ctorDefPath -> do
       ann <- freshBuildAnn
-      pure (valCtor ann name ctorPath [])
+      pure (valCtor ann name path [])
     Nothing -> do
       ann <- freshBuildAnn
       let varPath = maybe path id (Map.lookup name (valVars binders))
@@ -565,10 +569,10 @@ dissectHead
 dissectHead path binders = do
   name <- identifier
   case Map.lookup name (valCtors binders) of
-    Just ctorPath -> do
+    Just _ctorDefPath -> do
       (args, binders') <- dissectArgs path binders 0
       ann  <- freshDissectAnn
-      pure (valCtor ann name ctorPath args, binders')
+      pure (valCtor ann name path args, binders')
     Nothing -> do
       ann <- freshDissectAnn
       let binderPath = path
@@ -600,9 +604,9 @@ nullaryDissect
 nullaryDissect path binders = do
   name <- identifier
   case Map.lookup name (valCtors binders) of
-    Just ctorPath -> do
+    Just _ctorDefPath -> do
       ann <- freshDissectAnn
-      pure (valCtor ann name ctorPath [], binders)
+      pure (valCtor ann name path [], binders)
     Nothing -> do
       ann <- freshDissectAnn
       let binderPath = path
