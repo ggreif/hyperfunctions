@@ -10,6 +10,7 @@ Links
 - [Paper: Categories of processes enriched in final coalgebras](https://link.springer.com/chapter/10.1007/3-540-45315-6_20)
 - [Seemingly Impossible functional programs](http://math.andrej.com/2007/09/28/seemingly-impossible-functional-programs/)
 - [Hyperfunctions by Donnacha Oisín Kidney](https://doisinkidney.com/posts/2021-03-14-hyperfunctions.html)
+- [Hyperfunctions: Communicating Continuations by Donnacha Oisín Kidney and Nicolas Wu](https://doisinkidney.com/pdfs/hyperfunctions.pdf)
 
 Contact Information
 -------------------
