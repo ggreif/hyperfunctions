@@ -108,6 +108,50 @@ sepEndByIndexedAcc mk sep = go 0
               (xs, acc'') <- go (i + 1) acc'
               pure (x : xs, acc'')
 
+-- | Parse the zero-or-more parameters of a data declaration.  Each
+--   parameter is either a bare identifier @a@ (no kind annotation —
+--   carrier picks a default kind, today @*0@) or a parenthesised
+--   form @(a : K)@ with an explicit kind expression.  The kind
+--   expression is parsed against the binders OUTSIDE the param list
+--   — that is, earlier params don't scope into later params' kind
+--   annotations.  Lifting that restriction (so @data Foo (a : Nat)
+--   (b : a)@ works) is a future relaxation.
+--
+--   The parameter index @i@ is threaded through so each param's
+--   kind annotation gets its own Stern-Gerlach path slot
+--   ('PsDataParamKind' i) for downstream addressing.
+collectParams
+  :: (Lang r, HasAnn a m, MonadParsec Void Text m, MonadFail m)
+  => Path -> Binders -> Int -> m [(Name, Maybe (r a 'SExpr))]
+collectParams dataPath bs = go
+  where
+    go i = do
+      mp <- optional (paramSpec i)
+      case mp of
+        Nothing -> pure []
+        Just p  -> (p :) <$> go (i + 1)
+
+    paramSpec i = bareParam <|> kindedParam i
+
+    bareParam = do
+      n <- identifier
+      pure (n, Nothing)
+
+    kindedParam i = try $ between (symbol "(") (symbol ")") $ do
+      n <- identifier
+      let nPath    = extendPath (PsDataParam i) dataPath
+          kindPath = extendPath (PsDataParamKind i) dataPath
+      -- '(a : K)' or '(a⋮)' (param-level typing-tower shorthand:
+      -- the kind annotation is the parameter's own name, making
+      -- the parameter a self-towering "weirdo" — analogous to
+      -- 'data Weird : Weird' but at the param scope).
+      k <- (do void (symbol "\8942")
+               ann' <- freshExprAnn
+               pure (tyConRef ann' n nPath))
+           <|> (do void (symbol ":")
+                   expr kindPath bs)
+      pure (n, Just k)
+
 -- | Lookahead-scan the body @{ decl1; decl2; … }@ that's about to
 --   be parsed, harvesting each decl's name + path so the body can
 --   then be parsed with all siblings already in 'tcBinders'.
@@ -344,7 +388,7 @@ decl path binders = dataD <|> ctorD
     dataD = do
       void (symbol "data")
       n      <- identifier
-      params <- many identifier  -- zero-or-more parameter names
+      params <- collectParams path binders 0
       -- Pre-extend the binders with @n@ BEFORE parsing the kind
       -- annotation, so a self-referential annotation (the @data
       -- Weird : Weird@ shape) resolves the inner @n@ to a
@@ -371,7 +415,7 @@ decl path binders = dataD <|> ctorD
       -- 'lookAhead' so it doesn't consume input — names are
       -- harvested first, then the body is parsed for real.
       siblingNames <- prescanBodyDeclNames path
-      let paramPaths   = zipWith (\i p -> (p, extendPath (PsDataParam i) path))
+      let paramPaths   = zipWith (\i (p, _) -> (p, extendPath (PsDataParam i) path))
                                  [0 ..] params
           bodyBinders0 = binders { lvBinders = Map.empty }
           bodyBinders  = foldr (\(sn, sp) -> extendTc sn sp)

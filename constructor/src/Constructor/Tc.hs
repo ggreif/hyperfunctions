@@ -169,9 +169,10 @@ instance Lang Tc where
     sheet3 <- pin mergeLv pn ln sheet2
     env2  <- bind n pn (env1' { tcEnvSheet = sheet3, tcEnvParent = Just pn })
     (polys, env3) <- threadDecls ds env2
+    let polyParams = [(p, Nothing) | (p, _) <- params]
     pure ( TcVDecl pn
          , env3 { tcEnvParent = tcEnvParent env1' }
-         , dataDecl (LvADecl ln) declPath n params polyE polys
+         , dataDecl (LvADecl ln) declPath n polyParams polyE polys
          )
 
   ctorDecl _ann n t = Tc $ \env -> do

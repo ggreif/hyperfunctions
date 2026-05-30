@@ -172,10 +172,16 @@ instance Lang HypLinf where
     -- Save the prior binding for each param name so it doesn't leak
     -- out after the body — different decls reuse the same surface
     -- name ('a' in @data Box a@ and @data Bag a@) without clashing.
-    let savedBindings = [(p, Map.lookup p (hypLinfEnvNames env2)) | p <- params]
+    -- Parameter kind annotations (the @K@ in @data Foo (a : K)@)
+    -- are accepted at the parser surface but not yet semantically
+    -- consumed: each carrier just destructures @(name, _kindMaybe)@
+    -- and uses the name as before.  Kinds become load-bearing when
+    -- arrow-kinded data + per-ctor result refinement land.
+    let paramNames    = [p | (p, _) <- params]
+        savedBindings = [(p, Map.lookup p (hypLinfEnvNames env2)) | p <- paramNames]
         paramEnv = env2
           { hypLinfEnvNames =
-              Map.union (Map.fromList [(p, procN) | p <- params])
+              Map.union (Map.fromList [(p, procN) | p <- paramNames])
                         (hypLinfEnvNames env2)
           }
     (polys, env3) <- threadDecls ds paramEnv
@@ -184,11 +190,12 @@ instance Lang HypLinf where
                    Nothing -> Map.delete p m
                    Just v  -> Map.insert p v m)
                 (hypLinfEnvNames env3) savedBindings
+        polyParams = [(p, Nothing) | (p, _) <- params]
     pure ( HypLinfDecl procN
          , env3 { hypLinfEnvParent = hypLinfEnvParent env1
                 , hypLinfEnvNames  = restoredNames
                 }
-         , dataDecl (LvADecl ln) declPath n params polyE polys
+         , dataDecl (LvADecl ln) declPath n polyParams polyE polys
          )
 
   ctorDecl _ann n t = HypLinf $ \env -> do

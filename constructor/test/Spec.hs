@@ -163,7 +163,7 @@ cases =
           listP = Path [PsProgDecl 0]
           ap    = Path [PsProgDecl 0, PsDeclIdx 0, PsCtorTy, PsArrL]
       in Prog u
-        [ DataDecl u listP "List" ["a"] (Star u 0)
+        [ DataDecl u listP "List" [("a", Nothing)] (Star u 0)
             [ CtorDecl u "Nil"
                 (App u ap (TyConRef u "List" listP) (TyParamRef u "a" pa))
             ]
@@ -176,7 +176,7 @@ cases =
           appL   = Path [PsProgDecl 0, PsDeclIdx 0, PsCtorTy, PsArrR, PsArrL]
           appR   = Path [PsProgDecl 0, PsDeclIdx 0, PsCtorTy, PsArrR, PsArrR, PsArrL]
       in Prog u
-        [ DataDecl u listP "List" ["a"] (Star u 0)
+        [ DataDecl u listP "List" [("a", Nothing)] (Star u 0)
             [ CtorDecl u "Cons"
                 (Arr u (TyParamRef u "a" pa)
                   (Arr u (App u appL (TyConRef u "List" listP) (TyParamRef u "a" pa))

@@ -34,10 +34,28 @@ class Lang (r :: (Sort -> Type) -> Sort -> Type) where
   -- | Data declaration.  The first 'Path' is the declaration's
   --   def-path — supplied by the parser so carriers can construct
   --   the data's own @TyConV name declPath@ view (e.g.\ for kind
-  --   coherence checking).  The @[Name]@ list is the parameter list
-  --   (empty for non-parametric data); each parameter binds a type
-  --   variable scoped over the body's constructor types.
-  dataDecl :: a 'SDecl -> Path -> Name -> [Name] -> r a 'SExpr -> [r a 'SDecl] -> r a 'SDecl
+  --   coherence checking).
+  --
+  --   The parameter list is @[(Name, Maybe (r a \'SExpr))]@ — each
+  --   parameter is a name plus an optional kind annotation (the
+  --   @K@ in @data Foo (a : K) : *0 ...@).  When the annotation is
+  --   absent (bare @data Foo a@ syntax), the carrier is free to
+  --   pick a default kind (today: @*0@ everywhere).  The kind
+  --   annotation is parsed against the binders OUTSIDE the data
+  --   body — each param's kind cannot reference earlier params
+  --   (so @data Foo (a : Nat) (b : a)@ is a future extension, not
+  --   today's behaviour).  The annotation is currently consumed
+  --   only by carriers that want to set the param's level
+  --   appropriately; carriers can ignore it (destructure as @(n,
+  --   _)@) and behave as if no annotation was present.
+  dataDecl
+    :: a 'SDecl
+    -> Path
+    -> Name
+    -> [(Name, Maybe (r a 'SExpr))]
+    -> r a 'SExpr
+    -> [r a 'SDecl]
+    -> r a 'SDecl
   ctorDecl :: a 'SDecl -> Name -> r a 'SExpr -> r a 'SDecl
   var      :: a 'SExpr -> Name -> r a 'SExpr
   star     :: a 'SExpr -> Word -> r a 'SExpr

@@ -31,6 +31,9 @@ data PathStep
   | PsForallBody       -- ^ the body of a '∀l.' expression
   | PsParens           -- ^ inside an explicit '(…)' grouping
   | PsDataParam !Int   -- ^ the nth type parameter of a data declaration (def-path)
+  | PsDataParamKind !Int
+                       -- ^ the kind annotation slot of the nth data parameter
+                       --   (for @data Foo (a : K)@-style annotations).
   deriving (Eq, Ord, Show)
 
 -- | A path from the root of the program to a particular grammar

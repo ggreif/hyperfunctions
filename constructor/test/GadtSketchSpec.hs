@@ -112,6 +112,28 @@ tests =
       -- alone gets ⋮ here.
       "data Swap \8942 { Left : Right; Right : Left }"
       ["Left", "Right"]
+  , accepts "GADT sketch: kind-annotated parameter (a : Nat) — surface syntax"
+      -- 'data Fin (n : Nat) : *0' with kind annotation on n.  The
+      -- kind expression is parsed and validated but not yet
+      -- semantically consumed (HypLinf / HypTinf / HypTwr all
+      -- destructure as @(name, _kindMaybe)@ today).  Step 1 of
+      -- the GADT roadmap — surface only; per-ctor refinement
+      -- comes later.
+      "data Nat : *0 { Z : Nat; S : Nat -> Nat };\
+      \data Fin (n : Nat) : *0 { FZ : Fin n; FS : Fin n -> Fin n }"
+      ["FZ", "FS", "Z", "S"]
+  , accepts "GADT sketch ⋮: weirdo self-towering parameter (a⋮)"
+      -- 'data Selfie (a⋮) ⋮ { mk : Selfie a }' — the typing-tower
+      -- glyph at the param scope: 'a's kind is 'a' itself, a
+      -- self-tower analogous to 'data Weird : Weird' but at the
+      -- parameter level.  Parses and elaborates end-to-end
+      -- because the kind annotation lives in a slot that's
+      -- parsed-but-not-yet-elaborated; the closure is built
+      -- (with TyConRef to a's own path) and stored, never run.
+      -- When per-ctor refinement work lands, this becomes
+      -- semantically load-bearing.
+      "data Selfie (a\8942) \8942 { mk : Selfie a }"
+      ["mk"]
   , accepts "GADT sketch ⋮: Mirror full shorthand (drops the ∀l. *l)"
       -- 'data Mirror ⋮' is Weird-style self-stratification rather
       -- than universe-polymorphic — Mirror's level is 'LVar

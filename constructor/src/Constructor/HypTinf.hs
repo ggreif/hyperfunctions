@@ -187,6 +187,9 @@ instance Lang HypTinf where
               Right env0 { hypEnvSubst = subst' }
         let env1 = env0'
               { hypEnvDataTypes = Map.insert name (length params) (hypEnvDataTypes env0')
+              -- ^ 'length params' counts the parameter slots regardless
+              --   of whether each has a kind annotation (the 'Maybe'
+              --   second component is just a per-param attribute).
               , hypEnvKindEnv   = Map.insert name kindProc        (hypEnvKindEnv env0')
               }
             savedParent = hypEnvParent env1
