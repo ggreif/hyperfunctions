@@ -69,11 +69,25 @@ import qualified Data.Map.Strict as Map
 
 -- | Per-sort carrier value.  'SExpr' carries a 'Tower' directly; the
 --   ctor decl slot pairs the ctor's name with its tower; the data
---   decl slot is 'Nothing' (matching 'HypTinf').
+--   decl slot is 'Nothing' (matching 'HypTinf').  Value-level and
+--   arm carriers are trivial today — the type/match elaboration on
+--   the value-level rails is structural only at this commit (scope
+--   correctness); proper type-checking lands next.
 data HypTwrVal (s :: Sort) where
-  HypTwrExpr :: !Tower                       -> HypTwrVal 'SExpr
-  HypTwrDecl :: !(Maybe (Name, Tower))       -> HypTwrVal 'SDecl
-  HypTwrProg ::                                  HypTwrVal 'SProg
+  HypTwrExpr  :: !Tower                       -> HypTwrVal 'SExpr
+  HypTwrDecl  :: !(Maybe (Name, Tower))       -> HypTwrVal 'SDecl
+  HypTwrProg  ::                                  HypTwrVal 'SProg
+  HypTwrSVal  ::                                  HypTwrVal ('SVal m)
+  HypTwrSArm  ::                                  HypTwrVal 'SArm
+
+-- | Elaboration mode for value-level constructs.  The 'Lang' typeclass's
+--   'SVal' phantom (a type-level 'Mode') tracks Build / Dissect
+--   statically at the surface, but the 'HypTwr' instance dispatches on
+--   /runtime/ state because methods like 'valVar' are mode-polymorphic
+--   at the Lang level — same impl serves both Build (look up) and
+--   Dissect (introduce).
+data ElabMode = ElabBuild | ElabDissect
+  deriving (Eq, Show)
 
 data HypTwrEnv = HypTwrEnv
   { hypTwrEnvDataTypes :: !(Map Name Int)
@@ -84,15 +98,32 @@ data HypTwrEnv = HypTwrEnv
   , hypTwrEnvCtors     :: !(Map Name Tower)
   , hypTwrEnvSubst     :: !Subst
   , hypTwrEnvParent    :: !(Maybe (Name, Path))
+  , hypTwrEnvValVars   :: !(Map Name ())
+    -- ^ Names currently bound at the value level (top-level 'let'
+    --   binders, plus pattern-introduced binders inside an arm
+    --   body).  Today the payload is just '()' — no type
+    --   tracking — so this records scope only.  When value-level
+    --   type-checking lands the payload becomes the binder's
+    --   inferred type ('Tower').
+  , hypTwrEnvMode      :: !ElabMode
+    -- ^ Runtime mode: 'ElabBuild' (the default) flips to
+    --   'ElabDissect' while elaborating an arm's pattern, and
+    --   back to 'ElabBuild' for its body.  Read by 'valVar' to
+    --   decide whether a name introduces a binder or resolves a
+    --   reference.
   }
 
 emptyHypTwrEnv :: HypTwrEnv
 emptyHypTwrEnv = HypTwrEnv Map.empty Map.empty Map.empty emptySubst Nothing
+                            Map.empty ElabBuild
 
 data HypTwrResult = HypTwrResult
   { hypTwrDataTypes :: !(Map Name Int)
   , hypTwrCtors     :: !(Map Name Tower)
   , hypTwrSubst     :: !Subst
+  , hypTwrValVars   :: !(Map Name ())
+    -- ^ Value-level binders defined at the program scope.  Empty
+    --   until 'let' decls land in the elaborated input.
   }
 
 -- | Extract each ctor's first-rung 'TyExpr' from a 'HypTwrResult'.
@@ -113,7 +144,8 @@ hypTwrProgram p = do
   pure (HypTwrResult
           (hypTwrEnvDataTypes env)
           (hypTwrEnvCtors env)
-          (hypTwrEnvSubst env))
+          (hypTwrEnvSubst env)
+          (hypTwrEnvValVars env))
 
 -- | Helper: build the tower for a leaf 'TyView' under the current
 --   env's kindEnv and Subst.  The vertical is lazily generated via
@@ -226,6 +258,16 @@ threadDecls (d:ds) env = do
   (_, env1) <- runHypTwr d env
   threadDecls ds env1
 
+-- | Thread a list of value-side carriers through the env, sort-
+--   polymorphic so the same helper serves arm-thread and ctor-arg
+--   threading (and any future value-level node with a list of
+--   uniform-sort children).
+threadVals :: [HypTwr a s] -> HypTwrEnv -> Either TyErr HypTwrEnv
+threadVals []     env = Right env
+threadVals (x:xs) env = do
+  (_, env1) <- runHypTwr x env
+  threadVals xs env1
+
 instance Lang HypTwr where
   prog _ann ds = HypTwr $ \env -> do
     env' <- threadDecls ds env
@@ -313,3 +355,72 @@ instance Lang HypTwr where
 
   starVar _ann _name _binderPath _offset = HypTwr $ \env ->
     Right (HypTwrExpr (leafTower env (TyUnivV Z)), env)
+
+  -- ------------------------------------------------------------------
+  -- Value-level / pattern-match elaboration.  Structural-walk only at
+  -- this commit — scope correctness, no type-checking.  Real
+  -- type-checking against 'CtorSig' is the next step.
+  -- ------------------------------------------------------------------
+
+  valDecl _ann _declPath name body = HypTwr $ \env -> do
+    -- Elaborate the body in Build mode (the env default), then bind
+    -- 'name' for subsequent decls.  Duplicate bindings are rejected
+    -- using the same shape as 'TyDuplicateCtor'.
+    case Map.lookup name (hypTwrEnvValVars env) of
+      Just _  -> Left (TyDuplicateCtor name)
+      Nothing -> do
+        (_, env1) <- runHypTwr body env
+        let env2 = env1
+              { hypTwrEnvValVars =
+                  Map.insert name () (hypTwrEnvValVars env1) }
+        Right (HypTwrDecl Nothing, env2)
+
+  valVar _ann name _path = HypTwr $ \env -> case hypTwrEnvMode env of
+    ElabBuild ->
+      -- Build mode: name must refer to a let binder or a
+      -- pattern-introduced binder in scope.  (Nullary ctors go
+      -- through 'valCtor' with empty args, not through 'valVar'.)
+      if Map.member name (hypTwrEnvValVars env)
+        then Right (HypTwrSVal, env)
+        else Left (TyUnbound name)
+    ElabDissect ->
+      -- Dissect mode: name introduces a fresh binder, in scope for
+      -- the rest of the pattern and the arm body.  Shadowing is
+      -- allowed (the parser produces a fresh 'Path' per pattern
+      -- position; runtime maps just get overwritten on shadow).
+      let env' = env { hypTwrEnvValVars =
+                         Map.insert name () (hypTwrEnvValVars env) }
+      in Right (HypTwrSVal, env')
+
+  valWild _ann = HypTwr $ \env -> Right (HypTwrSVal, env)
+
+  valCtor _ann name _path args = HypTwr $ \env ->
+    case Map.lookup name (hypTwrEnvCtors env) of
+      Nothing -> Left (TyUnbound name)
+      Just _  -> do
+        -- Walk each arg in the current mode; pattern-mode args
+        -- accumulate binders into the env, build-mode args
+        -- don't mutate it.
+        env' <- threadVals args env
+        Right (HypTwrSVal, env')
+
+  case_ _ann scrutinee arms = HypTwr $ \env -> do
+    (_, env1) <- runHypTwr scrutinee env
+    env2 <- threadVals arms env1
+    -- Pattern binders introduced inside arms are restored per-arm
+    -- (see 'arm' below); 'case_' only threads the result envs.
+    Right (HypTwrSVal, env2)
+
+  arm _ann pat body = HypTwr $ \env -> do
+    let savedVars = hypTwrEnvValVars env
+        envD      = env { hypTwrEnvMode = ElabDissect }
+    (_, env1) <- runHypTwr pat envD
+    let envB = env1 { hypTwrEnvMode = ElabBuild }
+    (_, env2) <- runHypTwr body envB
+    -- Restore the outer value-variable scope so pattern binders
+    -- don't leak past the arm body.
+    let env3 = env2
+          { hypTwrEnvValVars = savedVars
+          , hypTwrEnvMode    = hypTwrEnvMode env  -- preserve outer mode
+          }
+    Right (HypTwrSArm, env3)

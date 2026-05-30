@@ -468,11 +468,14 @@ buildHead path binders = do
       args <- buildArgs path binders 0
       ann  <- freshBuildAnn
       pure (valCtor ann name ctorPath args)
-    Nothing -> case Map.lookup name (valVars binders) of
-      Just varPath -> do
-        ann <- freshBuildAnn
-        pure (valVar ann name varPath)
-      Nothing -> fail $ "unbound value-level name: " <> T.unpack name
+    Nothing -> do
+      ann <- freshBuildAnn
+      -- Permissive: emit 'valVar' for any non-ctor identifier,
+      -- using the binder's path if known and the current parse
+      -- path otherwise.  Truly-unbound names are caught at
+      -- elaboration time by HypTwr ('TyUnbound'), not here.
+      let varPath = maybe path id (Map.lookup name (valVars binders))
+      pure (valVar ann name varPath)
 
 buildArgs
   :: (Lang r, HasAnn a m, MonadParsec Void Text m, MonadFail m)
@@ -495,17 +498,16 @@ buildAtom path binders =
 nullaryBuild
   :: (Lang r, HasAnn a m, MonadParsec Void Text m, MonadFail m)
   => Path -> Binders -> m (r a ('SVal 'Build))
-nullaryBuild _path binders = do
+nullaryBuild path binders = do
   name <- identifier
   case Map.lookup name (valCtors binders) of
     Just ctorPath -> do
       ann <- freshBuildAnn
       pure (valCtor ann name ctorPath [])
-    Nothing -> case Map.lookup name (valVars binders) of
-      Just varPath -> do
-        ann <- freshBuildAnn
-        pure (valVar ann name varPath)
-      Nothing -> fail $ "unbound value-level name: " <> T.unpack name
+    Nothing -> do
+      ann <- freshBuildAnn
+      let varPath = maybe path id (Map.lookup name (valVars binders))
+      pure (valVar ann name varPath)
 
 caseExpr
   :: (Lang r, HasAnn a m, MonadParsec Void Text m, MonadFail m)

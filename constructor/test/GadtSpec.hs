@@ -296,6 +296,41 @@ tests =
       \data Foo (a : Nat) : *0 { c : Foo Z; d : Foo }"
       (TyCtorWrongArity "d" "Foo" 1 0)
 
+    -- --- Value-level let + case (HypTwr direct elaboration) ------
+    --
+    -- Parsing goes straight to 'HypTwr' (skipping 'HypLinf' — the
+    -- level layer has nothing meaningful to say about value-level
+    -- terms; the future is on the HypTwr rails).  At this commit
+    -- HypTwr only checks /scope/: every name resolves to either
+    -- a let binder, a pattern-introduced binder, or a known
+    -- value-level ctor.  Type-checking against 'CtorSig' lands
+    -- next.
+  , acceptsValByHypTwr
+      "Value-level: case-of-Bool elaborates (scope-only)"
+      "data Bool : *0 { T : Bool; F : Bool };\
+      \let example = case T { T -> F; F -> T }"
+      ["example"]
+  , acceptsValByHypTwr
+      "Value-level: pattern binder 'n' resolves in arm body"
+      "data Nat : *0 { Z : Nat; S : Nat -> Nat };\
+      \let prev = case S Z { Z -> Z; S n -> n }"
+      ["prev"]
+  , rejectsValAtType
+      "Value-level: unbound name in let body is rejected"
+      -- 'oops' is never bound — HypTwr fails with TyUnbound.
+      "data Bool : *0 { T : Bool; F : Bool };\
+      \let bad = oops"
+      (TyUnbound "oops")
+  , rejectsValAtType
+      "Value-level: pattern binder doesn't leak past the arm"
+      -- The binder 'n' is introduced in the second arm's pattern;
+      -- the let body that references it /outside/ the case is at
+      -- a scope where 'n' is no longer bound.
+      "data Nat : *0 { Z : Nat; S : Nat -> Nat };\
+      \let prev = case S Z { Z -> Z; S n -> Z };\
+      \let leak = n"
+      (TyUnbound "n")
+
   , accepts "GADT sketch: Iso singleton via separate type decls"
       ("data One : Iso { OneCtor : One };\
        \data Two : Iso { TwoCtor : Two };\
@@ -457,6 +492,43 @@ inspectCtorSigs name src expected = (name, go)
                                <> ":\n  want: " <> show wantPretty
                                <> "\n  got:  " <> show got
             in fmap and (mapM check expected)
+
+-- | Helper: parse directly to 'HypTwr' (bypassing the 'HypLinf'
+--   level rail — value-level terms have nothing for the level
+--   layer to infer), elaborate, and confirm the resulting 'let'
+--   binders match the expected set.  Used for programs containing
+--   value-level decls.
+acceptsValByHypTwr :: String -> Text -> [Name] -> (String, IO Bool)
+acceptsValByHypTwr name src wantLets = (name, go)
+  where
+    go = case parseProgram @HypTwr @(Const ()) name src of
+      Left e -> fail_ $ "parse error: " <> errorBundlePretty e
+      Right pTwr -> case hypTwrProgram pTwr of
+        Left ty -> fail_ $ "HypTwr rejected: " <> show ty
+        Right r ->
+          let got = Map.keys (hypTwrValVars r)
+              want = wantLets
+          in if got == want
+               then pure True
+               else fail_ $
+                 "let-binder set mismatch:\n  want: " <> show want
+                 <> "\n  got:  " <> show got
+
+-- | Helper: parse via 'HypTwr', expect a specific 'TyErr' from the
+--   type/match layer.  For value-level programs.
+rejectsValAtType :: String -> Text -> TyErr -> (String, IO Bool)
+rejectsValAtType name src wantErr = (name, go)
+  where
+    go = case parseProgram @HypTwr @(Const ()) name src of
+      Left e -> fail_ $ "parse error: " <> errorBundlePretty e
+      Right pTwr -> case hypTwrProgram pTwr of
+        Left ty
+          | ty == wantErr -> pure True
+          | otherwise -> fail_ $
+              "type error mismatch:\n  want: " <> show wantErr
+              <> "\n  got:  " <> show ty
+        Right _ -> fail_ $
+          "expected rejection (" <> show wantErr <> "), elaborated"
 
 fail_ :: String -> IO Bool
 fail_ msg = putStrLn ("    " <> msg) >> pure False
