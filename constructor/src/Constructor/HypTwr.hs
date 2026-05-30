@@ -2,6 +2,7 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE KindSignatures #-}
+{-# LANGUAGE OverloadedStrings #-}
 
 -- | B-side type inference with 'Tower' as the carrier value at the
 --   'SExpr' sort — the four-commit Tower arc's step 4.  Parallel
@@ -75,18 +76,24 @@ import qualified Data.Set as Set
 
 -- | Per-sort carrier value.  'SExpr' carries a 'Tower' directly; the
 --   ctor decl slot pairs the ctor's name with its tower; the data
---   decl slot is 'Nothing' (matching 'HypTinf').  Value-level and
---   arm carriers now also carry 'Tower' payloads: in 'Build' mode
---   the tower is the expression's inferred type; in 'Dissect' mode
---   it's a placeholder (a fresh meta) — Dissect-side typing lands
---   in the next sub-commit, which will replace the placeholder with
---   the pattern's actual type as derived from the scrutinee.
+--   decl slot is 'Nothing' (matching 'HypTinf').
+--
+--   Value-level carriers ('SVal') carry the term's inferred type as
+--   a 'Tower'.  In Build mode this is the expression's result type;
+--   in Dissect mode this is the pattern's /matched/ type (the shape
+--   the scrutinee must have for the pattern to fire).
+--
+--   Arm carriers carry @Maybe Tower@: 'Just t' marks the arm as
+--   reachable with body type @t@; 'Nothing' marks the arm as
+--   unreachable (its pattern's matched type clashed with the
+--   scrutinee's type — a coverage observation, not a type error).
+--   'case_' filters body towers to the 'Just'-marked arms only.
 data HypTwrVal (s :: Sort) where
   HypTwrExpr  :: !Tower                       -> HypTwrVal 'SExpr
   HypTwrDecl  :: !(Maybe (Name, Tower))       -> HypTwrVal 'SDecl
   HypTwrProg  ::                                  HypTwrVal 'SProg
   HypTwrSVal  :: !Tower                       -> HypTwrVal ('SVal m)
-  HypTwrSArm  :: !Tower                       -> HypTwrVal 'SArm
+  HypTwrSArm  :: !(Maybe Tower)               -> HypTwrVal 'SArm
 
 -- | Elaboration mode for value-level constructs.  The 'Lang' typeclass's
 --   'SVal' phantom (a type-level 'Mode') tracks Build / Dissect
@@ -120,11 +127,18 @@ data HypTwrEnv = HypTwrEnv
     --   back to 'ElabBuild' for its body.  Read by 'valVar' to
     --   decide whether a name introduces a binder or resolves a
     --   reference.
+  , hypTwrEnvScrutTy   :: !(Maybe Tower)
+    -- ^ The scrutinee's tower, set by 'case_' for each arm and
+    --   consulted by 'arm' to unify against the pattern's
+    --   matched type.  'Nothing' outside a case (so a stray
+    --   pattern would have no expected type to meet against —
+    --   not constructable today since 'arm' only fires inside
+    --   a 'case_').
   }
 
 emptyHypTwrEnv :: HypTwrEnv
 emptyHypTwrEnv = HypTwrEnv Map.empty Map.empty Map.empty emptySubst Nothing
-                            Map.empty ElabBuild
+                            Map.empty ElabBuild Nothing
 
 data HypTwrResult = HypTwrResult
   { hypTwrDataTypes :: !(Map Name Int)
@@ -277,18 +291,19 @@ threadVals (x:xs) env = do
   (_, env1) <- runHypTwr x env
   threadVals xs env1
 
--- | Walk a list of arms, collect each arm's body tower (used by
---   'case_' to pairwise-meet body types).  Each arm internally
+-- | Walk a list of arms, collecting each arm's @Maybe Tower@
+--   reachability marker (used by 'case_' to filter to reachable
+--   bodies and pairwise-meet their towers).  Each arm internally
 --   restores the env's val-binders to the outer scope, so the
 --   accumulator only grows with the threaded 'Subst'.
-threadArmBodies
-  :: [HypTwr a 'SArm] -> HypTwrEnv -> Either TyErr ([Tower], HypTwrEnv)
-threadArmBodies []     env = Right ([], env)
-threadArmBodies (a:as) env = do
+threadArmsCarrying
+  :: [HypTwr a 'SArm] -> HypTwrEnv -> Either TyErr ([Maybe Tower], HypTwrEnv)
+threadArmsCarrying []     env = Right ([], env)
+threadArmsCarrying (a:as) env = do
   (armVal, env1) <- runHypTwr a env
-  let bodyTower = sArmTower armVal
-  (rest, env2) <- threadArmBodies as env1
-  pure (bodyTower : rest, env2)
+  let armRes = sArmTower armVal
+  (rest, env2) <- threadArmsCarrying as env1
+  pure (armRes : rest, env2)
 
 -- | Pairwise meet on the first rung of a list of towers.  Used to
 --   force a 'case' expression's arm bodies to agree on a common
@@ -305,8 +320,10 @@ meetAllTowers s (t1:t2:rest) = do
 sValTower :: HypTwrVal ('SVal m) -> Tower
 sValTower (HypTwrSVal t) = t
 
--- | Extract the body tower from an arm carrier.
-sArmTower :: HypTwrVal 'SArm -> Tower
+-- | Extract the reachability-tagged body tower from an arm
+--   carrier.  'Just t' if the arm reached (body type @t@);
+--   'Nothing' if its pattern clashed with the scrutinee.
+sArmTower :: HypTwrVal 'SArm -> Maybe Tower
 sArmTower (HypTwrSArm t) = t
 
 -- | Build a 'TyView'-app chain: @head[arg0, arg1, ...]@.  Used by
@@ -317,11 +334,13 @@ mkAppChainView :: TyView -> [TyProc] -> TyView
 mkAppChainView h []     = h
 mkAppChainView h (a:as) = mkAppChainView (TyAppV (hPure h) a) as
 
--- | Elaborate one ctor-app argument in Build mode and meet its
---   inferred 'TyProc' against the corresponding (already
---   parent-TyVarV-instantiated) 'ctorInput'.  Threads the env
---   through, with the updated 'Subst' carrying any bindings the
---   meet introduced.
+-- | Elaborate one ctor-app argument (whose mode is the
+--   ambient runtime 'hypTwrEnvMode') and meet its inferred 'TyProc'
+--   against the corresponding (already parent-TyVarV-instantiated)
+--   'ctorInput'.  Threads the env through, with the updated
+--   'Subst' carrying any bindings the meet introduced.  Used by
+--   both Build (where the arg is a value) and Dissect (where the
+--   arg is a sub-pattern whose binders get their types this way).
 checkValArg
   :: HypTwrEnv -> (HypTwr a ('SVal m), TyProc) -> Either TyErr HypTwrEnv
 checkValArg env (arg, input) = do
@@ -329,6 +348,50 @@ checkValArg env (arg, input) = do
   let argProc = horizontal (sValTower argVal)
   newSubst <- meet (hypTwrEnvSubst env1) input argProc
   Right (env1 { hypTwrEnvSubst = newSubst })
+
+-- | Shared elaboration of a value-level constructor application,
+--   used by 'valCtor' in both modes:
+--
+--     1. Look the ctor's tower up by name.
+--     2. Peel + saturate to find the parent and the static
+--        'CtorSig'.
+--     3. Allocate one fresh meta per parent param TyVarV
+--        appearing in the ctor's inputs or refinements (call-site
+--        path keyed, so distinct use sites get distinct metas).
+--     4. Substitute throughout inputs and refinements.
+--     5. For each arg + substituted input, run 'checkValArg' —
+--        elaborates the arg in the ambient mode (Build computes a
+--        value's type; Dissect produces a pattern's matched type
+--        and binds pattern-introduced binders to fresh metas
+--        which the meet then unifies against the substituted
+--        input).
+--     6. Build the result tower as 'Parent <substituted refs>'.
+elabCtorApp
+  :: HypTwrEnv -> Name -> Path -> [HypTwr a ('SVal m)]
+  -> Either TyErr (Tower, HypTwrEnv)
+elabCtorApp env name callPath args = do
+  ctorTower <- maybe (Left (TyUnbound name)) Right
+                 (Map.lookup name (hypTwrEnvCtors env))
+  let subst0           = hypTwrEnvSubst env
+      (_, headView, _) = peelCtorTower subst0 ctorTower
+  case (extractCtorSig subst0 ctorTower, headView) of
+    (Just sig, TyConV pName pPath _)
+      | length args /= length (ctorInputs sig) ->
+          Left (TyCtorWrongArity name pName
+                 (length (ctorInputs sig)) (length args))
+      | otherwise -> do
+          let tyVars =
+                Set.unions (map (collectTyVars subst0) (ctorInputs sig))
+                `Set.union`
+                Set.unions (map (collectTyVars subst0) (ctorRefinements sig))
+              tySubst     = mkFreshSubst tyVars callPath
+              substInputs = map (substTyVarsInProc tySubst) (ctorInputs sig)
+              substRefs   = map (substTyVarsInProc tySubst) (ctorRefinements sig)
+          env' <- foldM checkValArg env (zip args substInputs)
+          let resultView  = mkAppChainView (TyConV pName pPath Z) substRefs
+              resultTower = leafTower env' resultView
+          Right (resultTower, env')
+    _ -> Left (TyCtorBadResult name)
 
 -- ----------------------------------------------------------------------
 -- TyVarV instantiation for ctor application.
@@ -524,78 +587,86 @@ instance Lang HypTwr where
     let placeholderTower = leafTower env (TyMetaV (MetaId emptyPath emptyPath))
     in Right (HypTwrSVal placeholderTower, env)
 
-  valCtor _ann name callPath args = HypTwr $ \env -> case hypTwrEnvMode env of
-    ElabBuild -> do
-      ctorTower <- maybe (Left (TyUnbound name)) Right
-                     (Map.lookup name (hypTwrEnvCtors env))
-      let subst0           = hypTwrEnvSubst env
-          (_, headView, _) = peelCtorTower subst0 ctorTower
-      case (extractCtorSig subst0 ctorTower, headView) of
-        (Just sig, TyConV pName pPath _)
-          | length args /= length (ctorInputs sig) ->
-              Left (TyCtorWrongArity name pName
-                     (length (ctorInputs sig)) (length args))
-          | otherwise -> do
-              -- Allocate one fresh meta per TyVarV occurring in
-              -- the ctor's inputs and refinements — this is the
-              -- "instantiation at use site" step.  Substitute
-              -- throughout inputs and refinements.
-              let tyVars =
-                    Set.unions (map (collectTyVars subst0) (ctorInputs sig))
-                    `Set.union`
-                    Set.unions (map (collectTyVars subst0) (ctorRefinements sig))
-                  tySubst     = mkFreshSubst tyVars callPath
-                  substInputs = map (substTyVarsInProc tySubst) (ctorInputs sig)
-                  substRefs   = map (substTyVarsInProc tySubst) (ctorRefinements sig)
-              -- For each arg, elaborate in Build and meet its
-              -- first-rung 'TyProc' against the corresponding
-              -- instantiated 'ctorInput'.  Each meet may extend
-              -- 'Subst' with bindings on the freshly-allocated
-              -- metas, propagating the call's type constraints
-              -- across inputs and refinements together.
-              env' <- foldM (checkValArg) env (zip args substInputs)
-              let resultView  = mkAppChainView (TyConV pName pPath Z) substRefs
-                  resultTower = leafTower env' resultView
-              Right (HypTwrSVal resultTower, env')
-        _ -> Left (TyCtorBadResult name)
-    ElabDissect ->
-      case Map.lookup name (hypTwrEnvCtors env) of
-        Nothing -> Left (TyUnbound name)
-        Just _  -> do
-          env' <- threadVals args env
-          -- Placeholder result tower keyed on the ctor's call
-          -- site; tightens to "Parent applied to refinement with
-          -- skolems" in the next sub-commit.
-          let placeholderTower =
-                leafTower env' (TyMetaV (MetaId callPath callPath))
-          Right (HypTwrSVal placeholderTower, env')
+  -- The Build and Dissect branches of 'valCtor' do the same work:
+  -- instantiate the ctor's parent-param TyVarVs to fresh metas at
+  -- the use site, then meet each arg against the corresponding
+  -- instantiated 'ctorInput'.  The two modes differ only in how
+  -- args /elaborate/ — Build args produce values' types, Dissect
+  -- args (recursively) produce patterns' matched types and bind
+  -- pattern-introduced variables.  Each successful meet extends
+  -- 'Subst' uniformly.  The pattern's own matched type (Dissect)
+  -- and the application's result type (Build) are both
+  -- "Parent applied to substituted refinements".
+  valCtor _ann name callPath args = HypTwr $ \env -> do
+    (resultTower, env') <- elabCtorApp env name callPath args
+    Right (HypTwrSVal resultTower, env')
 
   case_ _ann scrutinee arms = HypTwr $ \env -> do
-    (_, env1) <- runHypTwr scrutinee env
-    -- Walk arms, collecting each body's tower.  Pattern binders
-    -- introduced in each arm are restored at arm's exit
-    -- (see 'arm' below), so the threaded env never accumulates
-    -- per-arm bindings.
-    (bodyTowers, env2) <- threadArmBodies arms env1
-    -- All arm-body towers must unify (meet pairwise on the first
-    -- rung).  The case as a whole types at the common tower.
-    finalSubst <- meetAllTowers (hypTwrEnvSubst env2) bodyTowers
-    let env3 = env2 { hypTwrEnvSubst = finalSubst }
-        resultTower = case bodyTowers of
+    (scrutVal, env1) <- runHypTwr scrutinee env
+    let scrutTower = sValTower scrutVal
+        savedScrut = hypTwrEnvScrutTy env1
+        env1'      = env1 { hypTwrEnvScrutTy = Just scrutTower }
+    -- Walk arms with scrutinee tower in env.  Each arm either
+    -- elaborates reachably (returning 'Just bodyTower') or
+    -- marks itself unreachable ('Nothing').
+    (armResults, env2) <- threadArmsCarrying arms env1'
+    let env3       = env2 { hypTwrEnvScrutTy = savedScrut }
+        reachable  = [t | Just t <- armResults]
+    -- Pairwise-meet the reachable arms' body towers so the case
+    -- agrees on a common result type.  If no arm is reachable,
+    -- the case is vacuous — we emit a fresh meta at the case's
+    -- own position (not strictly correct as a coverage check,
+    -- but harmless until exhaustiveness lands).
+    finalSubst <- meetAllTowers (hypTwrEnvSubst env3) reachable
+    let env4 = env3 { hypTwrEnvSubst = finalSubst }
+        resultTower = case reachable of
           (t:_) -> t
-          []    -> leafTower env3 (TyMetaV (MetaId emptyPath emptyPath))
-    Right (HypTwrSVal resultTower, env3)
+          []    -> leafTower env4
+                     (TyMetaV (MetaId emptyPath emptyPath))
+    Right (HypTwrSVal resultTower, env4)
 
   arm _ann pat body = HypTwr $ \env -> do
     let savedVars  = hypTwrEnvValVars env
         savedMode  = hypTwrEnvMode env
         envD       = env { hypTwrEnvMode = ElabDissect }
-    (_, env1) <- runHypTwr pat envD
-    let envB = env1 { hypTwrEnvMode = ElabBuild }
-    (bodyVal, env2) <- runHypTwr body envB
-    let bodyTower = sValTower bodyVal
-        env3 = env2
-          { hypTwrEnvValVars = savedVars
-          , hypTwrEnvMode    = savedMode
-          }
-    Right (HypTwrSArm bodyTower, env3)
+    (patVal, env1) <- runHypTwr pat envD
+    let patTower = sValTower patVal
+    -- Unify the pattern's matched type against the scrutinee's
+    -- type.  A clean meet means the arm is /reachable/ under
+    -- the bindings the meet introduces; a 'TyMismatch' means
+    -- the refinement clash discards the arm.  The bindings the
+    -- meet produces refine the scrutinee's free metas /and/ the
+    -- pattern's binders (which were placeholder metas before
+    -- this point) to their respective shape-derived types.
+    case hypTwrEnvScrutTy env1 of
+      Nothing -> Left (TyUnbound "scrutinee")  -- arm fired outside case_
+      Just scrutTower ->
+        case meet (hypTwrEnvSubst env1)
+                  (horizontal patTower)
+                  (horizontal scrutTower) of
+          Left _ ->
+            -- Unreachable arm: skip its body entirely.  Restore
+            -- the value-binder scope; preserve the 'Subst' that
+            -- existed before the (failed) pattern-side meet,
+            -- so subsequent arms aren't poisoned by partial
+            -- bindings.
+            let env2 = env1
+                  { hypTwrEnvValVars = savedVars
+                  , hypTwrEnvMode    = savedMode
+                  , hypTwrEnvSubst   = hypTwrEnvSubst env  -- pre-pat
+                  }
+            in Right (HypTwrSArm Nothing, env2)
+          Right subst' -> do
+            -- Reachable arm: continue with the meet's
+            -- bindings, elaborate the body in Build mode.
+            let env1' = env1
+                  { hypTwrEnvSubst = subst'
+                  , hypTwrEnvMode  = ElabBuild
+                  }
+            (bodyVal, env2) <- runHypTwr body env1'
+            let bodyTower = sValTower bodyVal
+                env3 = env2
+                  { hypTwrEnvValVars = savedVars
+                  , hypTwrEnvMode    = savedMode
+                  }
+            Right (HypTwrSArm (Just bodyTower), env3)

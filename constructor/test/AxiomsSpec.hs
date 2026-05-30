@@ -31,7 +31,6 @@ module AxiomsSpec (tests) where
 import Constructor.HypTwr (HypTwr, HypTwrResult (..), hypTwrProgram)
 import Constructor.Parser (parseProgram)
 import Constructor.Syntax (Name)
-import Constructor.Tinf (TyErr (..))
 import Data.Functor.Const (Const (..))
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
@@ -83,21 +82,19 @@ tests =
     -- Today: scope-only.  When pat refinement lands, the test
     -- strengthens automatically into a genuine refinement axiom.
 
-  , rejectsTwrPending
-      "Fin round-trip: case FS FZ { FZ -> FZ; FS m -> FS m }"
-      -- INTENTIONALLY rejecting at this commit: Build-side ctor
-      -- typing now produces real result types for each arm, so
-      -- @FZ : Fin Z@ and @FS m : Fin (S m)@ don't pairwise meet.
-      -- The /actual/ axiom holds only after Dissect-side
-      -- refinement filters unreachable arms: for a scrutinee
-      -- @Fin (S Z)@ the FZ arm clashes (n=Z vs S Z), gets
-      -- dropped, and the FS m arm alone determines the case's
-      -- type — Fin (S Z), matching the scrutinee.  When the
-      -- Dissect commit lands, this test flips back to
-      -- 'roundTripVia' and the axiom is restored.
+  , roundTripVia "Fin round-trip: case FS FZ { FZ -> FZ; FS m -> FS m }"
+      -- Refining GADT round-trip — the load-bearing case.
+      -- Scrutinee @FS FZ@ has type @Fin (S Z)@.  The @FZ@ arm's
+      -- pattern matches @Fin Z@; refinement clashes with the
+      -- scrutinee's @Fin (S Z)@, so HypTwr marks the arm
+      -- /unreachable/ and skips its body when meeting per-arm
+      -- result types.  The @FS m@ arm refines @m@ to @Z@ and
+      -- its body @FS m@ rebuilds at @Fin (S Z)@ — same type
+      -- as the scrutinee.  The axiom holds.
       "data Nat : *0 { Z : Nat; S : Nat -> Nat };\
       \data Fin (n : Nat) : *0 { FZ : Fin Z; FS : Fin n -> Fin (S n) };\
       \let rt = case FS FZ { FZ -> FZ; FS m -> FS m }"
+      ["rt"]
 
     -- --- Typed-AST round-trip ----------------------------------------
     --
@@ -145,22 +142,3 @@ roundTripVia name src wantLets = (name, go)
                  <> "\n  got:  " <> show got
 
     fail_ msg = putStrLn ("    " <> msg) >> pure False
-
--- | Forward-pointing helper: confirms HypTwr currently /rejects/
---   the program with a 'TyMismatch' (we don't pin the exact
---   TyExpr operands because they involve metavariables whose
---   renderings include placeholders).  When the load-bearing
---   feature lands — typically Dissect-side refinement —
---   the failure becomes a success and the call site flips to
---   'roundTripVia'.
-rejectsTwrPending :: String -> Text -> (String, IO Bool)
-rejectsTwrPending name src = (name, go)
-  where
-    go = case parseProgram @HypTwr @(Const ()) name src of
-      Left e -> failR $ "parse error: " <> errorBundlePretty e
-      Right pTwr -> case hypTwrProgram pTwr of
-        Left (TyMismatch _ _) -> pure True
-        Left other -> failR $ "expected TyMismatch, got: " <> show other
-        Right _ -> failR "expected pending rejection but program elaborated"
-
-    failR msg = putStrLn ("    " <> msg) >> pure False

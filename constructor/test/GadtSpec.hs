@@ -355,6 +355,22 @@ tests =
       (TyMismatch
         (TyCon "Nat"  (Path [PsProgDecl 1]))
         (TyCon "Bool" (Path [PsProgDecl 0])))
+  , acceptsValByHypTwr
+      "Value-level: GADT refinement narrows pattern binder type"
+      -- The FZ arm yields a @Nat@ (@Z@) which would mismatch
+      -- the FS arm's @Fin α@ body; but for scrutinee
+      -- @Fin (S Z)@ the FZ pattern's @Fin Z@ refinement clashes
+      -- — the arm is unreachable, its body's type doesn't
+      -- enter the case's per-arm unification.  The FS m arm
+      -- alone determines the result type: pattern @Fin (S α)@
+      -- meets scrutinee @Fin (S Z)@ binding @α := Z@; body
+      -- @m@ resolves to @Fin α = Fin Z@.  The case typechecks
+      -- at the reachable arm's body type — the Dissect
+      -- refinement is doing real work.
+      "data Nat : *0 { Z : Nat; S : Nat -> Nat };\
+      \data Fin (n : Nat) : *0 { FZ : Fin Z; FS : Fin n -> Fin (S n) };\
+      \let pred = case FS FZ { FZ -> Z; FS m -> m }"
+      ["pred"]
 
   , accepts "GADT sketch: Iso singleton via separate type decls"
       ("data One : Iso { OneCtor : One };\
