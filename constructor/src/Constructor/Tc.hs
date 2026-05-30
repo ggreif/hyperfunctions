@@ -96,7 +96,7 @@ newtype Discard (a :: Sort -> Type) (s :: Sort) = Discard ()
 
 instance Lang Discard where
   prog _ _           = Discard ()
-  dataDecl _ _ _ _ _ = Discard ()
+  dataDecl _ _ _ _ _ _ = Discard ()
   ctorDecl _ _ _     = Discard ()
   var _ _            = Discard ()
   star _ _           = Discard ()
@@ -158,7 +158,7 @@ instance Lang Tc where
     (ts, env') <- threadDecls ds env
     pure (TcVProg, env', prog LvAProg ts)
 
-  dataDecl _ann n params e ds = Tc $ \env -> do
+  dataDecl _ann declPath n params e ds = Tc $ \env -> do
     (ev, env1, polyE) <- runTc e env
     let pe = tcExprPlace ev
         (mLe, sheet1) = levelOf pe (tcEnvSheet env1)
@@ -171,7 +171,7 @@ instance Lang Tc where
     (polys, env3) <- threadDecls ds env2
     pure ( TcVDecl pn
          , env3 { tcEnvParent = tcEnvParent env1' }
-         , dataDecl (LvADecl ln) n params polyE polys
+         , dataDecl (LvADecl ln) declPath n params polyE polys
          )
 
   ctorDecl _ann n t = Tc $ \env -> do

@@ -150,7 +150,7 @@ instance Lang HypTinf where
     env' <- threadDecls ds env
     pure (HypTinfProg, env')
 
-  dataDecl _ann name params e ds = HypTinf $ \env ->
+  dataDecl _ann _declPath name params e ds = HypTinf $ \env ->
     case Map.lookup name (hypEnvDataTypes env) of
       Just _  -> Left (TyDuplicateType name)
       Nothing -> do

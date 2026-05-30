@@ -19,7 +19,7 @@ import Data.Kind (Type)
 --   the annotation type at the use site.
 data Tree (a :: Sort -> Type) (s :: Sort) where
   Prog     :: a 'SProg -> [Tree a 'SDecl] -> Tree a 'SProg
-  DataDecl :: a 'SDecl -> Name -> [Name] -> Tree a 'SExpr -> [Tree a 'SDecl] -> Tree a 'SDecl
+  DataDecl :: a 'SDecl -> Path -> Name -> [Name] -> Tree a 'SExpr -> [Tree a 'SDecl] -> Tree a 'SDecl
   CtorDecl :: a 'SDecl -> Name -> Tree a 'SExpr -> Tree a 'SDecl
   Var      :: a 'SExpr -> Name -> Tree a 'SExpr
   Star     :: a 'SExpr -> Word -> Tree a 'SExpr

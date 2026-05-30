@@ -252,7 +252,7 @@ decl path binders = dataD <|> ctorD
       -- Add ourselves to tcBinders for siblings (forward-only
       -- references — later siblings see, earlier ones don't).
       let nextBinders = extendTc n path binders
-      pure (dataDecl ann n params e ds, nextBinders)
+      pure (dataDecl ann path n params e ds, nextBinders)
 
     ctorD = do
       n   <- identifier

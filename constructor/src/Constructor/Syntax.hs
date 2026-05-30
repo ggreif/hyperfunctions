@@ -31,10 +31,13 @@ type Name = Text
 --   polymorphic input, which is honest about what they support.
 class Lang (r :: (Sort -> Type) -> Sort -> Type) where
   prog     :: a 'SProg -> [r a 'SDecl] -> r a 'SProg
-  -- | Data declaration.  The @[Name]@ list is the parameter list
-  --   (empty for non-parametric data).  Each parameter binds a type
+  -- | Data declaration.  The first 'Path' is the declaration's
+  --   def-path — supplied by the parser so carriers can construct
+  --   the data's own @TyConV name declPath@ view (e.g.\ for kind
+  --   coherence checking).  The @[Name]@ list is the parameter list
+  --   (empty for non-parametric data); each parameter binds a type
   --   variable scoped over the body's constructor types.
-  dataDecl :: a 'SDecl -> Name -> [Name] -> r a 'SExpr -> [r a 'SDecl] -> r a 'SDecl
+  dataDecl :: a 'SDecl -> Path -> Name -> [Name] -> r a 'SExpr -> [r a 'SDecl] -> r a 'SDecl
   ctorDecl :: a 'SDecl -> Name -> r a 'SExpr -> r a 'SDecl
   var      :: a 'SExpr -> Name -> r a 'SExpr
   star     :: a 'SExpr -> Word -> r a 'SExpr

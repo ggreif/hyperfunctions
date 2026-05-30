@@ -77,7 +77,7 @@ cases =
     , "data Bool : *0 { True : Bool; False : Bool }"
     , let boolP = Path [PsProgDecl 0]
       in Prog u
-        [ DataDecl u "Bool" [] (Star u 0)
+        [ DataDecl u boolP "Bool" [] (Star u 0)
             [ CtorDecl u "True"  (TyConRef u "Bool" boolP)
             , CtorDecl u "False" (TyConRef u "Bool" boolP)
             ]
@@ -87,7 +87,7 @@ cases =
     , "data Nat : *0 { Z : Nat; S : Nat -> Nat }"
     , let natP = Path [PsProgDecl 0]
       in Prog u
-        [ DataDecl u "Nat" [] (Star u 0)
+        [ DataDecl u natP "Nat" [] (Star u 0)
             [ CtorDecl u "Z" (TyConRef u "Nat" natP)
             , CtorDecl u "S" (Arr u (TyConRef u "Nat" natP) (TyConRef u "Nat" natP))
             ]
@@ -98,9 +98,9 @@ cases =
     , let typeP = Path [PsProgDecl 0]
           ty2P  = Path [PsProgDecl 0, PsDeclIdx 1]
       in Prog u
-        [ DataDecl u "Type" [] (Star u 1)
+        [ DataDecl u typeP "Type" [] (Star u 1)
             [ CtorDecl u "Constr" (TyConRef u "Type" typeP)
-            , DataDecl u "Ty2" [] (TyConRef u "Type" typeP)
+            , DataDecl u ty2P "Ty2" [] (TyConRef u "Type" typeP)
                 [ CtorDecl u "Foo" (TyConRef u "Ty2" ty2P)
                 ]
             ]
@@ -110,7 +110,7 @@ cases =
     , "data X : *0 { F : X -> X -> X }"
     , let xP = Path [PsProgDecl 0]
       in Prog u
-        [ DataDecl u "X" [] (Star u 0)
+        [ DataDecl u xP "X" [] (Star u 0)
             [ CtorDecl u "F" (Arr u (TyConRef u "X" xP)
                                (Arr u (TyConRef u "X" xP) (TyConRef u "X" xP)))
             ]
@@ -121,7 +121,7 @@ cases =
     , let pBinder = Path [PsProgDecl 0, PsDataAnn]
           fooP    = Path [PsProgDecl 0]
       in Prog u
-        [ DataDecl u "Foo" []
+        [ DataDecl u fooP "Foo" []
             (ForallLv u "l" pBinder (StarVar u "l" pBinder 0))
             [ CtorDecl u "c" (TyConRef u "Foo" fooP)
             ]
@@ -132,7 +132,7 @@ cases =
     , let pBinder = Path [PsProgDecl 0, PsDataAnn]
           barP    = Path [PsProgDecl 0]
       in Prog u
-        [ DataDecl u "Bar" []
+        [ DataDecl u barP "Bar" []
             (ForallLv u "l" pBinder (StarVar u "l" pBinder 2))
             [ CtorDecl u "d" (TyConRef u "Bar" barP)
             ]
@@ -143,7 +143,7 @@ cases =
     , let pBinder = Path [PsProgDecl 0, PsDataAnn]
           qP      = Path [PsProgDecl 0]
       in Prog u
-        [ DataDecl u "Q" []
+        [ DataDecl u qP "Q" []
             (ForallLv u "l" pBinder (StarVar u "l" pBinder 1))
             [ CtorDecl u "q" (TyConRef u "Q" qP)
             ]
@@ -155,7 +155,7 @@ cases =
           listP = Path [PsProgDecl 0]
           ap    = Path [PsProgDecl 0, PsDeclIdx 0, PsCtorTy, PsArrL]
       in Prog u
-        [ DataDecl u "List" ["a"] (Star u 0)
+        [ DataDecl u listP "List" ["a"] (Star u 0)
             [ CtorDecl u "Nil"
                 (App u ap (TyConRef u "List" listP) (TyParamRef u "a" pa))
             ]
@@ -168,7 +168,7 @@ cases =
           appL   = Path [PsProgDecl 0, PsDeclIdx 0, PsCtorTy, PsArrR, PsArrL]
           appR   = Path [PsProgDecl 0, PsDeclIdx 0, PsCtorTy, PsArrR, PsArrR, PsArrL]
       in Prog u
-        [ DataDecl u "List" ["a"] (Star u 0)
+        [ DataDecl u listP "List" ["a"] (Star u 0)
             [ CtorDecl u "Cons"
                 (Arr u (TyParamRef u "a" pa)
                   (Arr u (App u appL (TyConRef u "List" listP) (TyParamRef u "a" pa))
@@ -179,8 +179,9 @@ cases =
   , ( "application — three-arg left-assoc f x y z = ((f x) y) z"
     , "data D : *0 { c : f x y z }"
     , let ap = Path [PsProgDecl 0, PsDeclIdx 0, PsCtorTy, PsArrL]
+          dP = Path [PsProgDecl 0]
       in Prog u
-        [ DataDecl u "D" [] (Star u 0)
+        [ DataDecl u dP "D" [] (Star u 0)
             [ CtorDecl u "c"
                 (App u ap
                   (App u ap

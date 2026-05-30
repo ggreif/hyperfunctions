@@ -111,7 +111,7 @@ instance Lang Tinf where
     env' <- threadDecls ds env
     pure (TyVProg, env')
 
-  dataDecl _ann name params _e ds = Tinf $ \env -> do
+  dataDecl _ann _declPath name params _e ds = Tinf $ \env -> do
     -- Register the new data type; reject duplicates.  Parameter scope
     -- is handled in the parser (which resolves each occurrence to a
     -- 'tyParamRef' with binder path), so no scope threading here.
