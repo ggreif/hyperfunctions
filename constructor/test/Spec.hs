@@ -11,6 +11,7 @@ import Constructor.Sort (Sort (..))
 import qualified HypTinfSpec
 import qualified LevelInferSpec
 import qualified TinfSpec
+import qualified TowerSpec
 import qualified TyProcSpec
 import Data.Functor.Const (Const (..))
 import Data.Text (Text)
@@ -39,7 +40,10 @@ main = do
   putStrLn ""
   putStrLn "B-side type-inference parity:"
   hypTinfOK <- mapM runInfer HypTinfSpec.tests
-  if and (parseOK ++ inferOK ++ tinfOK ++ meetOK ++ hypTinfOK) then exitSuccess else exitFailure
+  putStrLn ""
+  putStrLn "Tower scaffold:"
+  towerOK <- mapM runInfer TowerSpec.tests
+  if and (parseOK ++ inferOK ++ tinfOK ++ meetOK ++ hypTinfOK ++ towerOK) then exitSuccess else exitFailure
   where
     runInfer (name, go) = do
       ok <- go

@@ -33,6 +33,7 @@ library
     Constructor.Tinf
     Constructor.TyProc
     Constructor.HypTinf
+    Constructor.Tower
     Constructor.Syntax
     Constructor.AST
     Constructor.Parser
@@ -62,6 +63,7 @@ test-suite constructor-test
     TinfSpec
     TyProcSpec
     HypTinfSpec
+    TowerSpec
   build-depends:
     , base
     , constructor
