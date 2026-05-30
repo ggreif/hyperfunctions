@@ -237,7 +237,20 @@ instance Lang HypLinf where
       Just parentProc ->
         let lv = hRun parentProc
         in Right (HypLinfExpr parentProc, env, tyConRef (LvAExpr lv) n path)
-      Nothing -> Left (Unbound n)
+      Nothing ->
+        -- Top-level forward reference fallback.  The parser's
+        -- top-level prescan vetted the name and gave us its
+        -- declPath (otherwise we'd be in 'var' instead of
+        -- 'tyConRef').  Assume the target is a top-level data
+        -- whose elaborated level lands at 'LVar path' — which is
+        -- exactly the value @predLv (LVar p) = LVar p@'s fixpoint
+        -- settles a self-stratified data to (the only level shape
+        -- top-level mutual is sound for; concrete-leveled forward
+        -- refs work by being declared earlier).  This is the
+        -- top-level analog of the body-mutual parent fallback.
+        let lv   = LVar path
+            proc = hPure lv
+        in Right (HypLinfExpr proc, env, tyConRef (LvAExpr lv) n path)
 
   -- Parameter uses look the param up by name (just like tyConRef),
   -- and likewise re-emit the path in the polymorphic output for

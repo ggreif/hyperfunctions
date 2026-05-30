@@ -125,6 +125,55 @@ sepEndByIndexedAcc mk sep = go 0
 --   Inner : *0 { … }@ doesn't fool the outer scan.  Block comments
 --   are handled by interleaving 'sc' (the lexer's space-and-comment
 --   skipper) before each character peek.
+-- | Top-level analog: 'prescanBodyDeclNames' but without the outer
+--   @{@/@}@ wrappers — terminator is EOF.  Used by 'program' to
+--   harvest top-level data names so they're all in 'tcBinders'
+--   before any top-level decl is elaborated, giving Haskell-module
+--   /Agda-mutual-block style implicit mutual recursion at the
+--   program scope.
+prescanProgramDeclNames
+  :: (MonadParsec Void Text m, MonadFail m)
+  => m [(Name, Path)]
+prescanProgramDeclNames = lookAhead (collectTop 0 [])
+  where
+    collectTop i acc = do
+      sc
+      done <- atEnd
+      if done
+        then pure (reverse acc)
+        else do
+          name <- declHeadName_
+          let declPath = extendPath (PsProgDecl i) emptyPath
+          skipDeclBody_ 0
+          msep <- optional (symbol ";")
+          let acc' = (name, declPath) : acc
+          case msep of
+            Just _  -> collectTop (i + 1) acc'
+            Nothing -> pure (reverse acc')
+
+    declHeadName_ = do
+      _ <- optional (try (symbol "data"))
+      identifier
+
+    skipDeclBody_ depth = do
+      sc
+      mc <- optional (lookAhead anySingle)
+      case mc of
+        Nothing -> pure ()  -- EOF
+        Just c -> case c of
+          '{' -> do
+            void (single '{')
+            skipDeclBody_ (depth + 1)
+          '}'
+            | depth == 0 -> pure ()  -- shouldn't happen at top level; bail
+            | otherwise -> do
+                void (single '}')
+                skipDeclBody_ (depth - 1)
+          ';' | depth == 0 -> pure ()
+          _   -> do
+            void anySingle
+            skipDeclBody_ depth
+
 prescanBodyDeclNames
   :: (MonadParsec Void Text m, MonadFail m)
   => Path -> m [(Name, Path)]
@@ -371,10 +420,20 @@ program
   => m (r a 'SProg)
 program = do
   sc
+  -- Top-level prescan: harvest all program-level data names BEFORE
+  -- iterating, so top-level mutual references between data decls
+  -- work without an explicit @mutual { ... }@ block.  Same trick
+  -- as the body-mutual prescan in 'dataD' (Agda's @mutual@-style
+  -- forward-reference resolution); applied uniformly to all
+  -- top-level decls because module-scope mutual is the
+  -- Haskell/SML default and our singular use case is mostly
+  -- definitional clusters where mutual is the rule.
+  programNames <- prescanProgramDeclNames
+  let topBinders = foldr (\(n, p) -> extendTc n p) emptyBinders programNames
   (ds, _) <- sepEndByIndexedAcc
                (\i bs -> decl (extendPath (PsProgDecl i) emptyPath) bs)
                (symbol ";")
-               emptyBinders
+               topBinders
   ann <- freshProgAnn
   eof
   pure (prog ann ds)

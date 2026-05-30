@@ -149,22 +149,36 @@ tests =
       "data Mirror : \8704l. *l { Cup : Cup; Fridge : Frigde; Plate : Plate }"
       (Unbound "Frigde")
 
-  -- --- Top-level mutual references — still BLOCKED -------------
+  -- --- Top-level mutual references (now WORKS via program-level
+  -- prescan + HypLinf top-level forward-ref fallback) --------------
   --
-  -- Top-level mutual recursion would need an analogous prescan at
-  -- the 'program' level: pre-harvest all data names BEFORE
-  -- elaborating any.  Today the same forward-only accumulator
-  -- pattern means later top-level siblings see earlier ones but
-  -- not vice versa.  Iso-sep needs Iso forward-referenced from
-  -- One / Two / Three, which fails because Iso isn't declared
-  -- yet at the point those parse.
-  , rejectsAtLevel
-      "GADT sketch: Iso singleton via separate type decls (BLOCKED: top-level mutual)"
+  -- The parser's 'prescanProgramDeclNames' harvests all top-level
+  -- data names into 'tcBinders' before any decl is elaborated, so
+  -- forward refs become 'tyConRef' rather than 'var'.  HypLinf's
+  -- 'tyConRef' picks up a third fallback layer: when env-lookup
+  -- AND parent-fallback both miss (i.e., at the top level
+  -- referencing a not-yet-elaborated sibling data), assume the
+  -- target is a self-stratified data and return @LVar path@ —
+  -- exactly the fixpoint @predLv (LVar p) = LVar p@ settles the
+  -- target to during its own elaboration.  Sound for the singleton
+  -- family case (every member self-towers); unsound for mixed
+  -- concrete-leveled forward refs (which the user can sidestep by
+  -- reordering, since those don't actually need mutual).
+  , accepts "GADT sketch: Iso singleton via separate type decls"
       ("data One : Iso { OneCtor : One };\
        \data Two : Iso { TwoCtor : Two };\
        \data Three : Iso { ThreeCtor : Three };\
        \data Iso : Iso { GetOne : One; GetTwo : Two; GetThree : Three }")
-      (Unbound "Iso")
+      ["OneCtor", "TwoCtor", "ThreeCtor", "GetOne", "GetTwo", "GetThree"]
+    -- NB: there is no @⋮@-shorthand variant of Iso-sep that's
+    -- /equivalent/.  'data One ⋮' would desugar to @data One :
+    -- One@ (kind One, self-tower) but Iso-sep needs @data One :
+    -- Iso@ (kind Iso, member of the singleton family).  The
+    -- structures differ: Iso-cute (data Iso { One : One; … }) is
+    -- the same-name-at-two-rungs shape; Iso-sep is "Iso is a
+    -- /kind/ and each member is a separate type at that kind".
+    -- Both elaborate at LVar isoPath at the level layer; the
+    -- difference is what's stored in the TyView shape.
 
   -- --- Doubly blocked: arrow-kinded data + GADT refinement ------
   --
