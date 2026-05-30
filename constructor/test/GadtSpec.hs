@@ -35,10 +35,20 @@
 module GadtSpec (tests) where
 
 import Constructor.HypLinf (HypLinf, hypLinfRunWith)
-import Constructor.HypTwr (HypTwr, HypTwrResult (..), hypTwrCtorTypes, hypTwrProgram)
+import Constructor.HypTwr
+  ( CtorSig (..)
+  , HypTwr
+  , HypTwrResult (..)
+  , extractCtorSig
+  , hypTwrCtorTypes
+  , hypTwrProgram
+  )
 import Constructor.LevelInfer (LvErr (..))
 import Constructor.Parser (parseProgram)
+import Constructor.Syntax (Name)
 import Constructor.Tinf (TyErr (..))
+import Constructor.TyExpr (prettyTy)
+import Constructor.TyProc (materialize)
 import Data.Functor.Const (Const (..))
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
@@ -228,6 +238,33 @@ tests =
   -- family case (every member self-towers); unsound for mixed
   -- concrete-leveled forward refs (which the user can sidestep by
   -- reordering, since those don't actually need mutual).
+    -- --- Per-ctor signature extraction (CtorSig) -------------------
+    --
+    -- 'extractCtorSig' peels each ctor's tower into argument
+    -- types and result-spine refinements.  The refinements are
+    -- what pattern matching will consume: matching @c@ produced
+    -- by @c a b ...@ against a scrutinee of type @D s1 ... sm@
+    -- unifies each @si@ with the corresponding @ri@ in the sig.
+  , inspectCtorSigs
+      "CtorSig: real-Fin refinements (FZ ↦ [Z]; FS ↦ [S n])"
+      "data Nat : *0 { Z : Nat; S : Nat -> Nat };\
+      \data Fin (n : Nat) : *0 { FZ : Fin Z; FS : Fin n -> Fin (S n) }"
+      [ ("FZ", ["Z"])
+      , ("FS", ["S n"])
+      ]
+  , inspectCtorSigs
+      "CtorSig: real-Expr refinements (Lit ↦ [T]; Pair ↦ [F])"
+      "data Bool : *0 { T : Bool; F : Bool };\
+      \data Expr (a : Bool) : *0 { Lit : Expr T; Pair : Expr T -> Expr F -> Expr F }"
+      [ ("Lit",  ["T"])
+      , ("Pair", ["F"])
+      ]
+  , inspectCtorSigs
+      "CtorSig: singleton family has empty refinements (Swap: arity 0)"
+      "data Swap : Swap { Left : Right; Right : Left }"
+      [ ("Left",  [])
+      , ("Right", [])
+      ]
     -- --- Saturation checks (HypTwr.ctorDecl) -----------------------
     --
     -- Each ctor's annotation must peel — via arrows then app spine
@@ -386,6 +423,40 @@ rejectsAtType name src wantErr = (name, go)
           Right _ -> fail_ $
             "expected type rejection (" <> show wantErr
             <> "), but program elaborated"
+
+-- | Helper: parse + elaborate, then for each named ctor extract
+--   its 'CtorSig' and compare the materialized /refinements/ to
+--   the expected pretty representation.  Pinning refinements as
+--   pretty text is informative and stable — the pattern-matching
+--   machinery will eventually consume these substitutions to
+--   compute scrutinee index unifications per arm.
+inspectCtorSigs :: String -> Text -> [(Name, [Text])] -> (String, IO Bool)
+inspectCtorSigs name src expected = (name, go)
+  where
+    go = case parseProgram @HypLinf @(Const ()) name src of
+      Left e -> fail_ $ "parse error: " <> errorBundlePretty e
+      Right pHypLinf -> case hypLinfRunWith @HypTwr pHypLinf of
+        Left lv -> fail_ $ "level layer failed: " <> show lv
+        Right (_, pTwr) -> case hypTwrProgram pTwr of
+          Left ty -> fail_ $ "type layer failed: " <> show ty
+          Right r ->
+            let subst = hypTwrSubst r
+                ctors = hypTwrCtors r
+                check (cName, wantPretty) = case Map.lookup cName ctors of
+                  Nothing -> fail_ $ "ctor not found: " <> show cName
+                  Just tower -> case extractCtorSig subst tower of
+                    Nothing -> fail_ $ "extractCtorSig returned Nothing for " <> show cName
+                    Just sig -> case traverse (materialize subst) (ctorRefinements sig) of
+                      Left e -> fail_ $ "materialize refinement failed: " <> show e
+                      Right tys ->
+                        let got = map prettyTy tys
+                        in if got == wantPretty
+                             then pure True
+                             else fail_ $
+                               "refinement mismatch for " <> show cName
+                               <> ":\n  want: " <> show wantPretty
+                               <> "\n  got:  " <> show got
+            in fmap and (mapM check expected)
 
 fail_ :: String -> IO Bool
 fail_ msg = putStrLn ("    " <> msg) >> pure False

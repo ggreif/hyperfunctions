@@ -39,6 +39,8 @@ module Constructor.HypTwr
   , HypTwrResult (..)
   , hypTwrProgram
   , hypTwrCtorTypes
+  , CtorSig (..)
+  , extractCtorSig
   ) where
 
 import Constructor.HyperLite (hRun)
@@ -122,12 +124,65 @@ leafTower env v = towerOfView (hypTwrEnvSubst env) (hypTwrEnvKindEnv env) v
 exprTower :: HypTwrVal 'SExpr -> Tower
 exprTower (HypTwrExpr t) = t
 
--- | Saturation check for a constructor declaration.  Peels arrows
---   from the ctor's annotation to find its /result/ type, then
---   peels application to find the result's head and arity.
+-- | Per-ctor signature extracted from a 'Tower'.
 --
---   The result must be a @'TyConV' h _ _@ applied to some number
---   of arguments.  Acceptance rules:
+--   For @c : T1 -> T2 -> ... -> Tk -> D r1 r2 ... rm@:
+--
+--     * 'ctorInputs' is @[T1, T2, ..., Tk]@ — the argument types,
+--       in source order.  When a value-side @c v1 v2 ... vk@ is
+--       built, each @vi@ must have type @Ti@.
+--
+--     * 'ctorRefinements' is @[r1, r2, ..., rm]@ — the result-spine
+--       arguments, one per parent parameter (in declaration
+--       order).  Pattern matching on @c@ refines the scrutinee's
+--       parameter values: when matching @c@ produced by @c x y@
+--       against a scrutinee of type @D s1 ... sm@, each @si@
+--       unifies with the corresponding @ri@.  For nullary parents
+--       the list is empty.
+--
+--   The vars free in 'ctorInputs' / 'ctorRefinements' that came
+--   from the parent's parameter list are universally quantified
+--   over the ctor's type and become /existentials/ when the ctor
+--   is matched on.
+data CtorSig = CtorSig
+  { ctorInputs      :: ![TyProc]
+  , ctorRefinements :: ![TyProc]
+  }
+
+-- | Peel a ctor's annotation tower into the parts the saturation
+--   check and 'extractCtorSig' both need.  Returns
+--   @(inputs, headView, args)@ such that the tower's first rung
+--   resolves (under 'Subst') to
+--   @inputs[0] -> ... -> inputs[k-1] -> headView args[0] ... args[m-1]@.
+peelCtorTower :: Subst -> Tower -> ([TyProc], TyView, [TyProc])
+peelCtorTower subst tower = (inputs, headView, args)
+  where
+    peelArr ins v = case v of
+      TyArrV a bProc -> peelArr (a : ins) (resolveView subst (hRun bProc))
+      _ -> (reverse ins, v)
+    peelApp as v = case v of
+      TyAppV fProc x -> peelApp (x : as) (resolveView subst (hRun fProc))
+      _ -> (v, as)
+    (inputs, resultView) = peelArr [] (resolveView subst (hRun (horizontal tower)))
+    (headView, args)     = peelApp [] resultView
+
+-- | Pull a 'CtorSig' out of a ctor's tower under a substitution.
+--   Returns 'Nothing' if the result isn't headed by a 'TyConV'
+--   (which the saturation check would have caught at declaration
+--   time — so for any tower stored in 'hypTwrCtors', this is
+--   'Just').  Exposed for downstream consumers (the eventual
+--   pattern-matching machinery) without committing to a specific
+--   representation in 'HypTwrResult'.
+extractCtorSig :: Subst -> Tower -> Maybe CtorSig
+extractCtorSig subst tower =
+  let (inputs, headView, refinements) = peelCtorTower subst tower
+  in case headView of
+       TyConV {} -> Just (CtorSig inputs refinements)
+       _         -> Nothing
+
+-- | Saturation check for a constructor declaration.
+--
+--   Acceptance rules on the peeled head:
 --
 --     * @h == parentName@: arity must equal the parent's arity.
 --       This is the GADT shape (@FZ : Fin Z@, @FS : Fin n -> Fin
@@ -151,17 +206,10 @@ checkSaturation :: HypTwrEnv -> Name -> Tower -> Either TyErr ()
 checkSaturation env ctorName tower = case hypTwrEnvParent env of
   Nothing -> Right ()
   Just (parentName, _parentPath) ->
-    let subst    = hypTwrEnvSubst env
-        peelArr v = case v of
-          TyArrV _aProc bProc -> peelArr (resolveView subst (hRun bProc))
-          _ -> v
-        peelApp v n = case v of
-          TyAppV fProc _ -> peelApp (resolveView subst (hRun fProc)) (n + 1)
-          _ -> (v, n)
-        ctorView          = resolveView subst (hRun (horizontal tower))
-        resultView        = peelArr ctorView
-        (headView, nargs) = peelApp resultView 0
-        parentArity       = maybe 0 id (Map.lookup parentName (hypTwrEnvDataTypes env))
+    let subst                = hypTwrEnvSubst env
+        (_, headView, args)  = peelCtorTower subst tower
+        nargs                = length args
+        parentArity          = maybe 0 id (Map.lookup parentName (hypTwrEnvDataTypes env))
     in case headView of
          TyConV h _ _
            | h == parentName ->
