@@ -461,7 +461,17 @@ decl path binders = dataD <|> ctorD
       ann <- freshDeclAnn
       -- Add ourselves to tcBinders for siblings (forward-only
       -- references — later siblings see, earlier ones don't).
-      let nextBinders = extendTc n path binders
+      -- Each body ctor c of @data D { c1 : T1; … }@ is implicitly a
+      -- type-level constructor (the covering-space framing's
+      -- "fundament-witness ↔ all-rung presence" — c at value rung
+      -- is the same identifier as c at the type rung, modulo
+      -- offset).  Propagate ctor siblings to outer 'tcBinders'
+      -- alongside the data name so subsequent decls can reference
+      -- ctors as type-level constructors (e.g. @Fin (S n)@ where
+      -- @S@ is Nat's ctor used to construct a Nat-valued index).
+      let nextBinders = foldr (\(cn, cp) -> extendTc cn cp)
+                              (extendTc n path binders)
+                              siblingNames
       pure (dataDecl ann path n params e ds, nextBinders)
 
     ctorD = do

@@ -1012,36 +1012,41 @@ binder.  Step 3c-a doesn't enforce; step 3c-b adds the
 escape-tracking machinery alongside the pattern-match refinement
 work.
 
-### Future: uppercase-convention for fixed-type vs parameter
+### Ctor propagation to outer tcBinders (landed)
 
-The user flagged a corner: `data Head Param { ... }` today
-parses `Param` as a fresh parameter binding, shadowing any
-outer `Param`-data.  To express "Head indexed by the fixed Param
-type", you write `data Head (P : Param) : *0 { ... }` —
-kind-annotating `P` to inhabit `Param`.
+When a `data D { c1 : T1; c2 : T2; … }` finishes, the parser's
+`nextBinders` now propagates the body's ctors (and nested data)
+into the outer `tcBinders` alongside the data name itself.
 
-In Haskell / Ωmega, capitalization is a load-bearing
-convention: `Param` (uppercase) refers to a type constructor;
-`p` (lowercase) is a parameter binder.  Adopting this convention
-would let `data Head Param` mean "Head applied to the fixed
-Param type" without the parenthesised kind annotation.
+The motivation: real GADT-style indices like `Fin (S n)` need
+`S` (a ctor of Nat) to resolve to a *type-level* constructor at
+outer scope.  Before this change, `S` resolved as `Var` (the
+unresolved fallback) and HypLinf would reject with `Unbound`.
+With propagation, `S` resolves to `TyConRef "S" SPath` — a real
+type-level constructor — directly implementing the
+covering-space framing's "fundament-witness ↔ all-rung
+presence" at the parser level.  Each value-level ctor IS also a
+type-level constructor; the parser now reflects that.
 
-Implementation: in `paramSpec`, check the identifier's first
-character.  Uppercase → resolve via tcBinders (tycon ref) and
-treat as an applied argument to the head; lowercase → parameter
-binding as today.
+End-to-end elaboration of `Fin (S n)` still trips at HypLinf's
+homogeneous-app check (Fin at level 1, S at level 0, different
+levels), pending arrow-kinded data + level unification.  But
+the *parser* now correctly produces the AST shape that those
+features will need.
 
-Trade-offs:
+### Uppercase-convention — *not needed* (was queued; resolved)
 
-  * Backward-incompatible for any program using uppercase
-    parameter names (none in the current corpus — we use `a`,
-    `n`, etc. — so the cost is zero).
-  * Adds parser-level role distinction based on lexical
-    convention.
-  * Aligns with Haskell/Ωmega tradition; less surprising for
-    users coming from those languages.
+Initially queued: a Haskell/Ωmega-style convention where
+uppercase identifiers in param positions refer to fixed types,
+lowercase to parameter bindings.  After the ctor-propagation
+fix, the user observed: **no longer needed**.  The
+already-implemented `(P : K)` kind-annotated-param syntax
+handles "P inhabits the fixed type K" explicitly; the parser
+doesn't need to guess from the lexical case.  Bare params
+remain variables in all positions, consistent with Haskell's
+convention.
 
-Worth doing.  Queued for a future arc.
+Dropped from the queue.
 
 ### Status snapshot at PLAN.md compaction
 
