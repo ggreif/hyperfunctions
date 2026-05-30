@@ -46,11 +46,23 @@ import Text.Megaparsec (errorBundlePretty)
 tests :: [(String, IO Bool)]
 tests =
   -- --- Reachable today -------------------------------------------
-  [ accepts "GADT sketch: parametric Fin (no result refinement)"
+  --
+  -- WARNING — none of these are 'real' GADTs.  The parametric
+  -- variants below have the same ctor /names/ as Fin / Expr but
+  -- LACK both arrow-kinded data declarations (e.g. @data Fin :
+  -- Nat -> *@) and per-ctor result-type refinement.  Real Fin
+  -- needs @FZ : Fin (S n)@ and @FS : Fin n -> Fin (S n)@ — each
+  -- ctor's result is the parent applied to a /specific/ index
+  -- that may differ from other ctors.  The fakes here have
+  -- @FZ : Fin n@ for ANY n (so @Fin Z@, which should be empty,
+  -- is inhabited).  Kept as 'baseline shape' tests for when the
+  -- real GADT machinery lands; renamed to make the falseness
+  -- explicit.
+  [ accepts "GADT sketch: fake-Fin (parametric, NOT a real GADT — no result refinement)"
       "data Nat : *0 { Z : Nat; S : Nat -> Nat };\
       \data Fin n : *0 { FZ : Fin n; FS : Fin n -> Fin n }"
       ["FZ", "FS", "Z", "S"]
-  , accepts "GADT sketch: parametric Expr (typed-AST baseline)"
+  , accepts "GADT sketch: fake-Expr (parametric, NOT a real typed-AST GADT)"
       "data Expr a : *0 { Lit : a -> Expr a; App : Expr a -> Expr a -> Expr a }"
       ["Lit", "App"]
   , accepts "GADT sketch: Iso flat (Weird-style; all ctors : Iso)"
@@ -87,18 +99,52 @@ tests =
       "data Swap : Swap { Left : Right; Right : Left }"
       (Unbound "Right")
 
-  -- --- Blocked by GADT result-type refinement --------------------
+  -- --- Doubly blocked: arrow-kinded data + GADT refinement ------
   --
-  -- True 'Fin' has @FZ : Fin (S n)@ and @FS : Fin n -> Fin (S n)@,
-  -- where each ctor's result type is the parent's tycon applied to
-  -- a /specific/ index that may differ from other ctors.  Today
-  -- ctorDecl just stores the parsed annotation verbatim — there's
-  -- no machinery to enforce 'each ctor returns the parent tycon
-  -- with the right number of arguments' nor to refine the index
-  -- inside a pattern match arm.  When refinement-aware meet lands
-  -- (the bind-direction guard via TyProc-meta identity, prepared
-  -- by the TyView → TyProc lift in v0.1.0), these examples will
-  -- start to make semantic sense.
+  -- Real Fin / Expr / Vec aren't even parseable today; they need
+  -- two orthogonal features beyond mutual references:
+  --
+  -- 1. **Arrow-kinded data declarations.**  Real Fin is declared
+  --    @data Fin : Nat -> *0 where ...@ — its kind is an arrow,
+  --    not a flat universe.  Today the kind-annotation grammar
+  --    only accepts @*n@, @∀l. *(l + k)@, or a self-referential
+  --    'TyConRef'.  Adding arrow kinds requires both parser
+  --    surface (post-':' expression grammar gains '->'-shapes)
+  --    and elaborator semantics (HypLinf's predLv treatment of
+  --    arrow-kinded data; HypTinf / HypTwr's view of an
+  --    arrow-kinded parent for kind coherence).
+  --
+  -- 2. **Per-ctor result-type refinement.**  Real Fin's @FZ : Fin
+  --    (S n)@ has a result type that DIFFERS from the parent
+  --    declaration's name applied to its formal parameters.
+  --    Today ctorDecl just stores the parsed annotation verbatim;
+  --    there's no machinery to enforce "ctor returns the parent
+  --    tycon with the right number of arguments" /nor/ to refine
+  --    the index inside a pattern-match arm.  Refinement-aware
+  --    meet (the bind-direction guard via TyProc-meta identity,
+  --    prepared by the v0.1.0 TyView → TyProc lift) is the
+  --    substrate; the elaborator-side work is the per-arm scope
+  --    where the refinement applies.
+  --
+  -- Sketches of what real Fin / Expr would look like (NOT
+  -- runnable today; here for forward documentation):
+  --
+  --     data Fin : Nat -> *0 where
+  --       FZ : Fin (S n)
+  --       FS : Fin n -> Fin (S n)
+  --
+  --     data Expr : *0 -> *0 where
+  --       Lit  : Int  -> Expr Int
+  --       If   : Expr Bool -> Expr a -> Expr a -> Expr a
+  --       App  : Expr (a -> b) -> Expr a -> Expr b
+  --
+  --     data (~) : forall l. *l -> *l -> *l where
+  --       Refl : a ~ a
+  --
+  -- All three drop into place once arrow-kinded data + per-ctor
+  -- result refinement lands, with no further Tower-level
+  -- accommodations needed (the refinement-vs-existential
+  -- distinction is already operational through TyProc identity).
   ]
 
 -- | Helper: parse + elaborate end-to-end via HypLinf → HypTwr; assert
