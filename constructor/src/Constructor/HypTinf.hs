@@ -59,15 +59,24 @@ data HypTinfVal (s :: Sort) where
 -- | No 'Show' — 'TyProc' / 'Subst' contain function values.
 data HypTinfEnv = HypTinfEnv
   { hypEnvDataTypes :: !(Map Name Int)
+    -- ^ Declared tycon → arity (parameter count).
+  , hypEnvKindEnv   :: !(Map Name TyProc)
+    -- ^ Declared tycon → kind annotation (the @K@ in @data X : K@),
+    --   captured by elaborating the annotation through 'HypTinf'.
+    --   Consumed by 'Constructor.Tower.kindOf' when unfolding the
+    --   vertical of a Tower.
   , hypEnvCtors     :: !(Map Name TyProc)
   , hypEnvSubst     :: !Subst
   }
 
 emptyHypTinfEnv :: HypTinfEnv
-emptyHypTinfEnv = HypTinfEnv Map.empty Map.empty emptySubst
+emptyHypTinfEnv = HypTinfEnv Map.empty Map.empty Map.empty emptySubst
 
 data HypTinfResult = HypTinfResult
   { hypTinfDataTypes :: !(Map Name Int)
+  , hypTinfKindEnv   :: !(Map Name TyProc)
+    -- ^ Kind annotations, indexed by declared tycon name.  Fed to
+    --   'Constructor.Tower.liftTower' to produce kind-aware Towers.
   , hypTinfCtors     :: !(Map Name TyProc)
   , hypTinfSubst     :: !Subst
   }
@@ -89,7 +98,11 @@ newtype HypTinf (a :: Sort -> Type) (s :: Sort) = HypTinf
 hypTinfProgram :: HypTinf a 'SProg -> Either TyErr HypTinfResult
 hypTinfProgram p = do
   (_, env) <- runHypTinf p emptyHypTinfEnv
-  pure (HypTinfResult (hypEnvDataTypes env) (hypEnvCtors env) (hypEnvSubst env))
+  pure (HypTinfResult
+          (hypEnvDataTypes env)
+          (hypEnvKindEnv env)
+          (hypEnvCtors env)
+          (hypEnvSubst env))
 
 -- | Project the 'TyProc' out of an 'SExpr' carrier value.
 exprProc :: HypTinfVal 'SExpr -> TyProc
@@ -137,12 +150,18 @@ instance Lang HypTinf where
     env' <- threadDecls ds env
     pure (HypTinfProg, env')
 
-  dataDecl _ann name params _e ds = HypTinf $ \env ->
+  dataDecl _ann name params e ds = HypTinf $ \env ->
     case Map.lookup name (hypEnvDataTypes env) of
       Just _  -> Left (TyDuplicateType name)
       Nothing -> do
-        let env1 = env
-              { hypEnvDataTypes = Map.insert name (length params) (hypEnvDataTypes env) }
+        -- Elaborate the kind annotation now so we have a TyProc to
+        -- store; consumed by Constructor.Tower.kindOf later.
+        (eVal, env0) <- runHypTinf e env
+        let kindProc = exprProc eVal
+            env1 = env0
+              { hypEnvDataTypes = Map.insert name (length params) (hypEnvDataTypes env0)
+              , hypEnvKindEnv   = Map.insert name kindProc        (hypEnvKindEnv env0)
+              }
         env2 <- threadDecls ds env1
         pure (HypTinfDecl Nothing, env2)
 

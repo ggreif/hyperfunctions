@@ -35,7 +35,9 @@ import Constructor.Parser (parseProgram)
 import Constructor.Path (Path (..), PathStep (..))
 import Constructor.Tower
   ( climb
+  , emptyKindEnv
   , horizontal
+  , kindOf
   , liftTower
   , projectFirstRung
   , universeStream
@@ -52,19 +54,19 @@ tests =
   [ ( "Tower: projectFirstRung (liftTower _ p) ≡ procToTy p — nullary case"
     , let boolP = Path [PsProgDecl 0]
           ty    = TyCon "Bool" boolP
-          tw    = liftTower (S Z) (tyToProc ty)
+          tw    = liftTower emptyKindEnv (tyToProc ty)
       in expectEq (projectFirstRung tw) ty
     )
   , ( "Tower: projectFirstRung — compound case (List Nat)"
     , let listP = Path [PsProgDecl 0]
           natP  = Path [PsProgDecl 1]
           ty    = TyApp (TyCon "List" listP) (TyCon "Nat" natP)
-          tw    = liftTower (S Z) (tyToProc ty)
+          tw    = liftTower emptyKindEnv (tyToProc ty)
       in expectEq (projectFirstRung tw) ty
     )
   , ( "Tower: vertical stream above Bool — *0, *1, *2"
     , let boolP = Path [PsProgDecl 0]
-          tw    = liftTower (S Z) (tyToProc (TyCon "Bool" boolP))
+          tw    = liftTower emptyKindEnv (tyToProc (TyCon "Bool" boolP))
           rung1 = viewToTy (horizontal (climb tw))
           rung2 = viewToTy (horizontal (climb (climb tw)))
           rung3 = viewToTy (horizontal (climb (climb (climb tw))))
@@ -121,8 +123,11 @@ tests =
                ok1 <- expectEq materialised want
                -- Tower lift parity: ctors are non-parametric (no
                -- metas), so projectFirstRung agrees with materialize.
+               -- liftTower now consumes the kind env produced by
+               -- HypTinf's elaboration of each data's kind annotation.
                let procs = hypTinfCtors r
-                   towers = Map.map (liftTower (S (S Z))) procs
+                   env_  = hypTinfKindEnv r
+                   towers = Map.map (liftTower env_) procs
                    projected = Map.map projectFirstRung towers
                ok2 <- expectEq projected want
                pure (ok1 && ok2)
@@ -146,6 +151,55 @@ tests =
       withHypTinf
         "data Type : *1 { Constr : Type; data Ty2 : *0 { Foo : Ty2 } }"
         $ \_r -> pure True
+    )
+
+    -- --- Step-2 kindOf coalgebra ----------------------------------
+  , ( "kindOf: TyUnivV lv steps to TyUnivV (S lv)"
+    , let k0 = kindOf emptyKindEnv (TyUnivV Z)
+          k1 = kindOf emptyKindEnv (TyUnivV (S Z))
+      in do
+        ok0 <- expectEq (viewToTy k0) (TyUniv (S Z))
+        ok1 <- expectEq (viewToTy k1) (TyUniv (S (S Z)))
+        pure (ok0 && ok1)
+    )
+  , ( "kindOf: TyConV in env returns its declared kind annotation"
+    , -- For data Type : *1 { … }, kindOf (TyConV \"Type\" typeP)
+      -- under the elaborated env should give TyUnivV (Lv of *1) = *1
+      -- (i.e. S(S(S Z))).  We exercise via end-to-end HypTinf.
+      withHypTinf
+        "data Type : *1 { Constr : Type }"
+        $ \r ->
+          let typeP = Path [PsProgDecl 0]
+              k     = kindOf (hypTinfKindEnv r) (TyConV "Type" typeP)
+          in expectEq (viewToTy k) (TyUniv (S (S (S Z))))
+    )
+  , ( "kindOf: well-kinded vs ill-kinded Ty2 — rung-1 divergence \
+       \(future step-3 catches this)"
+    , -- Demonstrate the property step 3 will exploit: the two Ty2
+      -- declarations produce kind-towers that differ at rung 1.
+      -- This test passes today (no rejection), but the divergence
+      -- IS observable now via kindOf.
+      withHypTinf
+        "data Type : *1 { Constr : Type; data Ty2 : Type { Foo : Ty2 } }"
+        $ \rWK -> withHypTinf
+          "data Type : *1 { Constr : Type; data Ty2 : *0 { Foo : Ty2 } }"
+          $ \rIK ->
+            let ty2P = Path [PsProgDecl 0, PsDeclIdx 1]
+                ty2V = TyConV "Ty2" ty2P
+                wkK  = kindOf (hypTinfKindEnv rWK) ty2V  -- expects: TyConV "Type"
+                ikK  = kindOf (hypTinfKindEnv rIK) ty2V  -- expects: TyUnivV *0
+            in do
+              -- Well-kinded: rung 1 is TyConV "Type"
+              ok1 <- expectEq (viewToTy wkK)
+                       (TyCon "Type" (Path [PsProgDecl 0]))
+              -- Ill-kinded: rung 1 is TyUnivV *0
+              ok2 <- expectEq (viewToTy ikK)
+                       (TyUniv (S (S Z)))
+              -- They differ.  Step 3 will reject the ill-kinded case
+              -- because rung 1 of Ty2's kind-tower doesn't match
+              -- rung 1 of (the parent body's expected kind for its
+              -- members).  Today we just observe the divergence.
+              pure (ok1 && ok2)
     )
   ]
 
