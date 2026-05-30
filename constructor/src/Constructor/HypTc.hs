@@ -133,9 +133,26 @@ instance Lang HypTc where
     ln <- maybe (Left (DataAnnotationTooLow n le)) Right (predLv le)
     let procN = hPure ln
     env2 <- bind n procN (env1 { hypEnvParent = Just procN })
-    (polys, env3) <- threadDecls ds env2
+    -- Bind each parameter to the data's level for the body's scope.
+    -- Save the prior binding for each param name so it doesn't leak
+    -- out after the body — different decls reuse the same surface
+    -- name ('a' in @data Box a@ and @data Bag a@) without clashing.
+    let savedBindings = [(p, Map.lookup p (hypEnvNames env2)) | p <- params]
+        paramEnv = env2
+          { hypEnvNames =
+              Map.union (Map.fromList [(p, procN) | p <- params])
+                        (hypEnvNames env2)
+          }
+    (polys, env3) <- threadDecls ds paramEnv
+    let restoredNames =
+          foldr (\(p, mOrig) m -> case mOrig of
+                   Nothing -> Map.delete p m
+                   Just v  -> Map.insert p v m)
+                (hypEnvNames env3) savedBindings
     pure ( HypVDecl procN
-         , env3 { hypEnvParent = hypEnvParent env1 }
+         , env3 { hypEnvParent = hypEnvParent env1
+                , hypEnvNames  = restoredNames
+                }
          , dataDecl (LvADecl ln) declPath n params polyE polys
          )
 
@@ -159,9 +176,40 @@ instance Lang HypTc where
       in Right (HypVExpr proc, env, var (LvAExpr lv) x)
     Nothing -> Left (Unbound x)
 
-  -- Hyperfunction-driven level inference ignores the def-path; the
-  -- level-process for a binder is keyed by name in 'hypEnvNames'.
-  tyConRef ann n _path = var ann n
+  -- Look the tycon up by name (level inference ignores the def-path
+  -- internally — bindings live in 'hypEnvNames'), but the polymorphic
+  -- LvAnnot-decorated output preserves the path so downstream
+  -- consumers (HypTinf) can route to their own 'tyConRef' rather
+  -- than to 'var'.
+  tyConRef _ann n path = HypTc $ \env -> case Map.lookup n (hypEnvNames env) of
+    Just proc ->
+      let lv = hRun proc
+      in Right (HypVExpr proc, env, tyConRef (LvAExpr lv) n path)
+    Nothing -> Left (Unbound n)
+
+  -- Parameter uses look the param up by name (just like tyConRef),
+  -- and likewise re-emit the path in the polymorphic output for
+  -- downstream Stern-Gerlach disambiguation.
+  tyParamRef _ann n path = HypTc $ \env -> case Map.lookup n (hypEnvNames env) of
+    Just proc ->
+      let lv = hRun proc
+      in Right (HypVExpr proc, env, tyParamRef (LvAExpr lv) n path)
+    Nothing -> Left (Unbound n)
+
+  -- Homogeneous application: f and x must inhabit the same fibre.
+  -- The application's level is f's level (= x's by the check).
+  app _ann appPath f x = HypTc $ \env -> do
+    (vf, env1, polyF) <- runHypTc f env
+    (vx, env2, polyX) <- runHypTc x env1
+    let procF = hypExprProc vf
+        procX = hypExprProc vx
+        lvF   = hRun procF
+        lvX   = hRun procX
+    if lvF /= lvX
+      then Left (LevelTear lvF lvX)
+      else
+        let lv = lvF
+        in Right (HypVExpr procF, env2, app (LvAExpr lv) appPath polyF polyX)
 
   star _ann w = HypTc $ \env -> do
     let lv   = starLevel w

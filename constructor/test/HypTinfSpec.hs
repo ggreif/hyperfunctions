@@ -16,6 +16,7 @@
 --   commit-5's unifier rewires processes).
 module HypTinfSpec (tests) where
 
+import Constructor.HypTc (HypTc, hypRunWith)
 import Constructor.HypTinf
   ( HypTinf
   , HypTinfResult (..)
@@ -49,34 +50,43 @@ tests =
 parity :: String -> Text -> (String, IO Bool)
 parity name src = (name, go)
   where
+    -- B side is now the sequenced pipeline:
+    -- parser → HypTc (level inference) → HypTinf (type inference).
+    -- HypTc emits a polymorphic 'r LvAnnot s' third tuple slot which
+    -- 'hypRunWith @HypTinf' specialises at the HypTinf carrier to
+    -- yield a 'HypTinf LvAnnot 'SProg' term; that term is then run
+    -- by 'hypTinfProgram' to extract the type-inference result.
     go = case parseProgram @Tinf @(Const ()) name src of
       Left e -> reportFail (errorBundlePretty e)
-      Right pA -> case parseProgram @HypTinf @(Const ()) name src of
+      Right pA -> case parseProgram @HypTc @(Const ()) name src of
         Left e -> reportFail (errorBundlePretty e)
-        Right pB -> case (tinfProgram pA, hypTinfProgram pB) of
-          (Left ea, Left eb)
-            | ea == eb  -> pure True
-            | otherwise -> reportFail $
-                "errors disagree:\n  A: " <> show ea <> "\n  B: " <> show eb
-          (Left ea, Right _) -> reportFail $
-            "A errored but B succeeded; A error: " <> show ea
-          (Right _, Left eb) -> reportFail $
-            "B errored but A succeeded; B error: " <> show eb
-          (Right rA, Right rB) ->
-            let dataA = tyResultDataTypes rA
-                ctorA = tyResultCtors rA
-                dataB = hypTinfDataTypes rB
-            in case hypTinfCtorTypes rB of
-              Left err -> reportFail $
-                "B failed to materialize ctor types: " <> show err
-              Right ctorB
-                | dataA == dataB && ctorA == ctorB -> pure True
-                | otherwise -> reportFail $
-                    "results disagree:\n" <>
-                    "  A dataTypes: " <> show dataA <> "\n" <>
-                    "  B dataTypes: " <> show dataB <> "\n" <>
-                    "  A ctors:     " <> show ctorA <> "\n" <>
-                    "  B ctors:     " <> show ctorB
+        Right pHypTc -> case hypRunWith @HypTinf pHypTc of
+          Left lvErr -> reportFail $
+            "B-side level inference failed: " <> show lvErr
+          Right (_, pB) -> case (tinfProgram pA, hypTinfProgram pB) of
+            (Left ea, Left eb)
+              | ea == eb  -> pure True
+              | otherwise -> reportFail $
+                  "errors disagree:\n  A: " <> show ea <> "\n  B: " <> show eb
+            (Left ea, Right _) -> reportFail $
+              "A errored but B succeeded; A error: " <> show ea
+            (Right _, Left eb) -> reportFail $
+              "B errored but A succeeded; B error: " <> show eb
+            (Right rA, Right rB) ->
+              let dataA = tyResultDataTypes rA
+                  ctorA = tyResultCtors rA
+                  dataB = hypTinfDataTypes rB
+              in case hypTinfCtorTypes rB of
+                Left err -> reportFail $
+                  "B failed to materialize ctor types: " <> show err
+                Right ctorB
+                  | dataA == dataB && ctorA == ctorB -> pure True
+                  | otherwise -> reportFail $
+                      "results disagree:\n" <>
+                      "  A dataTypes: " <> show dataA <> "\n" <>
+                      "  B dataTypes: " <> show dataB <> "\n" <>
+                      "  A ctors:     " <> show ctorA <> "\n" <>
+                      "  B ctors:     " <> show ctorB
 
 reportFail :: String -> IO Bool
 reportFail msg = putStrLn ("    " <> msg) >> pure False

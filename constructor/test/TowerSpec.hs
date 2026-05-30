@@ -22,6 +22,7 @@
 --     Ty2's annotation tower and the parent's TyConV-tower.
 module TowerSpec (tests) where
 
+import Constructor.HypTc (HypTc, hypRunWith)
 import Constructor.HypTinf
   ( HypTinf
   , HypTinfResult (..)
@@ -188,15 +189,22 @@ tests =
     )
   ]
 
--- | Parse a source program through the 'HypTinf' carrier and pass
---   the resulting 'HypTinfResult' to a continuation.  Reports parse
---   or elaboration failures as test failures.
+-- | Pipeline: parser → 'HypTc' (level inference, producing a
+--   polymorphic LvAnnot-decorated term) → 'HypTinf' (type
+--   inference, fed by the LvAnnot input) → 'HypTinfResult'.
+--
+--   This sequencing replaces the older parallel architecture
+--   (each carrier consumed the parser directly) with a typed
+--   dependency: 'HypTinf' now receives level-annotated input from
+--   'HypTc' via the impredicative third slot of 'runHypTc'.
 withHypTinf :: Text -> (HypTinfResult -> IO Bool) -> IO Bool
-withHypTinf src k = case parseProgram @HypTinf @(Const ()) "<tower>" src of
-  Left e -> reportFail $ "parse error: " <> errorBundlePretty e
-  Right p -> case hypTinfProgram p of
-    Left err -> reportFail $ "elaboration error: " <> show err
-    Right r  -> k r
+withHypTinf src k = case parseProgram @HypTc @(Const ()) "<tower>" src of
+  Left e  -> reportFail $ "parse error: " <> errorBundlePretty e
+  Right p -> case hypRunWith @HypTinf p of
+    Left lvErr -> reportFail $ "level inference error: " <> show lvErr
+    Right (_, pTinf) -> case hypTinfProgram pTinf of
+      Left err -> reportFail $ "type inference error: " <> show err
+      Right r  -> k r
 
 expectEq :: (Eq a, Show a) => a -> a -> IO Bool
 expectEq got want
@@ -210,16 +218,18 @@ expectEq got want
 --   rejects an ill-kinded mutant with the right shape.
 expectKindMismatch :: Text -> TyExpr -> TyExpr -> IO Bool
 expectKindMismatch src wantMember wantParent =
-  case parseProgram @HypTinf @(Const ()) "<tower-mismatch>" src of
+  case parseProgram @HypTc @(Const ()) "<tower-mismatch>" src of
     Left e -> reportFail $ "parse error: " <> errorBundlePretty e
-    Right p -> case hypTinfProgram p of
-      Left (TyMismatch m k)
-        | m == wantMember && k == wantParent -> pure True
-        | otherwise -> reportFail $
-            "expected TyMismatch " <> show wantMember <> " " <> show wantParent
-            <> "\n  got: TyMismatch " <> show m <> " " <> show k
-      Left err -> reportFail $ "expected TyMismatch, got: " <> show err
-      Right _  -> reportFail "expected elaboration failure, but it succeeded"
+    Right p -> case hypRunWith @HypTinf p of
+      Left lvErr -> reportFail $ "level inference error: " <> show lvErr
+      Right (_, pTinf) -> case hypTinfProgram pTinf of
+        Left (TyMismatch m k)
+          | m == wantMember && k == wantParent -> pure True
+          | otherwise -> reportFail $
+              "expected TyMismatch " <> show wantMember <> " " <> show wantParent
+              <> "\n  got: TyMismatch " <> show m <> " " <> show k
+        Left err -> reportFail $ "expected TyMismatch, got: " <> show err
+        Right _  -> reportFail "expected elaboration failure, but it succeeded"
 
 reportFail :: String -> IO Bool
 reportFail msg = putStrLn ("    " <> msg) >> pure False
