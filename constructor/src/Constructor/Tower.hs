@@ -43,6 +43,8 @@ module Constructor.Tower
     -- * Coinductive comparison + unification
   , compareTowers
   , meetTowers
+    -- * Occurs check
+  , towerOccurs
   ) where
 
 import Constructor.HyperLite (hPure, hRun)
@@ -51,11 +53,13 @@ import Constructor.Syntax (Name)
 import Constructor.Tinf (TyErr (..))
 import Constructor.TyExpr (TyExpr)
 import Constructor.TyProc
-  ( Subst
+  ( MetaId (..)
+  , Subst
   , TyProc
   , TyView (..)
   , emptySubst
   , meet
+  , occurs
   , resolveView
   , viewToTy
   )
@@ -250,11 +254,59 @@ meetTowers env = go
       | TyConV n1 p1 o1 <- h1_, TyConV n2 p2 o2 <- h2_
       , n1 == n2 && p1 == p2 && o1 == o2 = Right s
       | otherwise                        = do
+          -- Tower-aware occurs check before binding: if one side is
+          -- a (post-resolve) meta and the other side's upward tower
+          -- mentions the same meta at any rung, refuse the binding.
+          -- Structural occurs alone (inside 'meet') would miss the
+          -- case where the meta is horizontally absent at rung 0 but
+          -- reachable through 'kindOf' on the head.
+          () <- towerOccursGuard s h1_ h2_
+          () <- towerOccursGuard s h2_ h1_
           s' <- meet s (hPure h1) (hPure h2)
           step s' (kindOf s' env h1) (kindOf s' env h2)
       where
         h1_ = resolveView s h1
         h2_ = resolveView s h2
+
+    towerOccursGuard s metaSide otherSide = case metaSide of
+      TyMetaV m@(MetaId bp up)
+        | towerOccurs env s m otherSide -> Left (TyTowerOccurs bp up)
+      _ -> Right ()
+
+-- | Tower-aware occurs check: would walking the upward tower of @v@
+--   (under the given 'Subst' and 'KindEnv') ever produce a rung
+--   whose horizontal mentions 'MetaId' @m@?  The walk does structural
+--   occurs at each rung (catching @m@ inside 'TyAppV' / 'TyArrV'
+--   children at that rung) and climbs via 'kindOf' until a stable
+--   tail is reached:
+--
+--     * 'TyUnivV' tail — universe ladder, can't reintroduce @m@;
+--       safe to stop.
+--     * 'TyConV' tail at offset > 0 — the Weird-style self-
+--       stratification; the upper rungs are productive codata with
+--       no further meta exposure.  Safe to stop once we observe
+--       offset > 0 (the rung-0 structural check already cleared the
+--       offset-0 case for this name).
+--     * 'TyMetaV' tail — if the meta /is/ @m@, occurs hits; if it's
+--       a different meta, the tower past it is opaque (we can't
+--       know what binding will arise later) — conservatively report
+--       no occurrence, matching the standard occurs check's
+--       behaviour at non-matching metas.
+towerOccurs :: KindEnv -> Subst -> MetaId -> TyView -> Bool
+towerOccurs env s m = go
+  where
+    go v0 = case resolveView s v0 of
+      v | occurs s m v -> True
+      -- Stable tails: keep climbing only past TyConV at offset 0
+      -- (the very first rung); offsets > 0 mean we've entered the
+      -- productive self-stratification stream and won't re-encounter
+      -- a fresh meta.
+      TyConV _ _ off
+        | off /= Z -> False
+        | otherwise -> go (kindOf s env v0)
+      TyUnivV _ -> False
+      TyMetaV _ -> False   -- already covered by 'occurs s m v' guard above
+      _ -> go (kindOf s env v0)
 
 -- | Coinductive comparison: 'meetTowers' under the empty kind-env
 --   and empty substitution, discarding the resulting 'Subst'.

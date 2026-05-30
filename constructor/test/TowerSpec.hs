@@ -22,6 +22,7 @@
 --     Ty2's annotation tower and the parent's TyConV-tower.
 module TowerSpec (tests) where
 
+import Constructor.HyperLite (hPure)
 import Constructor.HypLinf (HypLinf, hypLinfRunWith)
 import Constructor.HypTinf
   ( HypTinf
@@ -300,6 +301,48 @@ tests =
           -- documents what the closed square looks like.)
           want    = TyUniv (S (S Z))
       in expectEq (viewToTy climbed) want
+    )
+    -- --- Tower-aware occurs check ----------------------------------
+  , ( "Tower occurs: meet meta against tycon whose kind is the same meta"
+    , -- Setup: a synthetic KindEnv where "X" : m (its kind
+      -- annotation is the meta itself).  Trying to bind m := X
+      -- would create a cycle through the typing tower —
+      -- X : m = X : X — caught only by the tower-aware extension:
+      -- structural occurs on TyConV "X" finds no m (no children),
+      -- but walking X's tower under the env brings m back at rung
+      -- 1 via 'kindOf'.
+      let xP = Path [PsProgDecl 0]
+          mBinderPath = Path [PsProgDecl 0, PsDataParam 0]
+          mUsePath    = Path [PsProgDecl 1]
+          mId = MetaId mBinderPath mUsePath
+          env_ = Map.fromList
+                   [ ("X", hPure (TyMetaV mId)) ]   -- X's kind annotation IS m
+          metaTower = towerOfView emptySubst env_ (TyMetaV mId)
+          xTower    = towerOfView emptySubst env_ (TyConV "X" xP Z)
+      in case meetTowers env_ emptySubst metaTower xTower of
+        Left (TyTowerOccurs bp' up')
+          | bp' == mBinderPath && up' == mUsePath -> pure True
+          | otherwise -> reportFail $
+              "TyTowerOccurs path mismatch: got bp=" <> show bp' <>
+              " up=" <> show up'
+        Left err -> reportFail $
+          "expected TyTowerOccurs, got: " <> show err
+        Right _ -> reportFail
+          "expected TyTowerOccurs (binding m := X would cycle through env), got success"
+    )
+  , ( "Tower occurs: legitimate Weird-style (X : X, no meta) is NOT rejected"
+    , -- Sanity check: 'data Weird : Weird' WITHOUT a meta in the
+      -- picture must NOT trigger the tower-aware occurs check —
+      -- the productive self-stratification is fine.  Build the
+      -- Weird-tower and meet it with itself; should succeed.
+      let weirdP = Path [PsProgDecl 0]
+          env_   = Map.fromList
+                     [ ("Weird", tyToProc (TyCon "Weird" weirdP)) ]
+          tow    = towerOfView emptySubst env_ (TyConV "Weird" weirdP Z)
+      in case meetTowers env_ emptySubst tow tow of
+        Right _ -> pure True
+        Left err -> reportFail $
+          "expected success (no meta, Weird-tower is productive), got: " <> show err
     )
   , ( "kindOf: well-kinded Ty2's rung 1 is TyConV \"Type\""
     , -- The property step 3 exploits: under a well-kinded program,

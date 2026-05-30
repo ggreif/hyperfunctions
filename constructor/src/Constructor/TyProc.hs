@@ -32,6 +32,7 @@ module Constructor.TyProc
   , emptySubst
   , mkMeta
   , meet
+  , occurs
   , materialize
   , resolveView
   ) where
@@ -155,8 +156,10 @@ resolveView s v0 = case v0 of
 --     chases through.
 --   * Meta ≡ same meta: no-op (the binding is already implicit).
 --
---   No occurs check yet; cyclic metas would loop 'materialize'.  A
---   later commit lands the standard guard.
+--   Structural occurs check: before binding @m := v@, refuses if @v@
+--   transitively (via 'Subst' chasing and recursion into 'TyAppV' /
+--   'TyArrV' children) contains @m@.  Without this guard,
+--   'materialize' would loop on the cyclic substitution.
 meet :: Subst -> TyProc -> TyProc -> Either TyErr Subst
 meet s p1 p2 = meetView s (resolveView s (hRun p1)) (resolveView s (hRun p2))
   where
@@ -164,8 +167,8 @@ meet s p1 p2 = meetView s (resolveView s (hRun p1)) (resolveView s (hRun p2))
       (TyMetaV m1, TyMetaV m2)
         | m1 == m2  -> Right s'
         | otherwise -> Right (Map.insert m1 (TyMetaV m2) s')
-      (TyMetaV m, v) -> Right (Map.insert m v s')
-      (v, TyMetaV m) -> Right (Map.insert m v s')
+      (TyMetaV m, v) -> bind s' m v
+      (v, TyMetaV m) -> bind s' m v
       (TyConV n1 p1' o1, TyConV n2 p2' o2)
         | n1 == n2 && p1' == p2' && o1 == o2 -> Right s'
       (TyVarV n1 p1', TyVarV n2 p2')
@@ -179,6 +182,22 @@ meet s p1 p2 = meetView s (resolveView s (hRun p1)) (resolveView s (hRun p2))
       (TyUnivV l1, TyUnivV l2)
         | l1 == l2 -> Right s'
       _ -> Left (TyMismatch (viewToTy v1) (viewToTy v2))
+
+    bind s' m@(MetaId bp up) v
+      | occurs s' m v = Left (TyOccursCheck bp up)
+      | otherwise     = Right (Map.insert m v s')
+
+-- | Structural occurs check: does 'MetaId' @m@ appear anywhere in @v@
+--   (or transitively through 'Subst' chasing and recursion into
+--   'TyAppV' / 'TyArrV' children)?  The standard Robinson guard.
+occurs :: Subst -> MetaId -> TyView -> Bool
+occurs s m v0 = case resolveView s v0 of
+  TyMetaV m'  -> m == m'
+  TyAppV f x  -> occurs s m (hRun f) || occurs s m (hRun x)
+  TyArrV a b  -> occurs s m (hRun a) || occurs s m (hRun b)
+  TyConV{}    -> False
+  TyVarV{}    -> False
+  TyUnivV{}   -> False
 
 -- | Walk a 'TyProc' web under a 'Subst', producing a syntactic
 --   'TyExpr'.  Bound metavariables are followed through the

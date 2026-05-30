@@ -612,6 +612,34 @@ The arc proper is now complete.  Two follow-ups sit at the seam:
   the A-side analog of the TyConV offset — present since v0
   anticipating exactly this move.
 
+- **Tower-aware occurs check (landed).**  Two layers:
+    - **Structural occurs in 'TyProc.meet'.**  Before binding @m
+      := v@, 'meet' calls 'occurs s m v' which walks @v@'s
+      structure (chasing 'Subst' through 'resolveView' and
+      recursing into 'TyAppV' / 'TyArrV' children).  Returns
+      'TyOccursCheck bp up' on a hit.  Catches the classical
+      Robinson cases (@m := List m@, @m := Nat -> m@, transitive
+      cycles via prior bindings).
+    - **Tower-occurs guard in 'meetTowers'.**  Before each meet
+      step's delegate to 'TyProc.meet', if one side resolves to
+      a 'TyMetaV' @m@ and the other side's upward tower
+      (regenerated via 'kindOf s env' until a stable tail or a
+      hit) mentions @m@ at any rung, the binding is refused with
+      'TyTowerOccurs bp up'.  Catches the cases structural
+      misses — @m@ horizontally absent at rung 0 but reachable
+      through the type's kind chain (e.g. @data X : m@ where
+      the kind annotation IS @m@; binding @m := X@ would close a
+      cycle through the typing tower).  The 'TyConV'-tail base
+      case ('offset > 0') stops the walk on legitimate
+      Weird-style self-stratification — the productive
+      offset-bumping stream can't re-introduce a fresh meta.
+    Five tests document both: three structural (List m, Nat -> m,
+    transitive) and two tower-aware (meta-induced cycle through
+    env caught; legitimate Weird-style not caught).  The
+    tower-aware test is verified load-bearing by temporarily
+    disabling the guard — the test then fails as predicted,
+    confirming the guard isn't redundant with structural occurs.
+
 - **Meta-aware vertical regeneration (landed).**  `kindOf` is now
   a natural family indexed by `Subst`: `kindOf :: Subst -> KindEnv
   -> TyView -> TyView`, internally calling 'resolveView s' before

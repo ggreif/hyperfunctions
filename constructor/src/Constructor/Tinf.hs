@@ -80,6 +80,21 @@ data TyErr
   | TyArityMismatch !Name !Int !Int
     -- ^ @TyArityMismatch tycon arity supplied@.  A parametric tycon
     --   received the wrong number of arguments at a use site.
+  | TyOccursCheck !Path !Path
+    -- ^ Structural occurs check: would-be binding @m := v@ where @v@
+    --   contains @m@ transitively (through 'Subst' chasing and
+    --   recursion into 'TyAppV' / 'TyArrV' children).  'MetaId'
+    --   inlined as its (binder-path, use-path) pair so 'TyErr' has
+    --   no dependency on 'Constructor.TyProc'.
+  | TyTowerOccurs !Path !Path
+    -- ^ Tower-aware occurs check: would-be binding @m := v@ where
+    --   the upward tower of @v@ (regenerated under the prospective
+    --   substitution) contains @m@ at some rung — i.e., binding
+    --   @m@ would make some kind annotation in the typing tower
+    --   transitively refer back to @m@.  Catches the Weird-via-meta
+    --   shape that pure structural occurs misses (the meta is
+    --   horizontally absent at rung 0 but vertically reachable via
+    --   'kindOf').
   deriving (Eq, Show)
 
 data TyResult = TyResult

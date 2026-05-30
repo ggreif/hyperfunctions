@@ -177,6 +177,55 @@ tests =
             Left err -> reportFail $
               "materialize failed: " <> show err
     )
+    -- --- Structural occurs check ---------------------------------
+  , ( "occurs: meet m (List m) rejects as TyOccursCheck"
+    , -- The classical Robinson trap.  Binding m := List m would
+      -- produce the infinite type List (List (List …)); 'meet'
+      -- must reject before recording the binding.
+      let bp = Path [PsProgDecl 0, PsDataParam 0]
+          up = Path [PsProgDecl 3]
+          m  = mkMeta bp up
+          listM = hPure (TyAppV (tyToProc (TyCon "List" listP)) m)
+      in case meet emptySubst m listM of
+        Left (TyOccursCheck bp' up')
+          | bp' == bp && up' == up -> pure True
+          | otherwise -> reportFail $
+              "TyOccursCheck path mismatch: got bp=" <> show bp' <>
+              " up=" <> show up'
+        Left err -> reportFail $
+          "expected TyOccursCheck, got: " <> show err
+        Right _ -> reportFail
+          "expected TyOccursCheck, got success (cyclic binding accepted!)"
+    )
+  , ( "occurs: meet m (Nat -> m) rejects as TyOccursCheck (arrow path)"
+    , let bp = Path [PsProgDecl 0, PsDataParam 0]
+          up = Path [PsProgDecl 3]
+          m  = mkMeta bp up
+          natArrM = hPure (TyArrV (tyToProc (TyCon "Nat" natP)) m)
+      in case meet emptySubst m natArrM of
+        Left (TyOccursCheck _ _) -> pure True
+        Left err -> reportFail $
+          "expected TyOccursCheck, got: " <> show err
+        Right _ -> reportFail
+          "expected TyOccursCheck on Nat -> m, got success"
+    )
+  , ( "occurs: transitive — m1 already bound to (App List m2), meet m2 m1 rejects"
+    , -- After binding m1 := List m2, meeting m2 with m1 (which
+      -- resolves to List m2 via Subst) would bind m2 := List m2 —
+      -- the occurs check must chase through the Subst.
+      let bp = Path [PsProgDecl 0, PsDataParam 0]
+          m1 = mkMeta bp (Path [PsProgDecl 3])
+          m2 = mkMeta bp (Path [PsProgDecl 4])
+          listM2 = hPure (TyAppV (tyToProc (TyCon "List" listP)) m2)
+      in case meet emptySubst m1 listM2 of
+        Left err -> reportFail $ "first meet failed: " <> show err
+        Right s1 -> case meet s1 m2 m1 of
+          Left (TyOccursCheck _ _) -> pure True
+          Left err -> reportFail $
+            "expected TyOccursCheck (transitive), got: " <> show err
+          Right _ -> reportFail
+            "expected TyOccursCheck (transitive), got success"
+    )
   ]
 
 -- | Build two 'TyProc's from 'TyExpr's, unify them under
