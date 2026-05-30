@@ -8,6 +8,7 @@ import Constructor.AST (Tree (..))
 import Constructor.Parser (parseProgram)
 import Constructor.Path (Path (..), PathStep (..))
 import Constructor.Sort (Sort (..))
+import qualified GadtSketchSpec
 import qualified HypTinfSpec
 import qualified HypTwrSpec
 import qualified LevelInferSpec
@@ -47,7 +48,10 @@ main = do
   putStrLn ""
   putStrLn "HypTwr (Tower carrier) parity:"
   hypTwrOK <- mapM runInfer HypTwrSpec.tests
-  if and (parseOK ++ inferOK ++ tinfOK ++ meetOK ++ hypTinfOK ++ towerOK ++ hypTwrOK) then exitSuccess else exitFailure
+  putStrLn ""
+  putStrLn "GADT sketches:"
+  gadtOK <- mapM runInfer GadtSketchSpec.tests
+  if and (parseOK ++ inferOK ++ tinfOK ++ meetOK ++ hypTinfOK ++ towerOK ++ hypTwrOK ++ gadtOK) then exitSuccess else exitFailure
   where
     runInfer (name, go) = do
       ok <- go

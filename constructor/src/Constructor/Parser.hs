@@ -232,7 +232,16 @@ decl path binders = dataD <|> ctorD
       n      <- identifier
       params <- many identifier  -- zero-or-more parameter names
       void (symbol ":")
-      e   <- expr (extendPath PsDataAnn path) binders
+      -- Pre-extend the binders with @n@ BEFORE parsing the kind
+      -- annotation, so a self-referential annotation (the @data
+      -- Weird : Weird@ shape) resolves the inner @n@ to a
+      -- 'tyConRef' rather than a generic 'var'.  Downstream
+      -- carriers (HypTinf, HypTwr) have no 'var' lookup table; an
+      -- un-pre-bound annotation would mask the self-reference at
+      -- parse time as 'Var "Weird"' and then fail with TyUnbound
+      -- when the polymorphic re-emit reaches the type layer.
+      let annBinders = extendTc n path binders
+      e   <- expr (extendPath PsDataAnn path) annBinders
       -- Inside the data body, the outer ∀-scope does NOT carry over,
       -- but: the data's own type parameters DO (scoped over each
       -- constructor's type), the data binder itself DOES (so

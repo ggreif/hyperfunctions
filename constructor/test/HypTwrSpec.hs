@@ -56,28 +56,25 @@ tests =
 parity :: String -> Text -> (String, IO Bool)
 parity name src = (name, go)
   where
+    -- These are POSITIVE parity tests — both carriers must accept
+    -- the program AND extract identical ctor / data maps.  Parity-
+    -- on-failure ('both fail with the same error') would have been
+    -- a false positive: it would pass even when the program isn't
+    -- actually being elaborated.  See the early-Weird test, which
+    -- looked green because both HypTinf and HypTwr produced
+    -- @TyUnbound "Weird"@ before the parser scope-fix landed.
     go = case parseProgram @HypLinf @(Const ()) name src of
       Left e -> reportFail (errorBundlePretty e)
       Right pHypLinf -> case (runHypTinf pHypLinf, runHypTwr pHypLinf) of
-        (Left lvA, Left lvB)
-          | lvA == lvB -> pure True
-          | otherwise -> reportFail $
-              "level errors disagree:\n  HypTinf path: " <> show lvA
-              <> "\n  HypTwr path:  " <> show lvB
-        (Left lvA, Right _) -> reportFail $
-          "HypTinf path level-errored but HypTwr path succeeded: " <> show lvA
-        (Right _, Left lvB) -> reportFail $
-          "HypTwr path level-errored but HypTinf path succeeded: " <> show lvB
+        (Left lvA, _) -> reportFail $
+          "HypTinf path failed at the level layer: " <> show lvA
+        (_, Left lvB) -> reportFail $
+          "HypTwr path failed at the level layer: " <> show lvB
         (Right rA, Right rB) -> case (rA, rB) of
-          (Left ea, Left eb)
-            | ea == eb  -> pure True
-            | otherwise -> reportFail $
-                "type errors disagree:\n  HypTinf: " <> show ea
-                <> "\n  HypTwr:  " <> show eb
-          (Left ea, Right _) -> reportFail $
-            "HypTinf errored but HypTwr succeeded: " <> show ea
-          (Right _, Left eb) -> reportFail $
-            "HypTwr errored but HypTinf succeeded: " <> show eb
+          (Left ea, _) -> reportFail $
+            "HypTinf type elaboration failed: " <> show ea
+          (_, Left eb) -> reportFail $
+            "HypTwr type elaboration failed: " <> show eb
           (Right (ctA, dataA), Right (ctB, dataB))
             | ctA == ctB && dataA == dataB -> pure True
             | otherwise -> reportFail $

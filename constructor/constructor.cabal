@@ -66,6 +66,7 @@ test-suite constructor-test
     HypTinfSpec
     HypTwrSpec
     TowerSpec
+    GadtSketchSpec
   build-depends:
     , base
     , constructor
