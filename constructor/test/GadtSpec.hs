@@ -32,7 +32,7 @@
 --   section contains 'expect-rejection' tests that confirm what the
 --   error looks like today — they'll flip to 'expect-acceptance'
 --   when the corresponding feature lands.
-module GadtSketchSpec (tests) where
+module GadtSpec (tests) where
 
 import Constructor.HypLinf (HypLinf, hypLinfRunWith)
 import Constructor.HypTwr (HypTwr, HypTwrResult (..), hypTwrCtorTypes, hypTwrProgram)
