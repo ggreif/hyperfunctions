@@ -455,8 +455,45 @@ build
   :: (Lang r, HasAnn a m, MonadParsec Void Text m, MonadFail m)
   => Path -> Binders -> m (r a ('SVal 'Build))
 build path binders =
-      caseExpr path binders
+      lamExpr path binders
+  <|> caseExpr path binders
+  <|> parensApp path binders
   <|> buildHead path binders
+
+-- | Parenthesised expression at head of a build, followed by
+--   optional application chain.  Handles @(\\x -> x) T@,
+--   @(f x) y@, and similar parens-headed forms that 'buildHead'
+--   (identifier-only) doesn't accept.
+parensApp
+  :: (Lang r, HasAnn a m, MonadParsec Void Text m, MonadFail m)
+  => Path -> Binders -> m (r a ('SVal 'Build))
+parensApp path binders = do
+  headTree <- try (between (symbol "(") (symbol ")") (build path binders))
+  buildAppChain path binders headTree
+
+-- | Parse a value lambda: @\\x y z -> body@.  Multi-binder lambdas
+--   desugar at parse time to nested single-binder 'valLam's.
+--
+--   For each binder, the surface name @xᵢ@ is mapped to a path
+--   extended with 'PsLamBinder i', and the body is parsed with all
+--   binders in scope as value variables.
+lamExpr
+  :: (Lang r, HasAnn a m, MonadParsec Void Text m, MonadFail m)
+  => Path -> Binders -> m (r a ('SVal 'Build))
+lamExpr path binders = do
+  void (symbol "\\")
+  names <- some identifier
+  void (symbol "->")
+  let mkPaths = zip [0 :: Int ..] names
+      binderPaths = [ (n, extendPath (PsLamBinder i) path) | (i, n) <- mkPaths ]
+      bindersInBody = foldr (\(n, p) b -> extendValVar n p b) binders binderPaths
+  body <- build (extendPath PsLamBody path) bindersInBody
+  -- Curry: foldr (\(name, p) b -> valLam ann name p b) body binderPaths
+  foldM mkLam body (reverse binderPaths)
+  where
+    mkLam acc (n, p) = do
+      ann <- freshBuildAnn
+      pure (valLam ann n p acc)
 
 buildHead
   :: (Lang r, HasAnn a m, MonadParsec Void Text m, MonadFail m)
@@ -473,13 +510,35 @@ buildHead path binders = do
       ann  <- freshBuildAnn
       pure (valCtor ann name path args)
     Nothing -> do
-      ann <- freshBuildAnn
+      annHead <- freshBuildAnn
       -- Permissive: emit 'valVar' for any non-ctor identifier,
       -- using the binder's path if known and the current parse
       -- path otherwise.  Truly-unbound names are caught at
       -- elaboration time by HypTwr ('TyUnbound'), not here.
       let varPath = maybe path id (Map.lookup name (valVars binders))
-      pure (valVar ann name varPath)
+          headTree = valVar annHead name varPath
+      -- Haskell-style juxtaposition: greedily consume atoms as
+      -- application arguments, folding left-associatively into
+      -- nested 'valApp' nodes.
+      buildAppChain path binders headTree
+
+-- | Greedy left-associative application: @fn arg₁ arg₂ ...@ becomes
+--   @valApp (valApp (... (valApp fn arg₁) ...) argₖ₋₁) argₖ@.
+--
+--   Each successive 'valApp' descends one level via 'PsValAppFun'
+--   so sibling-argument and nested-application sites are
+--   distinguishable in their paths.
+buildAppChain
+  :: (Lang r, HasAnn a m, MonadParsec Void Text m, MonadFail m)
+  => Path -> Binders -> r a ('SVal 'Build) -> m (r a ('SVal 'Build))
+buildAppChain path binders fn = do
+  marg <- optional (buildAtom (extendPath PsValAppArg path) binders)
+  case marg of
+    Nothing -> pure fn
+    Just arg -> do
+      ann <- freshBuildAnn
+      let fn' = valApp ann path fn arg
+      buildAppChain (extendPath PsValAppFun path) binders fn'
 
 buildArgs
   :: (Lang r, HasAnn a m, MonadParsec Void Text m, MonadFail m)
@@ -747,10 +806,13 @@ decl path binders = dataD <|> letD <|> ctorD
       void (symbol "let")
       n    <- identifier
       void (symbol "=")
-      body <- build (extendPath PsLetBody path) binders
+      -- Pre-bind 'n' so the body can recurse via its own name.
+      -- HypTwr backs this with a meta-tower that gets unified
+      -- against the body's actual type after elaboration.
+      let bindersInBody = extendValVar n path binders
+      body <- build (extendPath PsLetBody path) bindersInBody
       ann  <- freshDeclAnn
-      let nextBinders = extendValVar n path binders
-      pure (valDecl ann path n body, nextBinders)
+      pure (valDecl ann path n body, bindersInBody)
 
     -- | Either @: expr@ or @⋮@ (the typing-tower shorthand).  The
     --   '⋮' (U+22EE VERTICAL ELLIPSIS) is /literally/ the typing

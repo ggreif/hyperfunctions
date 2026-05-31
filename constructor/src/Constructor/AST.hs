@@ -38,6 +38,9 @@ data Tree (a :: Sort -> Type) (s :: Sort) where
   Case       :: a ('SVal 'Build) -> Tree a ('SVal 'Build) -> [Tree a 'SArm] -> Tree a ('SVal 'Build)
   Arm        :: a 'SArm -> Tree a ('SVal 'Dissect) -> Tree a ('SVal 'Build) -> Tree a 'SArm
   ValAt      :: a ('SVal 'Dissect) -> Name -> Path -> Tree a ('SVal 'Dissect) -> Tree a ('SVal 'Dissect)
+  -- value-level lambda + application (Haskell-style juxtaposition)
+  ValLam     :: a ('SVal 'Build) -> Name -> Path -> Tree a ('SVal 'Build) -> Tree a ('SVal 'Build)
+  ValApp     :: a ('SVal 'Build) -> Path -> Tree a ('SVal 'Build) -> Tree a ('SVal 'Build) -> Tree a ('SVal 'Build)
 
 deriving instance (forall s. Show (a s)) => Show (Tree a t)
 deriving instance (forall s. Eq   (a s)) => Eq   (Tree a t)
@@ -62,3 +65,5 @@ instance Lang Tree where
   case_      = Case
   arm        = Arm
   valAt      = ValAt
+  valLam     = ValLam
+  valApp     = ValApp

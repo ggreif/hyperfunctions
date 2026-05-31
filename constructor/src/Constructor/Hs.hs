@@ -38,6 +38,7 @@ module Constructor.Hs
 import Constructor.Sort (Sort (..))
 import Constructor.Syntax (Lang (..))
 import Data.Kind (Type)
+import Data.List (intercalate)
 import qualified Data.Text as T
 
 -- | Haskell-source fragment, indexed by sort for type-safety of
@@ -109,9 +110,14 @@ instance Lang Hs where
   valCtor _ann name _path args = Hs $ case args of
     [] -> T.unpack name
     _  -> T.unpack name <> " " <> unwords (map parensIf args)
+  -- Explicit-brace form ('case e of { a1; a2; ... }') is
+  -- layout-independent, so it composes safely when nested inside
+  -- lambdas, parenthesised contexts, and other positions where
+  -- column-sensitive layout would misparse the line-and-indent form.
   case_ _ann scrut arms = Hs $
-    "case " <> unHs scrut <> " of\n"
-    <> unlines [ "    " <> unHs a | a <- arms ]
+    "case " <> unHs scrut <> " of { "
+    <> intercalate "; " (map unHs arms)
+    <> " }"
   arm _ann pat body = Hs (unHs pat <> " -> " <> unHs body)
 
   -- @-binder: Haskell's '@' binds tighter than application (the
@@ -119,6 +125,18 @@ instance Lang Hs where
   -- ctor-app shapes.  Always emitting parens is safe and uniform.
   valAt _ann name _bp inner = Hs $
     T.unpack name <> "@(" <> unHs inner <> ")"
+
+  -- Lambda: a Haskell lambda directly.  Always parenthesised so it
+  -- composes safely in any position.
+  valLam _ann name _bp body = Hs $
+    "(\\" <> T.unpack name <> " -> " <> unHs body <> ")"
+
+  -- Value-level application: Haskell juxtaposition.  Function may
+  -- itself be a compound expression (lambda, nested application);
+  -- 'parensIf' handles the grouping heuristic, but lambdas always
+  -- self-parenthesise already.
+  valApp _ann _appPath f x = Hs $
+    unHs f <> " " <> parensIf x
 
 -- | Wrap a fragment in parens if it would otherwise lose its grouping
 --   when placed in argument position.  Crude heuristic — any

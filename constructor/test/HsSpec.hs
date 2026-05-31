@@ -51,6 +51,65 @@ tests =
       \data Fin (n : Nat) : *0 { FZ : Fin Z; FS : Fin n -> Fin (S n) };\
       \let rt = case FS FZ { y@FZ -> y; y@FS m -> y }"
       "FS FZ"
+
+  , runsWith
+      "Hs codegen: lambda identity — (\\x -> x) T prints T"
+      "data Bool : *0 { T : Bool; F : Bool };\
+      \let rt = (\\x -> x) T"
+      "T"
+
+  , runsWith
+      "Hs codegen: lambda flip — (\\x -> case x { T -> F; F -> T }) T prints F"
+      -- A lambda whose body is a case.  Demonstrates lambdas
+      -- composing with the existing case/dissect machinery.
+      "data Bool : *0 { T : Bool; F : Bool };\
+      \let rt = (\\x -> case x { T -> F; F -> T }) T"
+      "F"
+
+  , runsWith
+      "Hs codegen: multi-binder lambda — (\\x y -> x) T F prints T"
+      -- Parse-time desugaring: '\\x y -> x' becomes
+      -- '\\x -> \\y -> x'.  Left-associative application then
+      -- consumes T at outer, F at inner; const-fst returns T.
+      "data Bool : *0 { T : Bool; F : Bool };\
+      \let rt = (\\x y -> x) T F"
+      "T"
+
+  , runsWith
+      "Hs codegen: fib on Nat\8942 base case — fib Z prints Z"
+      -- fib(0) = 0: hits the outer 'Z -> Z' arm immediately, no
+      -- recursion fired.  Validates that the base case terminates
+      -- and the (now-recursive) let doesn't loop on a Z input.
+      "data Nat\8942 { Z : Nat; S : Nat -> Nat };\
+      \let add = \\x y -> case x { Z -> y; S n -> S (add n y) };\
+      \let fib = \\n -> case n { Z -> Z; S k -> case k { Z -> S Z; S m -> add (fib (S m)) (fib m) } };\
+      \let rt = fib Z"
+      "Z"
+
+  , runsWith
+      "Hs codegen: fib on Nat\8942 second base — fib (S Z) prints S Z"
+      -- fib(1) = 1: hits the @S k@ outer arm, inner @Z -> S Z@
+      -- arm.  Two-level pattern descent, still no recursion.
+      "data Nat\8942 { Z : Nat; S : Nat -> Nat };\
+      \let add = \\x y -> case x { Z -> y; S n -> S (add n y) };\
+      \let fib = \\n -> case n { Z -> Z; S k -> case k { Z -> S Z; S m -> add (fib (S m)) (fib m) } };\
+      \let rt = fib (S Z)"
+      "S Z"
+
+  , runsWith
+      "Hs codegen: fib on Nat\8942 via recursive let — fib (S (S (S Z))) prints S (S Z)"
+      -- The canonical recursive function on a self-towered Nat.
+      -- Uses recursive 'let' (HypTwr's valDecl pre-binds the name
+      -- to a meta tower, unifies against the body's actual type
+      -- after elaboration), nested case for the @n = S (S _)@
+      -- step, and value-level lambda + application throughout.
+      --
+      -- Defines 'add' first (also recursive); fib(3) = 2 = S (S Z).
+      "data Nat\8942 { Z : Nat; S : Nat -> Nat };\
+      \let add = \\x y -> case x { Z -> y; S n -> S (add n y) };\
+      \let fib = \\n -> case n { Z -> Z; S k -> case k { Z -> S Z; S m -> add (fib (S m)) (fib m) } };\
+      \let rt = fib (S (S (S Z)))"
+      "S (S Z)"
   ]
 
 -- | Parse via the 'Hs' carrier, run via @runghc@, assert the

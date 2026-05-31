@@ -50,6 +50,19 @@ data PathStep
                        --   so binders inside the inner get fresh
                        --   identities even when the at-binder
                        --   sits at the outer position itself.
+  | PsLamBinder !Int   -- ^ the nth binder of a (possibly desugared
+                       --   multi-binder) value lambda.  A surface
+                       --   @\\x y -> body@ desugars at parse time
+                       --   to nested single-binder lambdas, and
+                       --   each binder retains its position index
+                       --   so identities are stable.
+  | PsLamBody          -- ^ the body of a value lambda (after all
+                       --   binders consumed).
+  | PsValAppFun        -- ^ function position of a value-level
+                       --   application (distinct from 'PsAppFun'
+                       --   which is type-level).
+  | PsValAppArg        -- ^ argument position of a value-level
+                       --   application.
   deriving (Eq, Ord, Show)
 
 -- | A path from the root of the program to a particular grammar

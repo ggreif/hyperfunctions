@@ -1482,7 +1482,18 @@ materialisation, Hs codegen, or Scott codegen):
 
 What's still ahead:
 - `@`-binders for Build (cyclic data via DPS; Motoko TRMC pointer)
-- `λ` and value-level function application
+- ~~`λ` and value-level function application~~  **Partially done.**
+  AST gained `ValLam`/`ValApp`, parser supports `\\x y z -> body`
+  (parse-time desugared to nested single-binder lambdas) and
+  Haskell-style juxtaposition application.  HypTwr has typing
+  rules (fresh meta for binder; arrow inference; meet against
+  expected arg type at app sites).  `let` is now **recursive**
+  (HypTwr pre-binds a meta tower; unifies against the body's
+  actual type post-elaboration).  Hs codegen + `runghc` round-
+  trip with multi-binder lambdas, nested cases, and recursive
+  functions (`fib` on `Nat⋮` works end-to-end).  **Scott codegen
+  still missing** for `valLam`/`valApp` — needs closure-emission
+  design alongside the existing eliminator regime.
 - Codegen for the @-binder shapes in Scott (currently Hs only)
 - ~~Non-regular nested data (Nest-style) in Scott — encoding
   regime is in place, just needs an Ωmegator example that

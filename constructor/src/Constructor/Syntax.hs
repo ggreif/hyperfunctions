@@ -221,6 +221,45 @@ class Lang (r :: (Sort -> Type) -> Sort -> Type) where
     -> r a ('SVal 'Dissect)
   valAt = error "Lang.valAt: at-patterns not supported by this carrier"
 
+  -- | Value-level lambda abstraction: @\\x -> body@.  Single-binder
+  --   only; multi-binder lambdas @\\x y z -> body@ desugar at parse
+  --   time to nested single-binder lambdas.  Pattern binders are
+  --   not yet supported — the binder is always a fresh variable
+  --   name (use @case@ for destructuring).
+  --
+  --   The @Name@ is the surface name; the @Path@ is the binder's
+  --   syntactic identity.  Inside @body@ the parser parses @x@
+  --   via 'valVar' with the same 'Path'.
+  --
+  --   Type: produces an arrow @S -> T@ where @S@ is the binder's
+  --   inferred (or annotated) type and @T@ is the body's type.
+  valLam
+    :: a ('SVal 'Build)
+    -> Name
+    -> Path
+    -> r a ('SVal 'Build)
+    -> r a ('SVal 'Build)
+  valLam = error "Lang.valLam: lambda abstraction not supported by this carrier"
+
+  -- | Value-level function application: @f x@.  Left-associative
+  --   (Haskell-style juxtaposition); @f x y@ parses as
+  --   @app (app f x) y@.  The @Path@ is the application's parse-
+  --   site identity (each call site gets its own, so carriers
+  --   performing instantiation can use it for fresh metavariable
+  --   identities).
+  --
+  --   The parser disambiguates from ctor application by
+  --   ctor-table lookup: an uppercase-or-known-ctor head
+  --   ('Just', 'ConsB', etc.) consumes its args as 'valCtor';
+  --   any other head consumes args as left-associated 'valApp'.
+  valApp
+    :: a ('SVal 'Build)
+    -> Path
+    -> r a ('SVal 'Build)
+    -> r a ('SVal 'Build)
+    -> r a ('SVal 'Build)
+  valApp = error "Lang.valApp: value-level application not supported by this carrier"
+
 -- | Annotation provider in an applicative monad @m@.  The parser is
 --   written generically against 'HasAnn', so it can produce trees at
 --   any annotation regime without further refactoring.

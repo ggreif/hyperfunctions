@@ -557,15 +557,30 @@ instance Lang HypTwr where
   -- keep arm-body types unifying through metavariable binding.
   -- ------------------------------------------------------------------
 
-  valDecl _ann _declPath name body = HypTwr $ \env ->
+  -- Recursive 'let': pre-bind the name to a fresh meta-tower so the
+  -- body can refer to itself.  After elaboration, meet the body's
+  -- actual tower against the pre-binding meta to propagate any
+  -- refinements (the body's type pins down the recursive name's
+  -- type at all its use sites).  Non-recursive lets are the
+  -- degenerate case where the meet is unconstrained.
+  valDecl _ann declPath name body = HypTwr $ \env ->
     case Map.lookup name (hypTwrEnvValVars env) of
       Just _  -> Left (TyDuplicateCtor name)
       Nothing -> do
-        (bodyVal, env1) <- runHypTwr body env
-        let bodyTower = sValTower bodyVal
-            env2 = env1
+        let preMeta = leafTower env (TyMetaV (MetaId declPath declPath))
+            envPre  = env
               { hypTwrEnvValVars =
-                  Map.insert name bodyTower (hypTwrEnvValVars env1) }
+                  Map.insert name preMeta (hypTwrEnvValVars env) }
+        (bodyVal, env1) <- runHypTwr body envPre
+        let bodyTower = sValTower bodyVal
+        subst' <- meet (hypTwrEnvSubst env1)
+                       (horizontal preMeta)
+                       (horizontal bodyTower)
+        let env2 = env1
+              { hypTwrEnvValVars =
+                  Map.insert name bodyTower (hypTwrEnvValVars env1)
+              , hypTwrEnvSubst = subst'
+              }
         Right (HypTwrDecl Nothing, env2)
 
   valVar _ann name path = HypTwr $ \env -> case hypTwrEnvMode env of
@@ -687,3 +702,42 @@ instance Lang HypTwr where
           { hypTwrEnvValVars =
               Map.insert name innerTower (hypTwrEnvValVars env1) }
     Right (HypTwrSVal innerTower, env2)
+
+  -- Value-level lambda: introduce a fresh metavariable for the
+  -- binder's type, elaborate the body with that binder in scope,
+  -- then build a 'TyArrV' tower from binder-type → body-type.  The
+  -- binder's identity is its 'binderPath'; the meta uses the same
+  -- path for both slots, matching the convention in 'valVar's
+  -- Dissect-side binding logic.  The binder is removed from scope
+  -- before returning so it doesn't leak.
+  valLam _ann name binderPath body = HypTwr $ \env -> do
+    let binderTower = leafTower env (TyMetaV (MetaId binderPath binderPath))
+        savedVars   = hypTwrEnvValVars env
+        envWithBind = env
+          { hypTwrEnvValVars =
+              Map.insert name binderTower (hypTwrEnvValVars env) }
+    (bodyVal, env1) <- runHypTwr body envWithBind
+    let bodyTower = sValTower bodyVal
+        env2      = env1 { hypTwrEnvValVars = savedVars }
+        lamView   = TyArrV (horizontal binderTower) (horizontal bodyTower)
+        lamTower  = leafTower env2 lamView
+    Right (HypTwrSVal lamTower, env2)
+
+  -- Value-level application @f x@: elaborate both children, then
+  -- meet @f@'s type against @Arr (typeof x) (fresh result meta)@.
+  -- The successful meet refines the result meta (and any free metas
+  -- in @f@'s type) to their unified shape; the result tower is the
+  -- meta, which 'materialize' will resolve later.
+  valApp _ann appPath f x = HypTwr $ \env -> do
+    (fVal, env1) <- runHypTwr f env
+    (xVal, env2) <- runHypTwr x env1
+    let fTower       = sValTower fVal
+        xTower       = sValTower xVal
+        resultMeta   = leafTower env2 (TyMetaV (MetaId appPath appPath))
+        expectedView = TyArrV (horizontal xTower) (horizontal resultMeta)
+        expected     = hPure expectedView
+    case meet (hypTwrEnvSubst env2) (horizontal fTower) expected of
+      Left e       -> Left e
+      Right subst' ->
+        let env3 = env2 { hypTwrEnvSubst = subst' }
+        in Right (HypTwrSVal resultMeta, env3)
