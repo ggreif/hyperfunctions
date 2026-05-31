@@ -651,3 +651,40 @@ instance Lang Scott where
           bs -> "(\\" <> unwords (map T.unpack bs) <> " -> "
                 <> bodyText <> ")"
     pure $ SoArm branchText patHead
+
+  -- Lambda: emit a parenthesised Haskell lambda directly.  The
+  -- result's data-type slot inherits from the body — a lambda's
+  -- "result data type" IS its body's data type (under any
+  -- argument), so this propagates the case_/envRtType signal up
+  -- through nested lambdas correctly.
+  valLam _ann name _bp body = Scott $ do
+    sBody <- unScott body
+    let (bodyText, bodyHead) = case sBody of SoVal t h _ -> (t, h)
+        text = "(\\" <> T.unpack name <> " -> " <> bodyText <> ")"
+    pure $ SoVal text bodyHead []
+
+  -- Value-level application: parenthesise the whole call so the
+  -- result is safe in any position (ctor arg, case scrutinee,
+  -- nested application).  Function and arg texts are inlined
+  -- as-is; lambda functions and nested apps already self-parens
+  -- themselves, so no further wrapping is needed.
+  --
+  -- Data-type propagation: take f's data type if known, else x's
+  -- as a heuristic fallback.  Pure functions over Scott-encoded
+  -- data (e.g., 'fib :: Nat -> Nat') have a knowable return type
+  -- through 'valLam's body-propagation, so 'fib n' inherits Just
+  -- "Nat" via f.  For unknown-return functions (e.g., a bare
+  -- 'valVar' whose return type the carrier doesn't track yet),
+  -- x's data type is a sound guess for identity-shaped cases
+  -- like '(\\x -> x) T'.  Tracking variable return types in the
+  -- env would tighten this, but for the current corpus the
+  -- heuristic suffices.
+  valApp _ann _appPath f x = Scott $ do
+    sF <- unScott f
+    sX <- unScott x
+    let (fText, fHead) = case sF of SoVal t h _ -> (t, h)
+        (xText, xHead) = case sX of SoVal t h _ -> (t, h)
+        resultHead = case fHead of
+          Just _  -> fHead
+          Nothing -> xHead
+    pure $ SoVal ("(" <> fText <> " " <> xText <> ")") resultHead []

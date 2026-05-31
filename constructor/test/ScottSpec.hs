@@ -105,6 +105,45 @@ tests =
       \data Bush (a : *0) : *0 { NilB : Bush a; ConsB : a -> Bush (Bush a) -> Bush a };\
       \let rt = case ConsB T NilB { NilB -> NilB; ConsB x xs -> xs }"
       "NilB"
+
+  , runsWith
+      "Scott codegen: lambda identity — (\\x -> x) T"
+      -- Plainest lambda case in Scott land.  No closures over the
+      -- Scott-encoded data: just a Haskell lambda emitted verbatim
+      -- and applied to a Scott-encoded ctor.  showRt on the result
+      -- (a Bool-typed value) prints "T".
+      "data Bool : *0 { T : Bool; F : Bool };\
+      \let rt = (\\x -> x) T"
+      "T"
+
+  , runsWith
+      "Scott codegen: fib on Nat\8942 base case — fib Z"
+      "data Nat\8942 { Z : Nat; S : Nat -> Nat };\
+      \let add = \\x y -> case x { Z -> y; S n -> S (add n y) };\
+      \let fib = \\n -> case n { Z -> Z; S k -> case k { Z -> S Z; S m -> add (fib (S m)) (fib m) } };\
+      \let rt = fib Z"
+      "Z"
+
+  , runsWith
+      "Scott codegen: fib on Nat\8942 second base — fib (S Z)"
+      "data Nat\8942 { Z : Nat; S : Nat -> Nat };\
+      \let add = \\x y -> case x { Z -> y; S n -> S (add n y) };\
+      \let fib = \\n -> case n { Z -> Z; S k -> case k { Z -> S Z; S m -> add (fib (S m)) (fib m) } };\
+      \let rt = fib (S Z)"
+      "(S Z)"
+
+  , runsWith
+      "Scott codegen: fib on Nat\8942 — fib (S (S (S Z)))"
+      -- Recursive let + multi-pattern-desugar + nested case +
+      -- value-level application chain, all routed through the
+      -- Scott-encoded Nat.  Same expectation as the Hs analog:
+      -- fib(3) = 2 = S (S Z).  showRt prints "(S (S Z))" — the
+      -- Scott carrier's parenthesised form for a non-nullary ctor.
+      "data Nat\8942 { Z : Nat; S : Nat -> Nat };\
+      \let add = \\x y -> case x { Z -> y; S n -> S (add n y) };\
+      \let fib = \\n -> case n { Z -> Z; S k -> case k { Z -> S Z; S m -> add (fib (S m)) (fib m) } };\
+      \let rt = fib (S (S (S Z)))"
+      "(S (S Z))"
   ]
 
 runsWith :: String -> Text -> String -> (String, IO Bool)

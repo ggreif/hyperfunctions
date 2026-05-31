@@ -1482,18 +1482,21 @@ materialisation, Hs codegen, or Scott codegen):
 
 What's still ahead:
 - `@`-binders for Build (cyclic data via DPS; Motoko TRMC pointer)
-- ~~`λ` and value-level function application~~  **Partially done.**
+- ~~`λ` and value-level function application~~  **Done.**
   AST gained `ValLam`/`ValApp`, parser supports `\\x y z -> body`
   (parse-time desugared to nested single-binder lambdas) and
   Haskell-style juxtaposition application.  HypTwr has typing
   rules (fresh meta for binder; arrow inference; meet against
   expected arg type at app sites).  `let` is now **recursive**
   (HypTwr pre-binds a meta tower; unifies against the body's
-  actual type post-elaboration).  Hs codegen + `runghc` round-
-  trip with multi-binder lambdas, nested cases, and recursive
-  functions (`fib` on `Nat⋮` works end-to-end).  **Scott codegen
-  still missing** for `valLam`/`valApp` — needs closure-emission
-  design alongside the existing eliminator regime.
+  actual type post-elaboration).  Both **Hs and Scott codegens**
+  round-trip via `runghc`: `(\\x -> x) T`, multi-binder lambdas,
+  nested cases, and `fib` on `Nat⋮` (base cases + recursive
+  case) — 7 new tests across both carriers.  Scott codegen
+  reuses Haskell's native lambda/application; the data-type
+  slot in `SoVal` propagates through `valLam` (body's type) and
+  `valApp` (heuristic: f's type then x's), enough for the
+  current corpus.
 - Codegen for the @-binder shapes in Scott (currently Hs only)
 - ~~Non-regular nested data (Nest-style) in Scott — encoding
   regime is in place, just needs an Ωmegator example that
@@ -1504,7 +1507,28 @@ What's still ahead:
   the deepening lateral type parameter.
 - Lambda-encoding fixpoint vs heap-cell fixpoint divergence
 - Specialised lint carrier for duplicate-binder discipline
-- Refining GADT *with existentials* (a~b shape; Refl ctor)
+- ~~Refining GADT *with existentials* (a~b shape; Refl ctor)~~
+  **Partially done.**  The framing was loose — `Refl` itself is
+  pure refinement, not existential-introducing.  `Eq a b` with
+  `Refl : Eq a a` parses, type-checks, and round-trips through
+  **Hs codegen** (`case Refl { Refl -> Z }` → `Z`).  The "with
+  existentials" framing (a ctor that BOTH refines indices and
+  introduces a hidden type var) is a separate, deferred bullet.
+  **Scott codegen TBD** for two-index refining GADTs — two
+  follow-ups surfaced:
+  1. `showFn` uses `Const String b` to thread the show output
+     through the indexed eliminator; that's kind-correct only
+     for single-index GADTs (`b :: Type`).  For two-index
+     (`b :: Nat`) the kind mismatches.  Needs a generalised
+     show carrier (per-index `Const`-equivalent).
+  2. The eliminator's HKT type
+     `forall (x :: Nat -> Nat -> Type). (forall a. () -> x a a)
+     -> x a b` makes the body's type `x a b`.  For non-indexed
+     return types (e.g. `Nat` from `Refl -> Z`), `x` would have
+     to be a constant function — Haskell can't infer that.
+     Needs either explicit `K`-style defunctionalisation or an
+     ad-hoc Scott regime for "refining ctor, body type not in
+     the indices".
 
 ## Open question: `S n⋮` shorthand and the suspension closure rule
 

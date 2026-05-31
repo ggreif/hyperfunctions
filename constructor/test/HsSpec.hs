@@ -110,6 +110,18 @@ tests =
       \let fib = \\n -> case n { Z -> Z; S k -> case k { Z -> S Z; S m -> add (fib (S m)) (fib m) } };\
       \let rt = fib (S (S (S Z)))"
       "S (S Z)"
+
+  , runsWith
+      "Hs codegen: Refl on Eq over Nat\8942 — case Refl { Refl -> Z } prints Z"
+      -- Equality-witness GADT indexed by two 'Nat\8942's.  'Refl's
+      -- type is 'Eq a a' — the two indices coincide.  Scrutinee
+      -- 'Refl' has fresh 'Eq a a'; pattern-match against 'Refl'
+      -- refines the meta (no-op for matching identity), body
+      -- returns 'Z'.
+      "data Nat\8942 { Z : Nat; S : Nat -> Nat };\
+      \data Eq (a : Nat) (b : Nat) : *0 { Refl : Eq a a };\
+      \let rt = case Refl { Refl -> Z }"
+      "Z"
   ]
 
 -- | Parse via the 'Hs' carrier, run via @runghc@, assert the
