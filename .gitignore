@@ -15,4 +15,4 @@ wip
 .cabal-sandbox/
 cabal.sandbox.config
 codex.tags
-constructor/dist-newstyle/
+**/dist-newstyle/

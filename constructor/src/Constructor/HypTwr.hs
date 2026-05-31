@@ -51,7 +51,8 @@ import Constructor.Sort (Mode (..), Sort (..))
 import Constructor.Syntax (Lang (..), Name)
 import Constructor.Tinf (TyErr (..))
 import Constructor.Tower
-  ( Tower (..)
+  ( Tower
+  , Gamma (..)
   , meetTowers
   , towerOfView
   )

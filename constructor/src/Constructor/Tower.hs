@@ -28,7 +28,8 @@
 --     will perform asymmetric subtyping-flavoured unification along
 --     this axis with the @*n@-stable-tail termination condition.
 module Constructor.Tower
-  ( Tower (..)
+  ( Tower
+  , Gamma (..)
   , horizontalView
     -- * Kind environment
   , KindEnv
@@ -49,6 +50,7 @@ module Constructor.Tower
   ) where
 
 import Constructor.HyperLite (hPure, hRun)
+import Constructor.HyperRise (Gamma (..), Γ)
 import Constructor.Level (Lv (..))
 import Constructor.Syntax (Name)
 import Constructor.Tinf (TyErr (..))
@@ -97,10 +99,11 @@ import qualified Data.Map.Strict as Map
 --   3. **Future-proof for option α / γ.**  Promoting horizontal to
 --      'TyProc' is one step toward 'Tower ≅ Hyper Tower Tower' if
 --      that ever resurfaces, without committing to it now.
-data Tower = Tower
-  { horizontal :: !TyProc
-  , vertical   :: Tower
-  }
+-- | A Tower is the canonical hyper-rise over 'Hyper' at @TyView×TyView@:
+--   the same shape as 'Gamma' 'Hyper' 'TyView' 'TyView'.  The fields
+--   'horizontal' and 'vertical' come from 'Gamma', re-exported here so
+--   that consumers keep their field-access patterns unchanged.
+type Tower = Γ TyView TyView
 
 -- | Convenience: extract the horizontal 'TyView' of a Tower by
 --   self-applying its 'TyProc'.  This is the inverse of constructing
@@ -198,7 +201,7 @@ kindOf s env v0 = case resolveView s v0 of
 --   via 'meetTowers' (which regenerates each climb under the current
 --   Subst rather than walking the frozen 'vertical' chain).
 liftTower :: Subst -> KindEnv -> TyProc -> Tower
-liftTower s env p = Tower p (towerOfView s env (kindOf s env (hRun p)))
+liftTower s env p = Gamma p (towerOfView s env (kindOf s env (hRun p)))
 
 -- | Coalgebraic unfolding: the Tower whose horizontal is the given
 --   view and whose vertical is 'kindOf' applied repeatedly under
@@ -208,7 +211,7 @@ liftTower s env p = Tower p (towerOfView s env (kindOf s env (hRun p)))
 --   TyConV-stable tail bumps the deck-shift offset; the structural
 --   layer is finite).
 towerOfView :: Subst -> KindEnv -> TyView -> Tower
-towerOfView s env v = Tower (hPure v) (towerOfView s env (kindOf s env v))
+towerOfView s env v = Gamma (hPure v) (towerOfView s env (kindOf s env v))
 
 -- | Convenience: the universe-only tower starting at a given level.
 --   Special case of @towerOfView emptySubst emptyKindEnv (TyUnivV lv)@

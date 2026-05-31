@@ -1595,3 +1595,186 @@ non-regular slots explicit.
 - Cross-reference: this is one piece of the broader self-tower
   / (γ) / suspension story documented in the `38d9ed6` git-note;
   any shorthand decision should keep that framing consistent.
+
+## Hyper-rise
+
+A name for (γ) that disambiguates it from the existing `Tower`
+codata: **hyper-rise**.  Phonetic crib on "high-rise" (the
+multi-storey building); "hyper-" inherits from Kidney/Wu's
+hyperfunction (lateral self-application); "-rise" names the
+vertical staircase the column traverses via `kindOf`.
+
+`Tower` (in `Constructor.Tower`) is the monomorphic concrete-
+rung instance; **hyper-rise** is the abstract algebraic thing.
+The story below promotes that abstraction into a typeclass.
+
+### The `Rise` typeclass
+
+```haskell
+class Rise (r :: (* -> * -> *) -> * -> * -> *) where
+  rise    :: r p a b -> (p a b, r p a b)
+  retreat :: (p a b, r p a b) -> r p a b
+```
+
+- `r` is the rise-carrier (staircase shape).
+- `p` is the profunctor (or profunctor-like) at each rung —
+  what makes a *step* interesting.
+- `a`/`b` are the lateral parameters carried uniformly across
+  rungs.
+
+`rise` decomposes a rise into its head rung (a `p a b`) and the
+tail rise (everything above).  `retreat` reassembles.
+
+### Generalised (γ)
+
+```haskell
+data (γ) (p :: * -> * -> *) a b
+  = Gamma { horizontal :: p a b
+          , vertical   :: (γ) p a b
+          }
+
+instance Rise (γ) where
+  rise    (Gamma h v) = (h, v)
+  retreat (h, v)      = Gamma h v
+```
+
+`(γ) Hyper a b` is the original hyperfunction tower.  Picking
+different `p`'s gives different inhabitants of the same column
+algebra:
+
+| `p` chosen   | `(γ) p a b` is                  | rising means                         |
+|--------------|---------------------------------|--------------------------------------|
+| `Hyper`      | calling-convention column       | climb the (γ) staircase              |
+| `(->)`       | curried-arrow stack             | uncurry one argument at a time       |
+| `Iso`        | tower of isomorphisms           | level-coordinate column (per Iso PR) |
+| `Hyper @ Nat`| level-annotated hyper-rise      | yesterday's `(γ) (n : Nat) a b`      |
+| profunctor   | generic staircase               | rung-agnostic abstraction            |
+
+The class crystallises the staircase shape **independent of
+what's on each step** — rise/retreat work the same regardless
+of `p`.
+
+### Retraction laws
+
+```
+retreat . rise = id_{r p a b}                             -- always
+rise . retreat = id_{(p a b, r p a b)} on the image of rise
+```
+
+So `r p a b` is a **retract** of `(p a b, r p a b)`:
+
+- Every `r p a b` decomposes-then-recomposes back to itself.
+- Not every pair is well-formed (an arbitrary `p a b`
+  may not match what `rise` would produce from any tail).
+- On well-formed pairs (the image of `rise`), the
+  inverse holds.
+
+Standard split-mono/epi structure.  *No information is
+destroyed by `rise`*; the shape just gets unpacked.
+
+### Correcting yesterday: squash IS reversible
+
+I had claimed `squash n` was irreversible because "freezing a
+rung loses how it connects to what's above."  Wrong at this
+level.  `squash n` is the n-fold iteration of `rise` on the
+tail:
+
+```haskell
+squash :: Rise r => Vec n () -> r p a b -> (Vec n (p a b), r p a b)
+squash Nil       p  = (Nil, p)
+squash (_:::ns) p  = let (h, p')      = rise p
+                         (hs, p'')    = squash ns p'
+                     in  (h ::: hs, p'')
+
+unsquash :: Rise r => (Vec n (p a b), r p a b) -> r p a b
+unsquash (Nil,        p) = p
+unsquash (h ::: hs,   p) = retreat (h, unsquash (hs, p))
+```
+
+Each step is reversible (by the retraction laws), so the
+composite is reversible too.  The freed rungs in the `Vec`
+plus the remaining `r p a b` tail carry *strictly more*
+positional information than the original — which is *why*
+round-tripping works.
+
+The irreversibility lives one floor up: at **erasure**.  When
+we take a `p a b` from a Vec entry (a squashed rung) and drop
+the part the runtime doesn't need (the type-level shadow),
+*that* is irreversible.  Rise/retreat are reversible
+restructurings; erasure is the lossy step.
+
+So the corrected picture:
+
+- `Rise` = the algebraic step, fully reversible.
+- `squash` = iterated `Rise`, fully reversible.
+- **Erasure** = the irreversible move, applied to *individual
+  squashed rungs* when generating runtime code.
+
+The compilation pipeline: `squash` (reversibly), then erase
+(irreversibly, per rung), then emit Wasm.  The reversibility
+of `squash` matters because optimisation passes can squash,
+manipulate, retreat, squash differently — all without losing
+information until the erasure step at the very end.
+
+### Cofree-stream-over-profunctor reading
+
+`(γ) p` is the **infinite coinductive list** `(p a b, p a b,
+p a b, …)`, with the lateral structure of each rung determined
+by `p`.  `Rise` is the unfolding step of that stream.  Standard
+cofree-comonad shape, but generalised so the carrier `p` is a
+profunctor rather than a functor.
+
+### Open question: heterogeneous rise
+
+`Rise` as currently stated forces a single `p` for the whole
+tower.  A heterogeneous version would let `p` vary by rung:
+
+```haskell
+class HetRise (r :: ...) where
+  hetRise    :: r p₀ a b -> (p₀ a b, r p₁ a b)
+  hetRetreat :: (p₀ a b, r p₁ a b) -> r p₀ a b
+```
+
+with `p₁` the "successor" of `p₀` — exactly what the
+level-annotated `Hyper n` version was reaching for.  Climbs
+between *kinds* of rungs.  Different laws (the retraction is
+no longer self-typed); probably wants its own class.  Worth
+exploring once `Rise` is established.
+
+### Wasm codegen pay-off
+
+The (γ)-as-calling-convention framing in the `38d9ed6` git-
+note becomes one *instance* of `Rise`: pick `p = Hyper`, get
+the calling-convention column.  Other passes that need towers
+(coercion stacks, currying chains, kind-indexed dispatch) use
+the same `Rise` with a different `p`.
+
+Each call site at codegen time chooses:
+
+- *Which* `p` (which lateral content matters here?).
+- *How much* `squash` to apply (how many rungs are statically
+  known and can be fused?).
+- *Which* erasure (after squashing, drop which type-rung
+  shadows?).
+
+All three are independent choices over the same algebraic
+substrate.
+
+### Queued
+
+- Add `Constructor.HyperRise` (or `Constructor.Rise`) carrying
+  the class + the generalised `(γ) p a b` + the `(γ)` instance
+  + tests exercising round-trip rise/retreat.
+- Keep `Constructor.Tower` and `Constructor.HypTwr` as the
+  monomorphic `(γ) Hyper`-style concrete-rung instance for now;
+  consider whether they should be re-expressed as instances of
+  the new abstraction, or kept as the optimised fast path.
+- Investigate `Rise` instances for `(->)` and `Iso` carriers;
+  the latter intersects with the existing `Iso : Iso isn't
+  promotion — it's *the level coordinate*` section.
+- Sketch the het-rise extension; decide whether to merge it
+  with `Rise` or split into a separate class.
+- Cross-reference back into the `38d9ed6` git-note once the
+  Haskell side is in tree — the note currently uses (γ)
+  exclusively; "hyper-rise" + `Rise` class is the natural
+  Haskell-level vocabulary to land alongside it.

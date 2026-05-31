@@ -31,7 +31,7 @@ module AxiomsSpec (tests) where
 import Constructor.HypTwr (HypTwr, HypTwrResult (..), hypTwrProgram)
 import Constructor.Parser (parseProgram)
 import Constructor.Syntax (Name)
-import Constructor.Tower (Tower (..))
+import Constructor.Tower (Tower, Gamma (..))
 import Constructor.TyExpr (prettyTy)
 import Constructor.TyProc (materialize)
 import Data.Functor.Const (Const (..))
