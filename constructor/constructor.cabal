@@ -55,6 +55,7 @@ executable constructor
   build-depends:
     , base
     , constructor
+    , containers
     , megaparsec
     , text
 

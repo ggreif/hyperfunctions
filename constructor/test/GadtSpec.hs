@@ -383,11 +383,18 @@ tests =
   -- can't emit 'Z :: Z' (GHC-56753: ctor used in its own
   -- recursive group); recorded as Scott/codegen follow-up (3)
   -- in PLAN.md.
+  --
+  -- 'Witness' forces 'Refl' to type 'Eq Z Z' via its ctor's
+  -- expected argument type — without it, Refl stays polymorphic
+  -- ('Eq a a' for fresh meta 'a').  The meet at the application
+  -- site 'ItsZZ Refl' unifies a := Z, so the constructed Refl
+  -- is genuinely AT 'Eq Z Z'.
   , acceptsValByHypTwr
-      "Refl on Eq over self-typed Nat\8942 (typecheck-only; Hs codegen gap)"
+      "Refl on Eq Z Z over self-typed Nat\8942 (typecheck-only; Hs codegen gap)"
       "data Nat\8942 { Z : Z; S : \8704 a . a -> S a };\
       \data Eq (a : Nat) (b : Nat) : *0 { Refl : Eq a a };\
-      \let rt = case Refl { Refl -> Z }"
+      \data Witness : *0 { ItsZZ : Eq Z Z -> Witness };\
+      \let rt = ItsZZ Refl"
       ["rt"]
   ]
 
