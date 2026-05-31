@@ -1,466 +1,329 @@
-# Wasm codegen for the constructor — a `Rise`-grounded vision
+# Wasm codegen for the constructor — slim architecture
 
-**Status:** vision / architecture sketch, developed autonomously
-2026-05-31 from the user's intuition that a rise in Wasm *is* the
-statically visible call hierarchy, indirect calls truncate the
-visible column, and inlining is suspension of the rise.  Not yet an
-implementation plan — the queued bullets in `PLAN.md` ("simple-minded
-Wasm codegen + 5 bullets") sit beneath this framing.
+**Status:** vision / architecture sketch.  Revised 2026-05-31 after
+the user's calibration that the earlier 7-stage profunctor cascade
+was over-stretching `Rise`.
 
-The aim of this document is to fix the *vocabulary* and the *layering*
-before any code lands, so that each subsequent implementation choice
-can be expressed as a move in the `Rise`/`(γ)` algebra rather than as
-an ad-hoc engineering decision.
+This document supersedes the first-pass version (preserved in git
+history at `ebc43a9`).  Key correction: **Wasm is direct-style** (a
+stack machine with structured control flow), not CPS.  Forcing a
+global CPS pass fights the target.  CPS earns its place *locally*,
+inside Scott eliminator scopes where continuations are
+compile-time-distinguishable and lower to `br` or `return`.
+
+The honest scope of the rise algebra:
+
+- **For optimisation** (inlining, peephole, indirect-call cuts):
+  `Rise` is the right algebra.  Suspension, truncation, and the
+  retraction laws all apply directly.
+- **For lowering** (IR-to-IR rewriting): each IR wants its *own*
+  algebraic shape that fits the IR's purpose.  Not all of them are
+  `Γ p Pt Pt`-shaped.
+
+Different layers, different algebras.  All Rise-inspired (column
+algebra, named successors, suspension as reasoning) but not all
+literally `Rise` instances.
 
 ## TL;DR
 
-A Wasm program emitted from constructor code is a `Rise` whose:
+Three real stages:
 
-- **rung profunctor** `p` is the *operational semantics* of a function
-  at the current pipeline stage,
-- **horizontal slice** at each rung is the function's call-shape
-  (caller/callee `Hyper`),
-- **vertical column** is the *statically visible call hierarchy* — as
-  many rungs deep as the codegen can resolve at compile time before
-  an indirect call (or an erased existential, or an open
-  abstraction) cuts the column,
-- **rise transformations** `p ~~~> p'` are optimisation passes that
-  re-express the same rise at a refined operational level (Scott →
-  specialised → inlined → `br_table` → `return_call` → raw
-  `call_indirect`).
+1. **Constructor IR** (post-`HypTwr`) **→ Wasm-with-Local-CPS.**
+   Direct-style instructions, but Scott-elim scopes carry first-class
+   labeled continuations (`local-cont $kT ↦ body`, `dispatch v $arm₁
+   …$armN`).  Lowering frontend to backend.
+2. **Wasm-with-Local-CPS → Hard Wasm.**  Lower the Local-CPS to
+   `block`/`br_table`/`br`/`return`.  Eliminates the only
+   non-bytecode-able construct.
+3. **Hard Wasm → Bytes.**  Serialise.
 
-Multiple stacked rises express multiple stacked passes; the highest
-rise still visible at the Wasm boundary is the one we serialise to
-bytes.  Suspension is inlining; truncation is indirect call;
-erasure is the type-level drop that happens at every rung as we move
-down the pipeline.
+Each stage has:
 
-The whole codegen pipeline is then a single sentence: **take the
-constructor IR's rise, evolve its rung profunctor down the pipeline
-applying suspensions where statically known, leave indirect calls
-where it's not, emit the resulting rung's lateral content as Wasm.**
+- A typed IR with its own algebraic shape (not necessarily `Γ`).
+- An interpreter for testing/validation (semantics contract).
+- A lowering pass to the next stage.
+- Optimisations expressed as algebraic moves on the layer's shape.
 
-## Layer 0 — `data` declarations as Scott rungs
+The rise algebra applies *within* layers (instruction-level
+suspension on Hard Wasm, function-level suspension on call graphs,
+truncation at indirect-call boundaries) but does not span layers —
+crossing a layer boundary is a *lowering*, not an algebraic
+evolution.
 
-A `data X⋮ { … }` declaration becomes, in Wasm, a *family of
-functions*:
+## Per-IR algebraic structures
 
-- One constructor function per arm (`X_C₁`, `X_C₂`, …).  Each
-  packages its arguments into a closure and returns a `funcref`.
-- One eliminator function `X_elim` that takes a value of type `X` plus
-  a continuation per arm, and tail-calls the appropriate
-  continuation.
+Each IR layer has its own natural algebra.  Listed below with a
+sketch of the shape and what operations make sense.
 
-Scott encoding is the natural target because each ctor is *just*
-"call the i-th branch of the eliminator with my captured args."  No
-algebraic data, no tagged unions in linear memory, no GC roots —
-the runtime representation is `funcref + captured-args` and the
-"dispatch" is `call_indirect` (or, when we can prove all callees,
-`br_table`).
+### Layer A — Constructor IR (post-`HypTwr`)
 
-In `Rise` vocabulary: each data type contributes **one rung** to the
-overall program rise.  The rung's profunctor is
-`Hyper Pt Pt` where `Pt` is "Wasm-closure-ref" (a tagged
-funcref + capture pointer).  The Hyper at this rung captures the
-eliminator's call-shape: it takes a continuation-bundle (Hyper b a)
-and produces an a (the selected branch's body).
+**Already in tree.**  Concrete representation:
+`Constructor.HypTwr.HypTwrVal` (typed value-level AST) plus
+`Constructor.Tower = Γ TyView TyView` (the typing tower).
 
-Multiple data types = multiple rungs at the same level, connected
-horizontally via the lateral `TyProc`-style meet.  This is where
-`Constructor.Tower`'s existing structure (`Tower = Γ TyView TyView`)
-re-uses cleanly — the typing tower and the codegen tower share the
-same shape.  The codegen tower is just the *erased* version, with
-`Pt` standing in for `TyView`.
+Algebra: a **typing tower** (`Γ TyView TyView`).  The horizontal at
+each rung is the type-view; the vertical climbs through kinds.
+Operations: `meetTowers`, `kindOf`, `materialize`.
 
-```
-Wasm-Rise  ::= Γ Pt Pt
-Pt         ::= (funcref, capture-ptr)   -- closure representation
-Hyper Pt Pt = the function as a continuation-receiver
-```
+Suitable as the source IR: the frontend produces this directly.
 
-## Layer 1 — the statically visible call hierarchy *is* a rise
+### Layer B — Wasm-with-Local-CPS
 
-The user's central intuition: the column of a `Wasm-Rise` is **as
-tall as the codegen can statically see**.
+**To be designed.**  Structurally a **scope tree** (not a column):
+each function's body is a tree of nested scopes, where each scope is
+either:
 
-Concretely, suppose the IR has:
+- A sequence of direct-style instructions ending in one of:
+  - `return` (back to caller),
+  - `br $label` (jump to a higher scope's labeled point),
+  - `dispatch scrutinee $arm₁ …$armN` (Scott elim dispatch),
+  - or fall through to the parent scope's continuation.
+- A `block $label { body }` introducing a labeled scope; the body
+  is itself a scope.
 
-```
-f x = g (h x)
-g y = i y
-h z = j z
-i  w = w + 1
-j  v = v * 2
+Each `dispatch arm` is itself a scope (the continuation's body).
+
+**Why a tree, not a column.**  Scopes nest, and `dispatch` branches.
+The shape isn't linear, so the `Γ p a b`-style column doesn't fit
+without forcing.  But the *level apparatus* from `KnownRise` carries
+over: scopes have depths, `br N` is the N-rung jump.  So:
+
+```haskell
+data Scope a where
+  Seq    :: [Instr] -> ScopeTail a -> Scope a
+  Block  :: Label -> Scope a -> Scope a
+
+data ScopeTail a where
+  Return    :: a -> ScopeTail a            -- result
+  Br        :: KnownNat n => Proxy n -> ScopeTail a
+  Dispatch  :: Scrutinee -> [Scope a] -> ScopeTail a
+  FallThru  :: ScopeTail a                  -- implicit continuation
 ```
 
-If we know all callee identities at codegen time, the call tree
-`f → g → i` and `f → h → j` are *visible* — each direct `call $i`
-in Wasm is a one-rung step in the rise.  The full rise:
+This is a **branching cofree-comonad-like tree** with `KnownNat`-
+typed back-edges.  Algebra: tree fold/traversal; the `KnownRise`
+level apparatus on `br N`.
 
-```
-rung 0 :   f's body, containing call $g, call $h
-rung 1 :   g's body (call $i), h's body (call $j)
-rung 2 :   i's body, j's body
-rung 3 :   ⟂  (no further direct calls)
-```
+Suspension is well-defined per-subtree (substitute a subtree for its
+collapsed equivalent).  Truncation is `Br $⊤` (or an indirect
+dispatch).
 
-is observable to the codegen — every rung is a Wasm function and
-every transition between rungs is a `call` instruction with a known
-target.
+This is the Rise-inspired-but-not-Rise layer.  The column has been
+generalised to a tree with named back-edges.
 
-The column **terminates** when we run out of statically known
-callees.  Three ways that happens:
+### Layer C — Hard Wasm
 
-1. **Indirect call** — `call_indirect $tbl[idx]`.  We don't know
-   which function gets called; the rise truncates here.  What's
-   above the truncation is *runtime data* (the function table).
-2. **External / imported function** — call into the host
-   environment.  Equivalent to indirect from the static view.
-3. **Recursive call** — the column would be infinite; we don't
-   actually want to climb it, we just want to emit the recursive
-   `call` instruction.  Treated as truncation for codegen purposes
-   (the loop carries the rung structure dynamically).
+**To be designed.**  Structurally a **column of instructions per
+function**, plus a flat **function table**.  This is exactly motoko's
+shape:
 
-So the rise has a *static depth*, bounded by the indirect-call /
-recursion / imports cut.  Codegen explores it as far as it can,
-emits Wasm at each rung, then leaves a `call_indirect` / `loop` /
-import to bridge the truncation.
-
-## Layer 2 — optimisation passes are profunctor evolutions
-
-The user's second intuition: optimisation is **`p ~~~> p'`**, a
-transformation that replaces the rung profunctor with a refined
-version.  Each pass is a functor on rises:
-
-```
-Pass : Γ pₖ Pt Pt → Γ pₖ₊₁ Pt Pt
+```haskell
+type WasmFrag = Depth -> Region -> [Instr] -> [Instr]
+type InstrRise = Γ WasmFrag [Instr] [Instr]     -- per function
+data WasmFunction = WasmFunction
+  { sig'      :: FuncType
+  , locals    :: [ValueType]
+  , bodyRise  :: InstrRise
+  }
+data WasmModule = WasmModule
+  { funcs     :: [WasmFunction]   -- flat list, not a rise
+  , funcTable :: Table FuncIdx    -- truncation boundary entries
+  , globals, memory, exports :: ...
+  }
 ```
 
-Pipeline stages (broad → fine):
+Algebra:
 
-| stage   | profunctor `pₖ`                                | what each rung carries                              |
-|---------|------------------------------------------------|-----------------------------------------------------|
-| 0 (IR)  | `IR.Expr`                                       | abstract syntax, source-level                       |
-| 1       | `ANF.Expr` (administrative normal form)        | every subexpression named, no nesting               |
-| 2       | `CPS.Expr` (continuation passing)              | continuations explicit                              |
-| 3       | `Closure.Expr` (closure converted)             | captures explicit, no free variables                |
-| 4       | `Scott.Expr` (Scott-encoded)                   | data ctors and elims are functions                  |
-| 5       | `Direct.Wasm` (direct calls only)              | every callee statically known                       |
-| 6       | `Tabled.Wasm` (indirect calls minted)          | unknown callees indexed in a function table         |
-| 7       | `Final.Wasm` (byte sequence)                   | the emitted Wasm module                             |
+- *Within a function:* the instr-rise `Γ WasmFrag [Instr] [Instr]`.
+  Endo-towered (`a = b = [Instr]`), so `Monoid` is automatic;
+  `mempty = nop`, `(<>) = (^^)`.  Diff-list with `O(1)` concat.
+- *Across functions:* a flat list with a function table for
+  indirect calls.  No outer "call rise" at this layer — the call
+  graph is implicit in `Call $f` instructions; algebraic
+  optimisations like inlining happen *before* this layer (on the
+  Wasm-with-Local-CPS scope-tree).
 
-Each `pₖ ~~~> pₖ₊₁` is a separate codegen pass.  The whole pipeline
-is the composition.  *Multiple high-rises* = the sequence of stacked
-towers, each derived from the previous via one pass.
+Why no outer-rise here: by the time we're at Hard Wasm, all the
+"is this caller's call statically known?" decisions have been
+made.  The call graph is just bytes.  The remaining algebraic work
+is at the instruction level (peephole), which is the inner rise.
 
-Crucially: **the rise shape doesn't change between stages** (the
-visible call hierarchy is *the same*).  What changes is the lateral
-content `p` at each rung.  Each rung's `Hyper Pt Pt` body gets
-refined; the column's height stays the same until a pass introduces
-a truncation (typically pass 6, where some callees go indirect).
+### Layer D — Bytes
 
-This is why "profunctor evolution" is the right framing: passes
-preserve column structure and only refine the rung profunctor.
+A flat byte sequence.  No algebra.  Validation against the Wasm
+spec; produce a `.wasm` file.
 
-## Layer 3 — inlining is suspension, indirect calls are truncation
+### Summary of layer algebras
 
-The two structural moves on a rise have direct Wasm-codegen meanings:
+| Layer | IR | Algebra | Rise-shaped? |
+|-------|-----|---------|--------------|
+| A | Constructor IR + `Tower` | `Γ TyView TyView` (typing tower) | yes |
+| B | Wasm-with-Local-CPS | Branching cofree tree + `KnownNat` levels | Rise-inspired, not Rise |
+| C | Hard Wasm | `InstrRise = Γ WasmFrag` per function; flat module | yes per-function; no outer |
+| D | Bytes | n/a | no |
 
-### Suspension = inlining
+## Interpreters for each stage
 
-Inlining a function `g` into its caller `f`:
+Each IR layer needs an **interpreter** — a semantic function from IR
+to runtime result (or to a denotation in some semantic domain).
+Interpreters serve three purposes:
 
-- Before: rung k contains `f`'s body with `call $g`; rung (k+1)
-  contains `g`'s body.
-- After: rung k contains `f`'s body with `g`'s body substituted
-  in-line; rung (k+1) is *gone* (or rather, fused into k).
+1. **Semantics contract.**  An interpreter pins down what each IR
+   *means*; lowerings must preserve that meaning.
+2. **Differential validation.**  Compile through stages; run the
+   interpreter at each stage; results must agree.  Catches lowering
+   bugs early.
+3. **Debugging / introspection.**  When a Wasm output misbehaves,
+   running the interpreter at an earlier layer pinpoints which
+   lowering introduced the bug.
 
-In `Rise` ops: `retreat (collapse [f_rung, g_rung], rest)`.  The
-collapse is the substitution — `g`'s body becomes a `block` (or just
-inlined sequence) inside `f`'s.  Standard inlining; algebraically a
-suspension.
+### Interpreter A — Constructor IR
 
-When *all* of an eliminator's branches are inlined simultaneously,
-the eliminator's `call_indirect` collapses to a `br_table` — every
-branch is a local `block` and the dispatch picks one via `br_table`
-at compile time.  This is the "Scott + br_table" perfection: every
-known-callee eliminator becomes a zero-overhead jump table.
+Already exists in spirit via `Constructor.Hs` (Haskell codegen
+through `runghc`).  Could also build a direct in-memory interpreter
+on `HypTwrVal`.
 
-### Truncation = indirect call
-
-When the codegen can't statically resolve the callee:
-
-- The rung that *would* contain the callee's body is unobservable
-  from this point.
-- We emit `call_indirect` with the appropriate function-table index.
-- The function table itself carries the (statically-emitted) callees;
-  what's not known is *which one* will be picked at runtime.
-
-In `Rise` ops: the column **truncates** at this rung.  Above the
-truncation is runtime data (the function-table mapping).  We can't
-`squash` past a truncation.
-
-`KnownRise` (the level-aware variant in `PLAN.md`) would naturally
-type this: rungs below the truncation have level `'S^k 'Z`; above
-the truncation, level becomes `⊤` (or a designated opaque token).
-The codegen can statically check "this rung is at level < ⊤" to
-decide whether to emit direct or indirect.
-
-### Tail call = horizontal step reused
-
-Wasm's `return_call` (and `return_call_indirect`):
-
-- Caller's frame disappears at the call site.
-- Callee occupies the caller's stack slot.
-- Algebraically: the "current rung" is *replaced* by the callee
-  rung; not pushed.
-
-In `Rise`: tail call is `current ← stepUp current` — overwrite,
-don't grow.  The visible column doesn't lengthen; it just shifts
-one rung up.  Perfect for Scott eliminators where every arm
-tail-calls its continuation by construction.
-
-## Layer 4 — Wasm instructions as rise specialisations
-
-Each (γ)/Rise codegen choice maps to a specific Wasm instruction:
-
-| Rise operation                              | Wasm instruction          |
-|---------------------------------------------|---------------------------|
-| direct call, push frame                     | `call $f`                 |
-| direct tail call, replace frame             | `return_call $f`          |
-| indirect call (truncation)                  | `call_indirect $tbl[idx]` |
-| indirect tail call                          | `return_call_indirect`    |
-| eliminator with all branches inlined         | `br_table` over blocks    |
-| recursion                                    | `loop` + branch           |
-| suspended (inlined) call                     | no instruction; body inlined |
-| host import (truncation, external)           | imported `func`           |
-
-The codegen's job per rung is: pick the *cheapest* instruction
-consistent with the rise's structure at that rung.  The cost order is
-roughly:
-
-```
-no instruction (inlined)  <  br_table  <  return_call  <  call
-                                                          <
-                          <  return_call_indirect  <  call_indirect
+```haskell
+interpA :: HypTwrVal m -> Value
 ```
 
-So: prefer inlining → prefer `br_table` → prefer direct →
-prefer tail → only indirect when forced.  Each preference is an
-algebraic move on the rise (suspend / collapse / step / truncate).
+Where `Value` is the runtime universe (closures, ctors, etc.).
 
-## Layer 5 — `KnownRise` for level-aware codegen decisions
+### Interpreter B — Wasm-with-Local-CPS
 
-The relative `Rise` substrate (from `Constructor.HyperRise`) handles
-the structure.  The codegen *also* wants to know **how deep the
-visible column goes** at each rung — i.e., the absolute level
-information that `KnownRise` (per `PLAN.md`'s "Absolute version"
-subsection) provides.
+Custom interpreter that walks the scope tree.  Each `Scope` has:
 
-Use cases:
+```haskell
+data WasmState = WasmState
+  { stack    :: [Value]
+  , locals   :: Map LocalIdx Value
+  , scope    :: ContextStack       -- nested scopes' labels
+  , funcs    :: Map FuncIdx Function
+  }
 
-- **Inlining budget.**  Inline only rungs at level ≤ `inline_depth`;
-  past that, keep direct calls.  Without `KnownRise`'s level type,
-  the budget would have to live as a value-level counter; with it,
-  the codegen has a static handle on "where am I in the call tree."
+interpB :: Scope a -> WasmState -> (a, WasmState)
+-- Scope evaluation:
+--   Seq instrs tail -> run instrs, then run tail
+--   Block label body -> push label; run body; pop label
+--   Tail Return  -> exit function
+--   Tail Br n    -> unwind n scopes
+--   Tail Dispatch -> pick arm based on scrutinee
+```
 
-- **Tail-call detection.**  `return_call` is legal only when the
-  caller's rung is at level n and the callee's body doesn't need to
-  preserve the caller's frame.  Type-witness via `KnownRise`'s
-  `succ`: a tail call moves `lvl → succ lvl` *replacing* the current
-  rung; type-checks the invariant.
+The `dispatch` semantics: a Scott eliminator selects an arm by
+scrutinee shape; the arm's continuation runs in the current scope.
 
-- **Truncation as level-⊤.**  An indirect-call boundary moves the
-  level to a designated "opaque" successor.  Once at `⊤`, subsequent
-  rungs are unknown; the codegen emits indirect calls and stops
-  trying to climb.
+### Interpreter C — Hard Wasm
 
-- **Specialisation gates.**  Some optimisations (e.g., constant
-  propagation through `Hyper` self-application) only apply at
-  certain rungs.  Gating by level keeps the pass total.
+The standard Wasm spec defines this.  Either:
 
-So the *practical* path forward isn't to implement `KnownRise`
-immediately — it's to start with `Rise`-grounded codegen and surface
-where level-typing would clean up the architecture.  Those surface
-sites become the queue for the `KnownRise` implementation.
+- Use an existing Wasm interpreter (Haskell's `wasm` package, or
+  shell out to `wasm3` / Wasmer / wasmtime).
+- Write a minimal in-memory interpreter handling the subset we
+  emit.
 
-## Layer 6 — erasure as the irreversible Wasm-bound move
+The latter is probably worth it for the v0: small instruction
+subset, easy to validate against B's interpreter.
 
-Recall: rise/retreat is reversible (retraction); erasure is
-irreversible.  In Wasm codegen, erasure happens at *every rung* as
-we move down the pipeline:
+```haskell
+interpC :: WasmModule -> ImportEnv -> [Value] -> [Value]
+```
 
-- IR `Expr` → ANF: types still present, but reduced to first-order.
-- ANF → CPS: no further erasure; structural change only.
-- CPS → Closure-converted: capture-env types collapse into "pointer
-  to capture record."
-- Closure → Scott: type-level dispatch info (e.g., refining-GADT
-  index) erases — the runtime sees only the chosen branch.
-- Scott → Direct.Wasm: function signatures collapse to Wasm
-  types (i32, i64, …); abstract closure types become `funcref +
-  capture-ptr`.
-- Direct → Final: bytes; no types at all.
+### Interpreter D — Bytes
 
-Each step erases something.  By the time we emit bytes, the *only*
-information surviving is what the runtime needs.  The (γ)/Rise tower
-has been compressed to a single rung — the runtime rung — and
-everything above has been suspended / fused / erased.
+Run the actual bytes through `wasmtime` or `wasm3`.
 
-This is the picture from the `38d9ed6` git-note made operational:
-"the runtime never moves; it just hosts more and more of the tower
-as socle moves get applied."  The Wasm codegen is *the entire socle-
-extension sequence* applied to the constructor's IR.
+### Validation chain
 
-## Layer 7 — concrete starting plan
+```
+interpA(constructor IR)        ──┐
+                                  ├─ should all agree on observable I/O
+interpB(lower to Wasm-Local-CPS) ─┤
+                                  │
+interpC(lower to Hard Wasm)    ──┤
+                                  │
+interpD(serialise to bytes)    ──┘
+```
 
-Drawing the layers together, here's the concrete-but-not-prescriptive
-ordering for getting something running:
+Each lowering is a *refinement*: it makes some semantic choices
+concrete (continuation shapes, instruction sequences, byte
+representation) but cannot change observable behaviour.  Equivalence
+of interpreters is the lowering's correctness condition.
 
-1. **Pick `Pt`.**  Wasm closure representation — probably
-   `{funcref, capture-ptr}` as a 64-bit value or a struct in linear
-   memory.  Reflects the choice on top of `Constructor.HyperRise`.
+## Where the rise algebra still applies
 
-2. **Implement the IR-side rise**, `Γ IR.Expr Pt Pt`.  Each rung is
-   a function whose `Hyper Pt Pt` body is its IR-level operational
-   semantics.  Uses `Gamma` directly; no new code on the substrate
-   side.
+Three real places where `Rise` (or close-cousin column algebras) earn
+their keep:
 
-3. **Implement passes 1-4** (ANF → CPS → Closure → Scott) as
-   `Γ pₖ Pt Pt → Γ pₖ₊₁ Pt Pt` rung-by-rung transformations.  Each
-   is a `fmap`-style traversal of the rise.
+### 1. Inlining as suspension on the function call graph (pre-Layer-C)
 
-4. **Implement pass 5** (Scott → Direct.Wasm).  This is where the
-   actual Wasm instructions get emitted.  Each rung becomes a
-   Wasm function.
+When lowering A→B or doing optimisations within B, the *call
+graph* of the program is implicitly a rise: each function is a
+rung, each direct call is a vertical edge.  Inlining a known
+callee = `retreat (collapse [caller, callee], rest)` — fuse two
+rungs.
 
-5. **Implement pass 6** (truncation discovery).  Walk the rise; mark
-   rungs where the visible column ends.  Insert a function-table
-   entry and emit `call_indirect` at those boundaries.
+This happens **at the Wasm-with-Local-CPS layer** (after frontend
+lowering, before Hard Wasm).  Once we're at Hard Wasm, all
+inlining decisions have been made; the call graph is just `Call
+$f` instructions.
 
-6. **Implement pass 7** (bytes).  Serialize the Wasm module.
+The function-rise isn't a separate data structure in the IR — it's
+*derived* from the call graph.  Inlining mutates the layer-B IR
+according to suspension semantics, but the IR itself stores
+functions in a `Map FuncIdx Function`, not as a `Γ`.
 
-7. **Implement the inlining suspension.**  Whenever a direct call's
-   callee is statically known *and* fits the inline budget,
-   `retreat (collapse [caller, callee], rest)` — fuse the rungs at
-   the IR level *before* pass 5 emits them as separate functions.
+### 2. Peephole opts as instruction-rise suspension (within Layer C)
 
-8. **Implement `br_table` collapse.**  When an eliminator's *all*
-   branches are inlinable, emit one `br_table` instead of a
-   `call_indirect`.  This is the "Scott + br_table" perfection
-   mentioned in the `38d9ed6` git-note.
+The `InstrRise = Γ WasmFrag [Instr] [Instr]` per function is a
+genuine `Rise` instance.  Peephole rules are local rewrites:
 
-9. **Implement `return_call`.**  Wherever the IR ends with a call
-   in tail position, emit `return_call` instead of `call`.  Scott
-   eliminator arms are the textbook case.
+- `LocalSet n :: LocalGet n :: rest → LocalTee n :: rest`
+- `Const _ :: Drop :: rest → rest`
+- `Const c :: Const c' :: Binary And :: rest → Const (c.&.c') :: rest`
 
-10. **Add `KnownRise` when (5–9) all want it.**  Don't implement
-    pre-emptively; surface the need from the codegen's own
-    architecture.
+Each rule is a one-rung-pair suspension.  The whole `optimize` pass
+in motoko's `instrList.ml` is an iterated suspension cascade.
 
-## The 5 bullets revisited (from `PLAN.md`)
+This is the cleanest application of the rise algebra: the rules
+ARE algebraic rewrites with the suspension shape, no stretching.
 
-The 5 already-queued bullets fit cleanly into this layering:
+### 3. Truncation at indirect-call boundaries
 
-| bullet                                          | Wasm/Rise interpretation                              |
-|-------------------------------------------------|------------------------------------------------------|
-| `@`-binders for Build (cyclic data via DPS)     | DPS = (γ)'s "settling fixpoint"; an `@`-binder names the cell at allocation time, and the cycle closes by patching the cell after the body emits — Wasm-side: `i32.store` into the captured slot |
-| `λ` and value-level function application         | a `λ` introduces a fresh rung; application invokes it.  Pass-4 (Scott) treats this as a closure ctor + eliminator |
-| Non-regular nested data in Scott                | each level of nesting is a separate rung; codegen emits one function per nesting level (or inlines if known) |
-| Refining GADT with existentials (Refl shape)    | the indexed-eliminator's Wasm shape is `call_indirect $tbl[idx]` where `idx` is the *refinement evidence* (existential metadata erased) |
-| Specialised lint carrier for duplicate-binders  | not a Wasm concern; orthogonal pass |
+When the codegen cannot statically resolve a call (its callee isn't
+known at compile time), it emits `call_indirect` against a function-
+table entry.  In rise vocabulary: the call-graph rise *truncates*
+at that point.
 
-All five except the last are direct consequences of the rise framing.
-The first four would all benefit from `KnownRise`'s level-typing once
-the codegen surfaces the need.
+This is a categorical decision (resolved vs not), not a continuous
+spectrum.  The function table is the runtime data structure that
+carries the truncated content.
 
-## Connection to existing constructor code
+### 4. `KnownRise` for `br N` levels (in Layer B)
 
-What's *already in tree* and ready to plug into this codegen:
+The scope-tree at layer B has nested scopes with depths.  `br N`
+addresses the N-th-outer scope.  This is `KnownRise`'s `succ`
+applied N times on the level type.
 
-- `Constructor.HyperRise` — the `Rise` substrate, the `Gamma`
-  carrier, the `Γ` alias.  Wasm codegen would instantiate
-  `Γ Pt Pt` for `Pt = closure-ref`.
-- `Constructor.Tower` — the typing tower (`Γ TyView TyView`).  Each
-  Wasm rung's *type* is a `Tower` rung; the codegen erases this to
-  `Pt`.
-- `Constructor.Scott` — already emits Scott-encoded Haskell.  The
-  Wasm codegen would emit Wasm bytes instead, using the same
-  encoding regimes (non-parametric / non-refining parametric /
-  refining parametric).
-- `Constructor.HypTwr` — the value-level typing pass.  Its output is
-  the input for the Wasm pipeline.
+**This is where `KnownRise` first earns its keep operationally** —
+it types the back-edges in the scope tree.  Compile-time guarantee
+that every `br N` has a valid target.
 
-What's *missing*:
+```haskell
+data ScopeTail (l :: Nat) a where
+  Return :: a -> ScopeTail l a
+  Br     :: (n <= l) => Proxy n -> ScopeTail l a   -- typed
+  Dispatch :: Scrutinee -> [Scope l a] -> ScopeTail l a
+```
 
-- A `Pt` type (closure representation).
-- The `IR.Expr` … `Final.Wasm` profunctor types and the passes
-  between them.
-- A function-table builder for indirect calls.
-- The inlining / `br_table` / `return_call` decision logic.
-- A Wasm bytecode emitter (or use an existing Haskell Wasm lib).
+The `n <= l` constraint statically enforces that the back-edge is
+in-scope.  Wasm's validator catches this at validation time;
+`KnownRise`-typed scopes catch it at compile time.
 
-The substrate (`Rise`) covers the structure; everything else is
-"fill in the lateral content per stage."
+## Concrete `p` choices — diff-list-of-Wasm-fragments
 
-## Why this framing matters
-
-Once the codegen is expressed in `Rise` terms, three things follow:
-
-1. **Each optimisation is algebraic.**  Inlining = suspension.
-   `br_table` collapse = composition of suspensions.  Tail call =
-   horizontal step.  Indirect call = truncation.  The optimiser
-   doesn't pick from an unrelated grab-bag of tricks; it picks
-   *which (γ) simplification to apply at this rung*.
-
-2. **The pipeline composes cleanly.**  `pₖ ~~~> pₖ₊₁` are functors
-   on the rise; composing them is just composing the functors.
-   New passes slot in without rebuilding the framework.
-
-3. **The connection to typing is intrinsic.**  `Constructor.Tower`
-   uses `Γ TyView TyView`; the codegen uses `Γ Pt Pt`.  Both are
-   `Γ` over different lateral types.  The relationship between
-   them — *erasure* — is just a `fmap` from the typing tower to the
-   codegen tower, dropping type-rung information rung-by-rung.
-
-This is the picture the `38d9ed6` git-note promised but didn't
-operationalise: "the calling convention is the encoding is the
-algebra."  Wasm codegen, expressed in `Rise` terms, makes that
-identity manifest in actual emitted bytes.
-
-## References
-
-- `Constructor.HyperRise` (in `~/hyperfunctions/constructor/src/`) —
-  the substrate.
-- `~/hyperfunctions/constructor/PLAN.md` — "Hyper-rise" section and
-  "Absolute version: `KnownRise`" subsection.
-- Git-note on `38d9ed6` in `~/hyperfunctions` — the calling-
-  convention-as-(γ) framing.
-- `~/opetopic/.claude/plans/opetope-as-rise.md` — the parallel
-  polynomial-functor encoding for opetopes.  Same `Rise` substrate,
-  different lateral content; further evidence that `Rise` is the
-  right shared foundation.
-- Wasm spec, especially the tail-call extension (`return_call`,
-  `return_call_indirect`).
-- `~/motoko/src/codegen/instrList.ml` — the concrete diff-list-of-
-  Wasm-fragments profunctor that this plan adopts as the inner-rise
-  `p`.  See "Concrete `p` choices" below.
-
----
-
-# Finer-grained vision (developed against `~/motoko/src/codegen/`)
-
-The motoko compiler's Wasm backend gives us a concrete, battle-tested
-instantiation of every concept above.  Reading
-`~/motoko/src/codegen/instrList.ml` and `compile_common.ml` exposes
-exactly what shape `p` takes at the instruction level, what shape
-the function table takes at the program level, and what peephole
-opts naturally fall out as `Rise` operations.  This appendix grounds
-the abstract layering in those choices.
-
-## Concrete `p` choices — the **diff-list-of-Wasm-fragments** profunctor
-
-The user's nudge: `p = diff-list of Wasm fragments`.  Motoko's
-`InstrList.t` makes this exact:
+For Layer C's per-function inner rise, the profunctor is motoko's
+`InstrList.t`:
 
 ```ocaml
 type t = int32 -> Wasm.Source.region -> instr list -> instr list
@@ -471,655 +334,318 @@ Translating to Haskell:
 ```haskell
 type Depth   = Int32
 type Region  = Wasm.Source.Region
-type WasmFrag a b = Depth -> Region -> [Instr] -> [Instr]
--- Specialised: a = b = [Instr], so this is endo-shaped:
--- WasmFrag = Reader (Depth, Region) (Endo [Instr])
+type WasmFrag = Depth -> Region -> [Instr] -> [Instr]
+-- i.e., Reader (Depth, Region) (Endo [Instr])
 ```
 
-Properties of this `WasmFrag`:
+Properties:
 
-- **`a = b = [Instr]`.**  Each fragment maps `[Instr] → [Instr]`,
-  i.e., it's an endomorphism on instruction lists.  This is the
-  *endo-tower* shape from the suspension discussion: the lateral
-  types coincide, so `Monoid (p a a)` is automatic.  `mempty` is
-  `nop = fun _ _ rest -> rest`; `(<>)` is the diff-list concat
-  `(^^) is1 is2 = fun d pos rest -> is1 d pos (is2 d pos rest)`,
-  literally function composition under the Reader.
-- **Reader of two pieces of context.**  `Depth` is the current
-  enclosing-block depth (for `Br N` resolution); `Region` is the
-  source-position tag (for DWARF/debug info).  Both are threaded
-  through every fragment.
-- **Concat is `O(1)`.**  Crucial: this is the *whole point* of
-  the diff-list shape.  Building a Wasm function by stitching
-  small fragments via `(^^)` doesn't quadratically blow up; each
-  `(^^)` is just function composition.
+- **Endo on `[Instr]`** (`a = b = [Instr]`).  `Monoid (WasmFrag)`
+  is automatic; `mempty = nop`, `(<>) = (^^)`.
+- **`O(1)` concat** via diff-list shape.  Each `(^^)` is function
+  composition.
+- **Reader of (Depth, Region)** — depth threads block-depth context
+  for `br N`; region threads source-position for DWARF.
 
-So our concrete codegen profunctor at the *instruction level* is:
+This is the proven motoko shape, transplanted.  Use it verbatim.
 
-```haskell
-type p = WasmFrag    -- endo on [Instr], plus Reader (Depth, Region)
-```
-
-`Γ WasmFrag [Instr] [Instr]` is the canonical inner-rise: a
-hyper-rise of instruction-list endomorphisms.  And because the
-lateral type is uniform (`[Instr] = [Instr]`), suspension is
-well-defined via `Monoid`, exactly as discussed earlier.
-
-## Two granularity levels — outer rise (functions) + inner rise (instructions)
-
-A Wasm program has two natural rise structures, one nested inside
-the other:
-
-- **Outer rise:** *functions*.  One rung per Wasm function.  Direct
-  calls (`call $f`) are vertical edges.  `p_outer = WasmFunction`
-  (signature + body + locals + …).
-- **Inner rise:** *instructions within a function*.  One rung per
-  instruction.  Sequence is the column.  `p_inner = WasmFrag` as
-  above.
-
-```haskell
-type FunctionRise = Γ WasmFunction Pt Pt           -- outer
-type InstrRise    = Γ WasmFrag [Instr] [Instr]     -- inner
-```
-
-These compose: a `WasmFunction` is built by emitting an `InstrRise`
-into its body.  So conceptually `WasmFunction = (signature, InstrRise)`
-where the inner rise produces the bytes.
-
-The same `Rise`-algebra applies at both granularities:
-
-- **Outer-level suspension** = inlining a function body into its
-  caller's body.  Two function-rungs collapse to one; the inner
-  rise of the callee gets concatenated into the inner rise of the
-  caller.
-- **Inner-level suspension** = peephole opt: two adjacent
-  instructions collapse to one.  `LocalSet n + LocalGet n →
-  LocalTee n`, `Const + Drop → ε`, etc.  Each peephole rule IS a
-  one-rung suspension on the inner rise.
-
-Motoko's `optimize : instr list -> instr list` is *exactly* this
-inner-rise suspension cascade, applied as a single zipper-pass over
-the emitted list:
-
-- `LocalSet n :: LocalGet n :: rest  →  LocalTee n :: rest`
-- `Const _    :: Drop      :: rest  →  rest`
-- `LocalGet n :: LocalSet n :: rest  →  rest`  (when n matches)
-- `Eq + Const 0 → Eqz` etc.
-
-Every rule is a rewrite that fuses adjacent rungs.  In algebraic
-terms: `retreat (collapse [r₀, r₁], rest)` where `collapse` here is
-the rewrite-specific reduction.  The whole `optimize` function is an
-iterated suspension cascade — *bottom-up rise compression*.
-
-The opportunity that the Rise framing exposes (motoko doesn't have
-this explicitly): **peephole rules are algebraic rewrites on
-`InstrRise`.**  We could express them as `InstrRise → InstrRise`
-transformations and compose them functorially, rather than as a
-hand-rolled zipper-traversal.  This is structurally cleaner and lets
-each rule be unit-testable in isolation.
-
-## Wasm structured control flow as `KnownRise`
+## Why structured control flow is `KnownRise`-shaped
 
 Wasm's structured control flow (`block`, `loop`, `if`, `br N`,
-`br_table`) is a perfect concrete instantiation of `KnownRise`:
+`br_table`) is the textbook `KnownRise`:
 
-```
-block_type        ::= block | loop | if
-br N              ::= "jump to the enclosing block at depth (current - N)"
-```
+- Entering a `block`/`loop` pushes a level (the type's `succ`).
+- Leaving pops.
+- `Br N` targets the N-th enclosing scope — i.e., `iterate N stepUp
+  current`.
 
-The `N` in `br N` is *the level coordinate*.  `br 0` targets the
-innermost enclosing block; `br 1` the next outer; etc.  Motoko's
-`InstrList.t` carries `int32` (the depth) precisely because every
-`br` resolution needs this level information.
+Motoko's `int32` depth labels are the level coordinates.  Motoko's
+`Lib.Promise` mechanism for lazy depth resolution is what
+`KnownRise`'s type-level levels would replace at compile time.
 
-In `KnownRise` vocabulary:
+Per the user's calibration: this is where Local-CPS scopes lower to.
+A `dispatch` becomes `br_table` over labels; a `local-cont` becomes
+a labeled `block`; an arm-tail `br $kT` becomes `br N` for the
+appropriate N (computed at lowering time from the depth-of-`$kT`
+in the scope tree).
 
-- Entering a `block`/`loop` pushes a level: `succ`-step on the
-  carrier.
-- Leaving a block pops: `unsuccessor` (not part of `KnownRise`, but
-  the dual is "the structural exit").
-- `Br N` is the typed jump: it reads as
-  `iterate N stepUp current` plus a "break here" semantic — i.e.,
-  the level-aware version of stepping up `N` rungs.
+## Lowering A → B — frontend to Wasm-with-Local-CPS
 
-Motoko's `depth = int32 Lib.Promise.t` mechanism is interesting:
-the depth label is a **promise** that gets fulfilled when the block
-is finally emitted (since the depth depends on enclosing context
-that may not be known when the inner fragment is built).  This is
-*lazy depth resolution* — exactly the kind of thing `KnownRise`'s
-type-level levels would resolve at compile time instead.
+This is the largest single transformation.  Input is a typed
+`HypTwrVal`; output is a Wasm-with-Local-CPS scope tree per function.
 
-**`KnownRise` payoff for control flow:** if levels are statically
-known, `br N` can be typechecked — guarantee the target block
-exists at level `current - N` before code generation.  Today motoko
-catches this at validation time (Wasm's structured-control-flow
-verifier rejects out-of-range `Br`s); with `KnownRise` it'd be a
-compile error.
+**Steps within the lowering:**
 
-This is the natural first surface for `KnownRise` to land — exactly
-as the PLAN.md "Absolute version" subsection predicted ("Wasm-codegen
-story, where call-site/inline decisions are level-sensitive").
+1. **Closure-convert.**  Free variables → explicit captures.
+   Lambdas become `(funcref, capture-ptr)` pairs.  Each lambda
+   becomes a Wasm function in the output module.
+2. **Scott-emit.**  `data` declarations produce ctor functions and
+   their Scott eliminators.  Each ctor packages its args into a
+   closure; the eliminator dispatches by reaching into the closure
+   shape.  (Standard Scott encoding, already done in
+   `Constructor.Scott`.)
+3. **Local-CPS-emit.**  `case e { ... }` becomes a `block` scope
+   containing a `dispatch` of the scrutinee against the arm
+   continuations.  Each arm is a `local-cont` (a scope).
+4. **Direct-style instructions for the rest.**  Arithmetic, locals,
+   calls — all direct.
 
-## Function table / indirect calls as the rise *truncation*
+The "ANF" idea from the earlier draft collapses into step 4: by
+emitting one instruction per IR sub-expression, the result is
+already in ANF-shaped form.  No separate ANF pass.
 
-Motoko's `compile_common.ml` shows the function-table mechanism:
+## Lowering B → C — Local-CPS to Hard Wasm
 
-```ocaml
-module Table : sig
-  type 'a t
-  val empty : 'a t
-  val add : 'a t -> 'a -> int * 'a t
-  val length : 'a t -> int
-  val to_list : 'a t -> 'a list
-end
-```
+The structural rewrite the user identified.  For each scope:
 
-A fast-append table for things that need to be indexed at runtime —
-function pointers, in particular.  An entry in this table is the
-boundary where the static rise terminates: from the caller's view,
-we know the table index and the table itself, but the *callee* at
-that index is opaque (chosen at runtime).
+- `Seq instrs (Return result)` → emit instrs, push result, `return`.
+- `Seq instrs (Br N)` → emit instrs, `br N`.
+- `Seq instrs FallThru` → emit instrs (no terminator).
+- `Block $label body` → emit `block $type` … `end`; inside is the
+  body's lowering.
+- `Seq instrs (Dispatch v arms)` →
+  - Push the value `v`.
+  - `br_table [label_arm₁, label_arm₂, ...]`, where each `label_armᵢ`
+    is the depth of the i-th arm's scope in the surrounding block
+    structure.
+  - Below the `br_table`, emit each arm's scope in sequence with
+    a `br $exit` at the end (where `$exit` is the common
+    continuation).
 
-This maps directly to **rise truncation**: the outer rise climbs as
-far as direct callees can be statically resolved; at every
-`call_indirect`, we stop climbing and instead serialise the
-function-table entry.  The table itself is *runtime data*; the
-truncation boundary is the codegen-discoverable cut.
+**Key invariant:** every `Br N` in layer B must have N ≤ enclosing-
+scope-depth.  Compile-time check (per `KnownRise` typing) catches
+violations.
 
-So:
+**Tail-position dispatch becomes `return`.**  If a `dispatch`'s arm
+is in tail position (the function's outermost scope), each arm's
+`br` becomes `return` instead.  This is the `return_call` /
+`return_call_indirect` analog at the structured-CF level.
 
-- `outer_rise.depth_until_truncation` = how far we can statically
-  inline / specialise / `br_table`-collapse
-- function table entries = where the rise stops being observable
-- `KnownRise` levels could mark this: a designated `⊤` (or a
-  `TruncatedAt :: c -> c` successor variant) tags the rung *past*
-  which the column is opaque
+## Lowering C → D — Hard Wasm to bytes
 
-Codegen logic: walk the outer rise downward, emit Wasm functions for
-each rung, stop at `⊤`-rungs and instead emit `call_indirect $tbl[idx]`
-plus a table entry.
+Standard Wasm spec.  Probably use an existing serialiser (the
+`wasm` Haskell package has one).  No interesting algebra here.
 
-## Backend duplication — two backends share the substrate
+## Worked example — `data Bool⋮ { T⋮; F⋮ }` revisited
 
-`~/motoko/src/codegen/` has two backends:
-
-- `compile_classical.ml` — classical (orthogonal) persistence
-- `compile_enhanced.ml`  — enhanced orthogonal persistence
-
-Both share `instrList.ml` and `compile_common.ml`.  This is a real-
-world example of **multiple high-rises** sharing a substrate: both
-backends emit the same `InstrRise` shape but with different *content*
-at each rung (different layouts, GC discipline, etc.).
-
-In our framework, this reads as: two `Γ WasmFrag [Instr] [Instr]`
-instances over the same substrate, differing in which Wasm-fragments
-get emitted per IR construct.  The substrate (`InstrList` /
-`HyperRise`) is shared; the per-rung content is backend-specific.
-
-Practical implication for the constructor's codegen: design the
-codegen as `Γ pₖ Pt Pt → Γ pₖ₊₁ Pt Pt` functors *parameterised by
-a backend-specific table of per-construct emitters*.  Different
-backends supply different tables; the pipeline structure is shared.
-That's exactly what motoko does (the two backends share `InstrList`
-and most of `compile_common`).
-
-## Concrete IR-side rise shape
-
-Pinning the IR-side shape based on this:
-
-```haskell
--- Lateral type at the inner rise: instruction stream
-type Pt_inner = [Instr]
-
--- Lateral type at the outer rise: closure handle
-data Pt_outer = Pt_outer
-  { funcref     :: !FuncIdx       -- index into the function table or direct ref
-  , captureSlot :: !MemAddr       -- pointer into linear memory for captures
-  , inlineHint  :: !InlineDirective
-  }
-data InlineDirective = MustInline | MayInline | DontInline | Truncated
-
--- Outer rise: program structure
-type ProgramRise = Γ WasmFunction Pt_outer Pt_outer
-
--- Inner rise: per-function body
-type FuncBodyRise = Γ WasmFrag [Instr] [Instr]
-
--- A complete Wasm program
-data WasmProgram = WasmProgram
-  { funcs      :: ProgramRise         -- the outer rise
-  , funcTable  :: Table FuncIdx       -- truncation boundary entries
-  , globals    :: …
-  , memory     :: …
-  , exports    :: …
-  }
-
--- Each WasmFunction has a body that is itself an inner rise
-data WasmFunction = WasmFunction
-  { sig'    :: !FuncType
-  , locals  :: ![ValueType]
-  , bodyRise :: !FuncBodyRise         -- the per-function inner rise
-  }
-```
-
-Concretely: a `ProgramRise` is a column of `WasmFunction` rungs;
-each rung's `WasmFunction` contains a `FuncBodyRise` (column of
-instruction rungs).  Two `Rise`s, one nested inside the other.
-
-## Pipeline passes, concretely
-
-Each pass refines the inner-rise's `p` while preserving the outer-rise
-shape (until pass 6 introduces truncations).  Concretely:
-
-| pass     | outer `p`                  | inner `p`                       |
-|----------|---------------------------|---------------------------------|
-| 1 (ANF)  | `IR.Function`              | `IR.Block` (ANF blocks)         |
-| 2 (CPS)  | `IR.Function` (CPS-shaped) | `IR.Block` with continuation arg|
-| 3 (CC)   | `Closure.Function`         | `Closure.Block` (captures explicit) |
-| 4 (Scott)| `Scott.Function`           | `Scott.Block`                   |
-| 5 (Wasm) | `WasmFunction` (direct)    | `WasmFrag` (motoko-shape diff-list) |
-| 6 (Tabled)| `WasmFunction` (some indirect) | `WasmFrag`                |
-| 7 (Bytes)| serialised module          | n/a                             |
-
-Each pass is `Γ pₖ_outer Pt Pt → Γ pₖ₊₁_outer Pt Pt`, with the inner
-rise transformed in lockstep.
-
-Pass 5 (the IR → Wasm pass) is the cliff edge: this is where
-abstract semantics become concrete instructions.  Per the motoko
-pattern, the bulk of complexity lives here.  The earlier passes are
-structural refinements; pass 5 is the "emit code" step.
-
-## Peephole opts as a separate, *post-pass-5* `InstrRise → InstrRise` functor
-
-Motoko applies `optimize` at `to_instr_list` time, after all
-fragments are concatenated into a final `instr list`.  That's the
-pragmatic choice: peephole rules are local rewrites that need the
-adjacency information of a flat list.
-
-In `Rise` terms, this is: after the inner rise is *materialised*
-into a flat instruction column, walk that column with a zipper and
-apply suspension rules (the peephole-rewrite cascade).  The result
-is a *shorter* column with fused rungs.
-
-This could be cleaner if expressed as `InstrRise → InstrRise`
-directly, with rules being functorial transformations.  Motoko's
-zipper-based traversal works because OCaml is what it is; in Haskell
-we could probably express rules more declaratively — `MTL`-style
-rewrite passes composed with `(>>>)`.
-
-This is a **codegen-architecture choice** worth keeping a list of:
-
-- (a) post-materialisation zipper (motoko style; pragmatic; works)
-- (b) `InstrRise → InstrRise` functor cascade (algebraic; cleaner;
-  unknown perf characteristics)
-
-Probably start with (a) for the v0 — motoko's pattern is proven —
-and migrate to (b) when peephole opts get rich enough to justify.
-
-## DWARF / debug-info threading
-
-Motoko threads DWARF tags through the instruction stream:
-`InstrList` has `Meta` instructions for DWARF tags, plus
-combinators like `dw_tag`, `dw_tag_open` that wrap fragments with
-metadata.  The Reader-of-(Depth, Region) is precisely the carrier
-for "region currently active for source-mapping."
-
-In `Rise` terms: DWARF metadata is *additional lateral content*
-attached to each rung.  Either:
-
-- Pack it into the `p`'s state monad (Reader of region + a Writer
-  of accumulated DWARF info), or
-- Make `p` parameterised by a metadata accumulator type, treating
-  DWARF as a side-product.
-
-The motoko pattern (Meta instructions interleaved with real
-instructions) keeps things simple — DWARF info rides as actual
-list elements, just instructions whose op is `Meta`.  This means
-the InstrRise column already carries DWARF; no separate apparatus
-needed.
-
-## Summary of the finer-grained vision
-
-The Wasm codegen has *two* nested rises:
-
-1. **Outer rise** over functions (`Γ WasmFunction Pt Pt`).  Visible
-   call hierarchy.  Direct calls = vertical edges.  Indirect calls
-   truncate.  Inlining = function-level suspension.
-2. **Inner rise** over instructions (`Γ WasmFrag [Instr] [Instr]`).
-   Diff-list-of-Wasm-fragments per motoko's `InstrList`.
-   Concatenation is `O(1)`.  Peephole opts = instruction-level
-   suspension.
-
-The pipeline is a sequence of `Γ pₖ → Γ pₖ₊₁` functors at the
-outer level, with corresponding inner-level transformations.  The
-peephole-opt cascade is a separate post-materialisation pass on the
-final `InstrRise`.
-
-Wasm's structured control flow (`block`/`loop`/`br N`) is a natural
-`KnownRise`: depth labels *are* level coordinates, and `br N`
-typechecks against them.  Function-table entries are the
-*truncation boundary* between visible (outer rise climbs) and
-opaque (runtime function-table dispatch).
-
-**Two backends share one substrate** (cf. motoko's classical vs
-enhanced).  In our framework: two `Γ WasmFunction Pt Pt` instances
-over `Constructor.HyperRise`, parameterised by backend-specific
-per-construct emitter tables.
-
-Concretely, the constructor's codegen needs:
-
-- `Constructor.WasmFrag` — the inner-rise profunctor, modeled on
-  motoko's `InstrList.t`.  Diff-list, Reader of (Depth, Region).
-- `Constructor.OuterRise` — the function-level outer rise type;
-  `Γ WasmFunction Pt Pt` with `Pt = (FuncIdx, MemAddr,
-  InlineDirective)`.
-- `Constructor.Wasm.Pipeline` — the sequence of `pₖ → pₖ₊₁`
-  passes from IR to bytes.
-- `Constructor.Wasm.Peephole` — the inner-rise suspension cascade,
-  motoko-shaped.
-- `Constructor.Wasm.FuncTable` — the truncation-boundary apparatus.
-
-The substrate (`HyperRise`) provides the rise algebra.  Everything
-above is "fill in the lateral content per stage."  No new
-abstractions needed.
-
-## Worked example — `data Bool⋮ { T⋮; F⋮ }` through the pipeline
-
-The smallest non-trivial example.  Trace it stage-by-stage to see
-the rise's lateral content evolve.
-
-### Stage 0 — Constructor IR (post-`HypTwr`)
-
-The frontend has produced:
+Same example as before, but expressed in the slim architecture.
+Source:
 
 ```
 data Bool⋮ { T⋮; F⋮ }
-
--- A use site:
-case T { T -> F; F -> T }      -- a Bool-flip
+case T { T -> F; F -> T }    -- bool-flip
 ```
 
-After `HypTwr` typing, the IR has:
+### Layer A — Constructor IR
 
-- A type-level `Bool` token (lives at `TyView` rung).
-- Two value-level ctors `T :: Bool` and `F :: Bool`, both nullary.
-- A `case`-expression with branches `T → F` and `F → T`.
+`HypTwrVal` carries:
 
-The constructor's existing Scott codegen would emit:
+- `Bool : TyView`
+- `T : Bool`, `F : Bool`
+- the case expression with arms `T→F` and `F→T`
 
-```haskell
-newtype Bool' = Bool' { runBool' :: forall r. r -> r -> r }
-t', f' :: Bool'
-t' = Bool' (\kT _ -> kT)
-f' = Bool' (\_  kF -> kF)
-elimBool :: Bool' -> r -> r -> r
-elimBool b kT kF = runBool' b kT kF
-```
+The typing tower (`Γ TyView TyView`) carries the kind annotations.
 
-That's the Scott encoding.  Now: how does this become Wasm?
+### Layer B — Wasm-with-Local-CPS
 
-### Stage 1 — `Γ IR.Expr Pt Pt` (post-frontend)
-
-Outer rise: 3 rungs.
-
-- Rung 0: `t_ctor` — the ctor function for `T`.
-- Rung 1: `f_ctor` — the ctor function for `F`.
-- Rung 2: `bool_flip` — the use-site `case T { … }` wrapped as a
-  function.  Calls `t_ctor` then `elimBool`.
-
-Plus rung -1: `elimBool` — the eliminator.  In Scott encoding, the
-eliminator is *implicit* (it's just `(b kT kF) → b kT kF`); there's
-no separate function emitted.  But for clarity let's pretend it has
-a rung.
-
-The outer rise's `p = IR.Expr`.  Each rung's `IR.Expr` is an AST node
-describing the function's body in source-level vocabulary (no closure
-conversion yet, no instructions).
+After lowering A→B:
 
 ```
-Γ IR.Expr Pt Pt
- │
- ├── t_ctor    :: closure (\kT _ -> kT)
- ├── f_ctor    :: closure (\_ kF -> kF)
- ├── bool_flip :: callfun t_ctor; then callfun elim (with branches F, T)
- └── ...
+;; ctor functions emitted (closures)
+function $t_ctor   = Closure { funcref=$t_body, captures=[] }
+function $f_ctor   = Closure { funcref=$f_body, captures=[] }
+
+;; bool_flip's body: a scope tree
+function $bool_flip = scope:
+  Seq [LocalGet 0    -- k (the outer continuation)
+      ]
+      (Block $exit (
+        Seq []
+          (Dispatch (call $t_ctor)         -- the scrutinee
+            [ scope: Seq [] (Br $exit       -- arm_T → F (via tail-call k)
+                              after running f_ctor)
+            , scope: Seq [] (Br $exit       -- arm_F → T
+                              after running t_ctor)
+            ])))
 ```
 
-### Stage 2 — ANF (administrative normal form)
+(Sketchy syntax; the real IR would be a proper tree value.)
 
-Each subexpression gets a name.  The outer rise's `p` is now
-`ANF.Expr`: still AST-like, but every sub-call has an explicit
-binding.
+The key point: `dispatch` has labeled-continuation arms, not
+closures.  Local-CPS is operational.
 
-```
-bool_flip:
-  let v0 = call t_ctor      -- the T
-  let v1 = call elimBool v0 -- with branches:
-            kT_branch = call f_ctor   -- F
-            kF_branch = call t_ctor   -- T (different occurrence)
-  return v1
-```
+### Layer C — Hard Wasm
 
-Suspension opportunity already visible: `t_ctor` is called twice
-in `bool_flip`, once to produce the scrutinee and once as a
-continuation.  The first call's result is statically known —
-inlining suspends rung 0 into rung 2 at the first call site.
-
-### Stage 3 — CPS
-
-Continuations made explicit:
+Lower B→C: `dispatch` → `br_table`; arms become labeled blocks.
 
 ```
-bool_flip(k):
-  t_ctor(\v0 ->
-    elimBool(v0,
-      \kT -> f_ctor(\v1 -> k v1),
-      \kF -> t_ctor(\v2 -> k v2)))
+;; bool_flip function
+(func $bool_flip (param $k funcref) (result ...)
+  block $exit (result i32)
+    block $arm_F
+      block $arm_T
+        ;; compute scrutinee (T or F)
+        call $t_ctor
+        ;; dispatch: ctor tag → arm label
+        br_table $arm_T $arm_F
+      end ;; arm_T
+      ;; arm_T body: compute F, return
+      call $f_ctor
+      br $exit
+    end ;; arm_F
+    ;; arm_F body: compute T, return
+    call $t_ctor
+    br $exit
+  end ;; exit
+  ;; tail-call k with the result
+  local.get $k
+  return_call_indirect (...)
+)
 ```
 
-This is what makes Scott's "every branch tail-calls its continuation"
-*structural*: the CPS form makes the tail-call shape explicit.
-Every `→` here ends in either another call or `k v` (the outer
-continuation), nothing else.
+This is the natural Wasm shape.  No closures for the arm
+continuations; just `block`s.  After peephole opts (the
+`InstrRise` suspension cascade), the function would shrink further.
 
-### Stage 4 — Closure-converted
+### Layer D — Bytes
 
-Free variables get explicit captures.  `t_ctor` and `f_ctor` are
-top-level so they have no captures; the lambdas in `bool_flip` do.
+Serialise.
 
-```
-t_ctor :: ClosurePtr
-t_ctor = Closure { fnref = $t_body, captures = [] }
-$t_body(kT, kF) = kT
+### Note on the example's collapsibility
 
-bool_flip :: ClosurePtr
-bool_flip = Closure
-  { fnref = $bool_flip_body
-  , captures = []
-  }
-$bool_flip_body(k) =
-  let v0 = invoke t_ctor [k_temp1, k_temp2]
-    where
-      k_temp1 = Closure $kT_body  [k]    -- captures k
-      k_temp2 = Closure $kF_body  [k]
-  ... -- and so on
-```
+In the earlier draft I claimed the example collapses to "~6 bytes"
+after suspension.  That's still right *in spirit* — full inlining
+collapses ctor calls into the dispatching site — but the right
+place for that collapse is **at layer B**, not via a "profunctor
+evolution at layer 5."  At layer B, the optimisation is: inline
+the ctor's scope into the dispatching arm, then the `br_table`
+becomes a no-op (single arm always taken), then the `block`s
+collapse.  Each step is an algebraic move on the scope tree —
+not a Rise suspension, but a tree-rewrite with similar laws.
 
-At this stage, `Pt = ClosurePtr` is concrete: `(funcref, capture-ptr)`.
+## What the rewrite kept vs trimmed
 
-### Stage 5 — Direct.Wasm — first concrete instruction emission
+**Kept:**
 
-Now we materialise instructions.  Each function becomes a Wasm
-function; each function's body is built up via `InstrList`-style
-fragments.
+- Algebraic vocabulary for code transformations (inlining,
+  peephole, truncation).
+- `WasmFrag` diff-list as the per-function inner-rise `p`.
+- `KnownRise`-typed `br N` as the natural application of the
+  level-aware substrate.
+- Function-table boundary as the truncation apparatus.
+- Two-backend share (motoko's classical vs enhanced) as
+  precedent for substrate reuse.
+- Peephole opts as instruction-rise suspension cascade.
+- Worked example (refactored to direct-style).
 
-Outer rise: `Γ WasmFunction Pt Pt`.
-Inner rise per function: `Γ WasmFrag [Instr] [Instr]`.
+**Trimmed:**
 
-`$t_body` (the body of the `T` ctor's selector function):
+- The 7-stage profunctor cascade (IR → ANF → CPS → Closure → Scott
+  → Direct.Wasm → Tabled.Wasm → Final).  Most stages weren't real
+  partitions.
+- Global CPS pass.  Wasm is direct-style; global CPS fights the
+  target.
+- ANF as a separate stage.  Direct-style instruction emission is
+  already ANF-shaped.
+- Closure-conversion as a separate stage.  It's a sub-step of
+  layer-A→B lowering.
+- "Everything is `Γ p Pt Pt`" overselling.  Each layer wants its
+  own algebra fitted to its purpose.
 
-```
-;; t_body: takes two funcref+capture args (kT, kF), tail-calls kT
-LocalGet 0       ;; load kT closure
-LocalGet 1       ;; load kT capture
-LocalGet 0       ;; (we'd actually load kT funcref via indirect)
-... 
-CallIndirect $type_continuation
-;; or, if we know kT statically (after inlining):
-Call $kT_target
-```
+**Lesson:** the rise algebra is right for *optimisation*
+(suspension, truncation, peephole) but not for *lowering* (which is
+structural rewriting across IRs).  Optimisation preserves IR
+structure and refines content; lowering changes the IR shape
+itself.  Conflating them was the over-stretch.
 
-Or, if inlining has fired (we know `kT = f_ctor` and `kF = t_ctor`):
+## Concrete starting plan (revised, 6 steps)
 
-```
-;; t_body inlined into bool_flip; kT is f_ctor whose body is "tail-call k(f)"
-;; entire thing collapses to:
-Call $f_ctor
-```
+1. **Define layer B's IR** — the scope tree with `dispatch`,
+   `local-cont`, `Br`, `Block`, direct-style `Seq` of instructions.
+   Plus the function-table apparatus.
+2. **Build interpreter B** — walks the scope tree per the semantics
+   sketched above.  Use to validate the A→B lowering.
+3. **Lower A → B** — closure-convert, Scott-emit, Local-CPS-emit,
+   direct-style for the rest.  Run interpreter B; verify against
+   the existing Haskell-oracle (`Constructor.Hs`).
+4. **Define layer C's IR** — Hard Wasm.  `WasmFunction` +
+   `InstrRise = Γ WasmFrag` per body + `WasmModule` with function
+   table.
+5. **Build interpreter C** — small subset of Wasm; validate against
+   B.  Or shell out to `wasmtime`.
+6. **Lower B → C** — structural rewrite per the spec above.  Add
+   peephole opts as `InstrRise → InstrRise` suspension rules (or,
+   motoko-style, a post-materialisation zipper pass — proven for
+   v0).
 
-This is the suspension cascade in action: every direct-call we can
-resolve becomes inlined; the residual is a tiny instruction sequence.
+Layer D (bytes) is just serialisation; use an existing library.
 
-`bool_flip` after maximal inlining:
+`KnownRise` lands at step 1 (typing layer-B scopes) and is exercised
+in step 6 (lowering `Br N` to Wasm `br N`).
 
-```
-;; takes outer continuation k (LocalGet 0)
-;; computes T (rung 0 collapsed in)
-;; invokes elim with branches F-then-T (rungs 1 and 2 collapsed in)
-;; tail-calls k with result
-Call $f_ctor     ;; F is the result (flip of T)
-LocalGet 0       ;; k
-LocalGet 1       ;; k's capture
-ReturnCallIndirect $type_continuation  ;; tail-call k with F
-```
+## Connection to existing constructor code
 
-Three instructions for the whole flip!  Because every call boundary
-was statically resolvable, every rung in the outer rise collapsed
-via suspension.
+- `Constructor.HyperRise` — substrate for the per-function inner
+  rise at layer C.  `type InstrRise = Γ WasmFrag [Instr] [Instr]`.
+- `Constructor.Tower` — the typing tower at layer A.
+  `type Tower = Γ TyView TyView`.  Already in tree.
+- `Constructor.Scott` — Scott codegen to Haskell, current
+  oracle.  Will be the differential-validation target for layer B's
+  interpreter.
+- `Constructor.HypTwr` — produces layer A's IR.
 
-The inner rise during construction:
+To be added:
 
-```
-emit_bool_flip :: WasmFrag
-emit_bool_flip =
-     emit_call_f_ctor              -- one fragment
-  ^^ emit_localget_k_funcref       -- another
-  ^^ emit_localget_k_capture       -- another
-  ^^ emit_return_call_indirect     -- final
-```
+- `Constructor.Wasm.LCPS` — layer B's scope-tree IR + interpreter.
+- `Constructor.Wasm.Hard` — layer C's IR + interpreter.
+- `Constructor.Wasm.Frag` — the `WasmFrag` diff-list profunctor.
+- `Constructor.Wasm.Lower` — A→B and B→C lowerings.
+- `Constructor.Wasm.Peephole` — instruction-rise suspension rules.
+- `Constructor.Wasm.Bytes` — D-layer serialiser (or wrap an
+  existing library).
 
-Built with `(^^)`, threaded through Reader (depth, region).
+## References
 
-### Stage 6 — Tabled.Wasm (if needed)
+- `Constructor.HyperRise` (in `~/hyperfunctions/constructor/src/`) —
+  the `Rise` substrate.
+- `~/hyperfunctions/constructor/PLAN.md` — "Hyper-rise" + "Absolute
+  version: `KnownRise`" sections.
+- Git-note on `38d9ed6` in `~/hyperfunctions` — calling-convention-
+  as-(γ) framing (still load-bearing for the optimisation algebra,
+  even after the over-stretch correction).
+- `~/opetopic/.claude/plans/opetope-as-rise.md` — parallel
+  polynomial-functor encoding for opetopes.
+- `~/motoko/src/codegen/instrList.ml` — the `WasmFrag` shape this
+  plan adopts verbatim.
+- Wasm spec, particularly:
+  - Tail-call extension (`return_call`, `return_call_indirect`).
+  - Structured control flow (`block`, `loop`, `if`, `br`,
+    `br_table`).
 
-In this particular example, every call is direct after inlining, so
-the function table is empty.  But if `k` (the outer continuation)
-isn't statically known, the `ReturnCallIndirect` needs a table entry:
+## Lessons learned (the prior over-stretch)
 
-```
-;; If k is statically unknown:
-LocalGet 0                          ;; k funcref
-LocalGet 1                          ;; k capture
-ReturnCallIndirect $type_continuation $table_main
+For posterity — the calibration arc that got us here:
 
-;; Function table:
-$table_main = [ ..., $known_k_target_1, $known_k_target_2, ... ]
-```
+- **First-pass framing (commit `ebc43a9`):** a 7-stage profunctor
+  cascade IR → ANF → CPS → Closure → Scott → Direct → Tabled →
+  Final, with each step a `pₖ ~~~> pₖ₊₁` profunctor evolution.
+  Concrete `p` choices (`WasmFrag`), two granularity levels
+  (function-rise + instr-rise), Wasm-instruction → rise-op map.
+- **The user's calibration:** Wasm is direct-style; global CPS is
+  wrong; ANF is too close to Wasm to be a separate stage; CPS
+  belongs *locally* in Scott-elim scopes where continuations are
+  compile-time-distinguishable.
+- **What survived:** the algebraic-optimisation claims (suspension,
+  peephole, truncation, `KnownRise` for control flow), the
+  concrete diff-list `p`, the worked example's spirit.
+- **What was trimmed:** the 7-stage cascade, global CPS, ANF as a
+  separate stage, "everything is `Γ p Pt Pt`."
+- **The principle now explicit:** Rise applies to *optimisation*
+  (within-IR algebra), not to *lowering* (across-IR rewriting).
+  Different layers want different algebras fitted to their
+  purpose.  All Rise-inspired in vocabulary (column algebra, named
+  successors, suspension), but the literal `Γ p a b` shape is only
+  one of several IR-fitting algebras.
 
-The `$table_main` is built incrementally as the codegen discovers
-needs (motoko's `Table` pattern from `compile_common.ml`).
-
-### Stage 7 — Bytes
-
-Serialise.  The whole `bool_flip` becomes ~6 bytes of Wasm:
-
-```
-Call    $f_ctor                  ;; 1 byte opcode + LEB128 idx
-LocalGet 0                       ;; 1 byte + LEB128
-LocalGet 1                       ;; 1 byte + LEB128
-ReturnCallIndirect ...            ;; 1 byte + LEB128 + LEB128
-```
-
-### Rise evolution recap
-
-| stage | outer `p`              | rungs visible | call edges resolvable |
-|-------|------------------------|---------------|----------------------|
-| 0     | `IR.Expr`              | 3            | all direct           |
-| 1     | `ANF.Expr`             | 3            | all direct           |
-| 2     | `CPS.Expr`             | 3            | all direct           |
-| 3     | `Closure.Expr`         | 3            | all direct           |
-| 4     | `Scott.Function`       | 3            | all direct (Scott elim implicit) |
-| 5     | `WasmFunction` (direct)| 3            | all direct           |
-| 5+    | after inlining suspensions | 1        | column has collapsed |
-| 6     | `WasmFunction` (final) | 1            | empty function table |
-| 7     | bytes                  | 1            | ~6 bytes             |
-
-The full lifecycle is: **start with a 3-rung outer rise, suspend it
-to a 1-rung outer rise, emit ~6 Wasm bytes.**
-
-For a less aggressive `Bool`-flip use case where `k` is unknown, the
-column wouldn't fully collapse — we'd emit a `call_indirect` and the
-truncation cuts above rung 0.  Three rungs in, two emitted as
-distinct functions, one as an indirect target.
-
-### What this teaches
-
-- **Suspension fully collapses small examples.**  Bool-flip becomes
-  a constant function after inlining; the rise's column reduces to
-  one rung.
-- **`Hyper Pt Pt` is the right rung type.**  Each rung is "I take a
-  continuation and tail-call it" — exactly `Hyper`.
-- **The diff-list `InstrRise` is built incrementally.**  Each
-  fragment is a tiny `WasmFrag` (LocalGet, Call, etc.); they
-  compose via `(^^)` with O(1) cost.
-- **Truncation is a discrete decision.**  Either a callee is
-  statically known (visible-rung) or it isn't (`call_indirect` +
-  table entry).  There's no in-between.
-- **Peephole opts wouldn't fire here** (the example is too small),
-  but for any non-trivial function the post-emit zipper-pass would
-  collapse common idioms.
-
-### Why this is a good v0 target
-
-`Bool` with `T → F; F → T` is:
-
-- The smallest non-trivial `data` declaration.
-- Has no parameters, no refinement, no existentials.
-- Has Scott codegen already in `Constructor.Scott` (Haskell oracle
-  via `runghc`).
-
-So we can: (i) emit a Wasm module for `bool_flip`, (ii) compare
-against the Haskell oracle's output, (iii) verify byte-level
-correctness on a couple of inputs.  Smallest meaningful integration
-test.
-
-## Why motoko's InstrList vindicates the framing
-
-Reading `~/motoko/src/codegen/instrList.ml` cold, you see:
-
-- Diff-list `(^^)` concatenation as the basic op.
-- `nop` as identity.
-- Reader-of-context (Depth, Region).
-- Peephole rules as local rewrites on flat lists.
-- Promise-based lazy depth resolution.
-- Two backends sharing the substrate.
-
-None of this is motivated in the file by category theory or
-hyperfunctions.  It's all engineering decisions made for concrete
-reasons (`O(1)` concat, label resolution, two-backend reuse).
-
-But every one of those choices *fits* the `Rise`-algebra framing:
-
-- diff-list `(^^)` = `Monoid (p a a)` for the endo case.
-- `nop` = `mempty`.
-- Reader context = a profunctor-level state attached to each rung.
-- Peephole rules = inner-rise suspensions.
-- Promise-based depth = lazy resolution of `KnownRise` levels.
-- Two-backend share = same substrate, different `p`-instantiations.
-
-This is the test that the framing is real: the engineering choices
-*already made* in motoko's codegen — none informed by the
-hyper-rise / (γ) framework — fall out naturally as instances of the
-framework's operations.  The framework isn't imposing structure; it's
-naming structure that's already there.
+The earlier draft is preserved in git history at `ebc43a9` for
+anyone who wants to trace the calibration.
