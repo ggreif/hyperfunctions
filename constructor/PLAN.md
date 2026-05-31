@@ -1484,9 +1484,13 @@ What's still ahead:
 - `@`-binders for Build (cyclic data via DPS; Motoko TRMC pointer)
 - `λ` and value-level function application
 - Codegen for the @-binder shapes in Scott (currently Hs only)
-- Non-regular nested data (Nest-style) in Scott — encoding
+- ~~Non-regular nested data (Nest-style) in Scott — encoding
   regime is in place, just needs an Ωmegator example that
-  parses through
+  parses through~~  **Done.**  `Bush a = NilB | ConsB a
+  (Bush (Bush a))` exercised in `ScottSpec.hs`; both the trivial
+  pattern-match and the deeper-typed-tail extraction round-trip
+  through `runghc`.  `emitNonRefining` regime confirmed to handle
+  the deepening lateral type parameter.
 - Lambda-encoding fixpoint vs heap-cell fixpoint divergence
 - Specialised lint carrier for duplicate-binder discipline
 - Refining GADT *with existentials* (a~b shape; Refl ctor)

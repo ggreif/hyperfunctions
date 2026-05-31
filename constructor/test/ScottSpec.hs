@@ -80,6 +80,31 @@ tests =
       \data Fin (n : Nat) : *0 { FZ : Fin Z; FS : Fin n -> Fin (S n) };\
       \let rt = case FS FZ { FZ -> FZ; FS m -> FS m }"
       "(FS FZ)"
+
+  , runsWith
+      "Scott codegen: Bush non-regular nested data"
+      -- Non-regular: ConsB's tail has type Bush (Bush a) — the
+      -- type parameter deepens at each recursive position.  This
+      -- is the canonical witness for the 'emitNonRefining' regime
+      -- (regular Scott with the type variables threaded through).
+      -- Both arms return NilB at type Bush Bool, so the result is
+      -- the empty Bush.
+      "data Bool : *0 { T : Bool };\
+      \data Bush (a : *0) : *0 { NilB : Bush a; ConsB : a -> Bush (Bush a) -> Bush a };\
+      \let rt = case ConsB T NilB { NilB -> NilB; ConsB x xs -> NilB }"
+      "NilB"
+
+  , runsWith
+      "Scott codegen: Bush extracts deeper-typed tail"
+      -- Genuinely exercises the non-regular deepening: the ConsB
+      -- arm returns xs, whose type is Bush (Bush Bool) — strictly
+      -- deeper than the scrutinee's Bush Bool.  Both arms must
+      -- agree at the deeper type, which NilB's polymorphism
+      -- supplies.
+      "data Bool : *0 { T : Bool };\
+      \data Bush (a : *0) : *0 { NilB : Bush a; ConsB : a -> Bush (Bush a) -> Bush a };\
+      \let rt = case ConsB T NilB { NilB -> NilB; ConsB x xs -> xs }"
+      "NilB"
   ]
 
 runsWith :: String -> Text -> String -> (String, IO Bool)
