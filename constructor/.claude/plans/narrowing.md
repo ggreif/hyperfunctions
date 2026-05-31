@@ -208,17 +208,38 @@ order (between Layers 2 and 3).
 
 ### The homogeneity argument
 
-A type is **one-dimensional homogeneous** if:
+No sharpened annotation needed.  A `⋮`-typed data declaration is
+**one-dimensional homogeneous** iff its ctor signature reduces to:
 
-1. It has linear recursion (each ctor either non-recursive or
-   recursive with exactly one position).
-2. Non-recursive content is trivial (`()` or absent).
-3. All recursive ctors share the same shape.
+- **a single ⋮ seed (0-cell)**: exactly one ctor with *no*
+  recursive position in the declared type.
+- **a single ⋮ generator (1-cell)**: exactly one ctor with
+  *exactly one* recursive position in the declared type.
 
-Canonical example: `Nat⋮ { Z : Nat; S : Nat -> Nat }`.  Each value
-is fully characterised by *one number* — the count of `S`-rungs
-between it and `Z`.  All `S`'s are indistinguishable: no
-per-occurrence identity.
+A purely structural check on the declaration.  `Nat⋮` matches:
+`Z : Nat` is the seed (0-cell, no recursive position), `S : Nat ->
+Nat` is the generator (1-cell, one recursive position).  Each
+Nat-value is a finite path of 1-cell generator applications
+terminating at the 0-cell seed.
+
+Failure modes ruled out by the cell-count:
+
+- **Two seeds**: `data Bool⋮ { T : Bool; F : Bool }` — finite
+  enumeration, not Nat-shaped.
+- **Two generators**: `data Bin { Nil : Bin; L : Bin -> Bin; R : Bin
+  -> Bin }` — each value records a distinguishable L/R sequence;
+  the generators are *not* interchangeable.
+- **Branching generator (arity ≥ 2)**: `data Tree { Leaf : Tree;
+  Node : Tree -> Tree -> Tree }` — two recursive positions per
+  ctor; binary-branching, two-dimensional.
+
+The "1 seed + 1 generator (arity 1)" pattern is exactly what makes
+every value characterisable by *one natural number*: the count of
+generator applications between value and seed.  All generator
+applications are indistinguishable (the cell-count says there's only
+one of them; positional information collapses), so per-occurrence
+identity vanishes.  This is the structural fact behind "only the
+length counts."
 
 For such types, an n-ary function `f : T^n → T` is determined by
 its **length-arithmetic essence**: a function `g : ℕⁿ → ℕ` on
