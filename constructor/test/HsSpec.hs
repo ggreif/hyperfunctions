@@ -122,6 +122,18 @@ tests =
       \data Eq (a : Nat) (b : Nat) : *0 { Refl : Eq a a };\
       \let rt = case Refl { Refl -> Z }"
       "Z"
+
+  -- Note: 'data Nat\8942 { Z : Z; S : a -> S a }' (Iso-style self-
+  -- typing where each value IS its own type) parses and type-
+  -- checks in the constructor language, but the Hs codegen
+  -- emits 'Z :: Z' which GHC rejects with GHC-56753 ("Data
+  -- constructor 'Z' cannot be used here (it is defined and
+  -- used in the same recursive group)").  A self-typing-aware
+  -- Hs codegen would need to erase the self-typing to a flat
+  -- 'data Nat where Z :: Nat; S :: Nat -> Nat' at the Haskell
+  -- target — losing the type-level distinction but preserving
+  -- value-level behaviour.  Recorded in PLAN.md; not exercised
+  -- here pending that codegen extension.
   ]
 
 -- | Parse via the 'Hs' carrier, run via @runghc@, assert the

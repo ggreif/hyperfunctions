@@ -1529,6 +1529,23 @@ What's still ahead:
      Needs either explicit `K`-style defunctionalisation or an
      ad-hoc Scott regime for "refining ctor, body type not in
      the indices".
+  3. **Self-typed data and Hs codegen.**  The Iso-style
+     declaration `data Nat⋮ { Z : Z; S : ∀ a. a -> S a }`
+     (each value IS its own type) parses and type-checks in
+     the constructor language via a small extension to
+     `forallExpr` — `∀ n.` now binds the name in *both*
+     `lvBinders` and `tyBinders`, so the same syntax serves
+     level-quantification and type-quantification.  The
+     typecheck-only test lives in `GadtSpec.hs` ("Refl on Eq
+     over self-typed Nat⋮").  However the Hs codegen emits
+     `Z :: Z` which GHC rejects (GHC-56753: "data
+     constructor cannot be used in its own recursive group").
+     A self-typing-aware Hs codegen would need to *erase* the
+     self-typing to a flat `data Nat where Z :: Nat; S :: Nat
+     -> Nat`, losing the type-level distinction but preserving
+     value-level behaviour.  Scott can handle Iso-style
+     declarations (existing Iso test passes through Scott), so
+     this is specifically a Hs-codegen gap.
 
 ## Open question: `S n⋮` shorthand and the suspension closure rule
 

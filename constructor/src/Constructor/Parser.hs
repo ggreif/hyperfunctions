@@ -374,7 +374,15 @@ forallExpr path binders = do
   n <- identifier
   void (symbol ".")
   let binderPath = path
-      binders'   = extendLv n binderPath binders
+      -- Bind in BOTH lvBinders and tyBinders so the same '∀ n. body'
+      -- syntax serves level-quantification (n appears as '*n') and
+      -- type-quantification (n appears as a type expression).  Refs
+      -- inside the body resolve via whichever name-table matches
+      -- the position they're parsed at (starVar / tyParamRef).
+      -- The AST node stays 'forallLv'; carriers treat it as a
+      -- passthrough binder either way.
+      binders'   = extendLv n binderPath
+                 $ extendTys [(n, binderPath)] binders
   body <- expr (extendPath PsForallBody path) binders'
   ann  <- freshExprAnn
   pure (forallLv ann n binderPath body)

@@ -370,22 +370,25 @@ tests =
     -- Both elaborate at LVar isoPath at the level layer; the
     -- difference is what's stored in the TyView shape.
 
-  -- --- Still ahead: Refl / propositional equality ------------------
+  -- --- Refl / propositional equality on Nat ------------------------
   --
-  -- The remaining canonical refining GADT not yet exercised here is
-  -- propositional equality:
+  -- The canonical refining GADT.  'Eq' is indexed by two Nats; 'Refl
+  -- : Eq a a' refines both indices to coincide.  Hs-codegen end-to-end
+  -- on the standard 'data Nat\8942 { Z : Nat; S : Nat -> Nat }' lives in
+  -- 'HsSpec'.
   --
-  --     data Refl : forall l. *l -> *l -> *l where
-  --       Refl : a ~ a
-  --
-  -- It needs surface syntax for /two/ kind-annotated parameters
-  -- whose kinds are universe-polymorphic, plus a binary @~@ form
-  -- (or a prefix @Refl@) — currently we accept only the prefix
-  -- shape @Refl a b@, which is fine, but the level-polymorphism
-  -- on both params still needs work in the kind-annotation
-  -- grammar.  Once that lands, 'Refl a a' becomes the canonical
-  -- "Build sees a=a so the dissect-side equation is trivial"
-  -- test for the refinement-as-hyperfunction machinery.
+  -- Self-typed Nat variant (Iso-style) — each ctor application
+  -- yields its own type.  Requires '\8704 a.' on 'S' so the type
+  -- variable is bound.  Typecheck-only: the Hs codegen target
+  -- can't emit 'Z :: Z' (GHC-56753: ctor used in its own
+  -- recursive group); recorded as Scott/codegen follow-up (3)
+  -- in PLAN.md.
+  , acceptsValByHypTwr
+      "Refl on Eq over self-typed Nat\8942 (typecheck-only; Hs codegen gap)"
+      "data Nat\8942 { Z : Z; S : \8704 a . a -> S a };\
+      \data Eq (a : Nat) (b : Nat) : *0 { Refl : Eq a a };\
+      \let rt = case Refl { Refl -> Z }"
+      ["rt"]
   ]
 
 -- | Helper: parse + elaborate end-to-end via HypLinf → HypTwr; assert
