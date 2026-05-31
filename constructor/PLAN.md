@@ -1724,22 +1724,138 @@ by `p`.  `Rise` is the unfolding step of that stream.  Standard
 cofree-comonad shape, but generalised so the carrier `p` is a
 profunctor rather than a functor.
 
-### Open question: heterogeneous rise
+### Absolute version: `KnownRise`
 
-`Rise` as currently stated forces a single `p` for the whole
-tower.  A heterogeneous version would let `p` vary by rung:
+`Rise` as landed is the *relative* version — rungs are typed
+identically, no static record of "where am I in the column."
+The absolute version makes the level a static parameter:
 
 ```haskell
-class HetRise (r :: ...) where
-  hetRise    :: r p₀ a b -> (p₀ a b, r p₁ a b)
-  hetRetreat :: (p₀ a b, r p₁ a b) -> r p₀ a b
+class KnownRise (r :: (* -> * -> *) -> (c -> c) -> c -> * -> * -> *) where
+  rise    :: r p succ l a b -> (p a b, r p succ (succ l) a b)
+  retreat :: (p a b, r p succ (succ l) a b) -> r p succ l a b
 ```
 
-with `p₁` the "successor" of `p₀` — exactly what the
-level-annotated `Hyper n` version was reaching for.  Climbs
-between *kinds* of rungs.  Different laws (the retraction is
-no longer self-typed); probably wants its own class.  Worth
-exploring once `Rise` is established.
+with:
+
+- `p :: * -> * -> *` — the profunctor on each rung (same as `Rise`).
+- `succ :: c -> c` — the level-kind's successor function.
+- `l :: c` — the **current rung's level**, recorded in the type.
+- `a`, `b` — lateral parameters (same as `Rise`).
+
+`rise` decomposes a tower at level `l` into the current rung
+and the tower starting at `succ l`; `retreat` is the inverse.
+The static `l` makes the *types* witness where you are.
+
+### Inhabitants of `succ`
+
+| `succ` chosen        | tower shape                              |
+|----------------------|------------------------------------------|
+| `'S :: Nat -> Nat`   | numeric tower, position is a `Nat`       |
+| `Id` / `K () :: ()->()` | recovers `Rise` exactly (level trivial) |
+| promoted kind successor | universe ladder                       |
+| any `c -> c` endofunction | arbitrary indexed staircase          |
+
+So `KnownRise` is the typed superset; `Rise` is `KnownRise`
+specialised to `(c = (), succ = K (), l = '())`.  Erasure goes
+`KnownRise → Rise` irreversibly — the absolute level
+information is dropped, just like erasure on a squashed rung
+drops type-rung shadows.
+
+### Retraction laws (unchanged in shape)
+
+```
+retreat . rise = id_{r p succ l a b}                                  -- always
+rise . retreat = id_{(p a b, r p succ (succ l) a b)}                  -- on image
+```
+
+The static `l` doesn't alter the laws; it refines the *types*
+of both sides to specify where you are in the column.
+
+### Typed squash
+
+The heterogeneous-Vec issue from the relative version
+dissolves under the absolute version — each `Vec` slot
+carries `p a b`, but its *position* witnesses the level:
+
+```haskell
+squash :: KnownRise r => SNat n -> r p succ l a b
+                                -> ( HVec n (p a b)
+                                   , r p succ (Iterate n succ l) a b
+                                   )
+```
+
+`Iterate n succ l` (the n-fold iteration of `succ` from `l`)
+gives the remaining tower's static starting level.  The
+positional level-tagging in the HVec is intrinsic; no
+existential packing needed.
+
+### Heterogeneous rise dissolves into level-polymorphism
+
+The earlier "het-rise" open question (rungs carrying
+different `p`s) becomes a trivial extension of `KnownRise`:
+make the profunctor a level-indexed *family*:
+
+```haskell
+class HetKnownRise (r :: (c -> * -> * -> *) -> (c -> c) -> c -> * -> * -> *) where
+  rise    :: r ps succ l a b -> (ps l a b, r ps succ (succ l) a b)
+  retreat :: (ps l a b, r ps succ (succ l) a b) -> r ps succ l a b
+```
+
+where `ps :: c -> * -> * -> *` indexes a profunctor per level.
+The rung at `l` is `ps l a b`; varying by rung is just varying
+`ps` over its first argument.  No separate `HetRise` class
+needed.
+
+### `kindOf` becomes type-aware
+
+The relative `kindOf :: r p a b -> r p a b` in `HyperRise.hs`
+loses no information but also witnesses no progress.  The
+absolute version:
+
+```haskell
+kindOf :: KnownRise r => r p succ l a b -> r p succ (succ l) a b
+```
+
+names the climb in the types — useful for proofs of "this
+operation moved us up exactly one rung" and probably needed
+for the level-annotated Wasm story (where the codegen wants
+to know which rung's protocol it's emitting).
+
+### Haskell-typability caveat
+
+`succ :: c -> c` as a class parameter forces `succ` to be a
+type *constructor* (or saturated closed type family), since
+GHC doesn't have type-level lambdas.  So:
+
+- `succ = 'S` (promoted Nat ctor) ✓
+- `succ = SomeClosedTypeFamily` ✓
+- `succ = \l -> something` ✗ (no type-level lambdas)
+- `succ = Id` ✓ (treat as identity type family)
+
+In practice the cases that matter (`'S` for Nat towers,
+identity for the trivial successor, universe successor for
+kinds) are all type constructors, so this is workable.  But
+it's worth recording — anything `succ` that needs a
+beta-redex won't fit.
+
+### Relationship to the relative `Rise`
+
+The intent is to **keep `Rise` as the working class** (it's
+already wired into `Constructor.Tower` via `Γ = Gamma Hyper`,
+and the production code uses it).  `KnownRise` is the
+level-aware refinement that:
+
+- Lives one rung up algebraically — it's `Rise` plus a level
+  type.
+- Can always degrade to `Rise` by forgetting `succ` and `l`.
+- Is what an absolute Wasm-codegen story would need, since
+  Wasm's tail-call/inlining decisions are level-sensitive at
+  compile time even if levels erase at runtime.
+
+For now, recorded but not implemented.  Implementation is
+queued for when level-annotation actually surfaces in a
+consumer.
 
 ### Wasm codegen pay-off
 
@@ -1760,21 +1876,45 @@ Each call site at codegen time chooses:
 All three are independent choices over the same algebraic
 substrate.
 
+**Full Wasm-codegen vision sketched in
+[`.claude/plans/wasm-codegen.md`](.claude/plans/wasm-codegen.md).**
+That document develops the layering: a rise in Wasm is the
+*statically visible call hierarchy*; indirect calls truncate
+the column; inlining is suspension; optimisation passes are
+profunctor evolutions `pₖ ~~~> pₖ₊₁`; the whole pipeline (IR
+→ ANF → CPS → closure → Scott → Direct → Tabled → Final) is
+a sequence of `Γ pₖ Pt Pt → Γ pₖ₊₁ Pt Pt` functors over a
+uniform substrate.  Wasm instructions (`call`, `return_call`,
+`call_indirect`, `br_table`) map to specific Rise operations.
+Includes the concrete starting plan (10 steps) and connects the
+5 queued bullets above to their Wasm/Rise meanings.
+
 ### Queued
 
-- Add `Constructor.HyperRise` (or `Constructor.Rise`) carrying
-  the class + the generalised `(γ) p a b` + the `(γ)` instance
-  + tests exercising round-trip rise/retreat.
-- Keep `Constructor.Tower` and `Constructor.HypTwr` as the
-  monomorphic `(γ) Hyper`-style concrete-rung instance for now;
-  consider whether they should be re-expressed as instances of
-  the new abstraction, or kept as the optimised fast path.
+- ~~Add `Constructor.HyperRise` carrying the class + the
+  generalised `(γ) p a b` + the `(γ)` instance.~~  **Landed
+  in `2f53c38`.**  No standalone tests — the abstraction is
+  exercised by `Constructor.Tower` (`type Tower = Γ TyView
+  TyView`, re-exporting `Gamma (..)`).
+- ~~Sketch the het-rise extension; decide whether to merge it
+  with `Rise` or split into a separate class.~~  **Resolved
+  by `KnownRise` + level-indexed profunctor family** (see the
+  Absolute version section above).  No separate class needed.
 - Investigate `Rise` instances for `(->)` and `Iso` carriers;
   the latter intersects with the existing `Iso : Iso isn't
   promotion — it's *the level coordinate*` section.
-- Sketch the het-rise extension; decide whether to merge it
-  with `Rise` or split into a separate class.
-- Cross-reference back into the `38d9ed6` git-note once the
-  Haskell side is in tree — the note currently uses (γ)
-  exclusively; "hyper-rise" + `Rise` class is the natural
-  Haskell-level vocabulary to land alongside it.
+- Implement `KnownRise` when a consumer surfaces that needs
+  the level-aware variant.  Likely first surface: the
+  Wasm-codegen story, where call-site/inline decisions are
+  level-sensitive at compile time even if levels erase at
+  runtime.  Until then, recorded only.
+- Cross-reference back into the `38d9ed6` git-note now that
+  the Haskell side is in tree — the note currently uses (γ)
+  exclusively; "hyper-rise" + `Rise` class (and the queued
+  `KnownRise`) is the natural Haskell-level vocabulary to land
+  alongside it.
+- **Execute the Wasm-codegen plan** in
+  [`.claude/plans/wasm-codegen.md`](.claude/plans/wasm-codegen.md):
+  10 concrete steps from `Pt` choice through `br_table`-collapse
+  and `return_call`.  Subsumes the 5 still-ahead bullets above
+  by re-framing each as an algebraic move on `Γ Pt Pt`.
