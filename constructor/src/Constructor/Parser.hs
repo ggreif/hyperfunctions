@@ -25,9 +25,11 @@ import Constructor.Sort (Mode (..), Sort (..))
 import Constructor.Syntax (HasAnn (..), Lang (..), Name)
 import Control.Monad (foldM, void)
 import Data.Char (isAlpha, isAlphaNum)
+import Data.Foldable (foldrM)
 import Data.Functor.Const (Const (..))
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
+import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Void (Void)
@@ -822,26 +824,91 @@ decl path binders = dataD <|> letD <|> ctorD
       ann  <- freshDeclAnn
       pure (valDecl ann path n body, bindersInBody)
 
-    -- | Either @: expr@ or @⋮@ (the typing-tower shorthand).  The
-    --   '⋮' (U+22EE VERTICAL ELLIPSIS) is /literally/ the typing
-    --   tower as glyph — three vertical dots picking out the
-    --   stable upward stream of rungs that @predLv (LVar p) = LVar
-    --   p@ guarantees.  Parsed as a 'tyConRef' to the LHS
-    --   identifier at the LHS path: the right reading is "build the
-    --   tower at this name+path, use its next rung as the type
-    --   annotation" — which is precisely 'kindOf' applied to that
-    --   TyConV at offset zero, giving the same-name-bumped-offset
-    --   under self-stratification.
+    -- | Either @: expr@ or the trailing-'⋮' sugar.  The sugar form
+    --   admits zero-or-more atom args followed by '⋮':
     --
-    --   This is shorthand only — semantically equivalent to the
-    --   explicit @c : c@ form once the body-mutual prescan + the
-    --   self-reference pre-extend put @c@ into tcBinders.
+    --     '<C>⋮'             →  '<C> : <C>'                       (nullary)
+    --     '<C> Nat⋮'          →  '<C> : ∀ n : Nat. n → <C> n'      (n=1)
+    --     '<C> T₁ … Tₙ⋮'     →  '<C> : ∀ x₁:T₁. … ∀ xₙ:Tₙ. x₁→…→xₙ→<C> x₁…xₙ'
+    --
+    --   Iso-preserving form: each ctor application produces its own
+    --   singleton type.  Fresh binder names are chosen to avoid
+    --   collision with anything in the surrounding scope (tcBinders,
+    --   tyBinders, lvBinders, valCtors, valVars).  See PLAN.md
+    --   "Sugar: ctor `⋮` desugaring rule (resolved)" for the spec.
     towerOrAnnotated lhsName lhsPath pathStep bs =
-          (do void (symbol "\8942")
-              ann' <- freshExprAnn
-              pure (tyConRef ann' lhsName lhsPath))
-      <|> (do void (symbol ":")
-              expr (extendPath pathStep lhsPath) bs)
+          try (do void (symbol ":")
+                  expr (extendPath pathStep lhsPath) bs)
+      <|> (do args <- many (atom (extendPath pathStep lhsPath) bs)
+              void (symbol "\8942")
+              buildCtorSugar lhsName lhsPath bs args)
+
+    -- | Build the desugared ctor type from the sugar form.  Given
+    --   ctor name C, its path p, current binders bs, and the parsed
+    --   arg-type list, produce the AST
+    --
+    --     ∀ x₁. … ∀ xₙ. x₁ → … → xₙ → C x₁ … xₙ
+    --
+    --   For n=0 (nullary), the result is just @tyConRef C p@.
+    --
+    --   Note: 'forallLv' doesn't currently carry a kind annotation
+    --   slot, so the binders are emitted without explicit @: T@.
+    --   The use-site of the ctor will refine each binder's kind via
+    --   the meet against the supplied arg type.  When kind-annotated
+    --   forall lands, we can rebuild this with explicit @∀ x : T.@.
+    buildCtorSugar
+      :: forall a r m. (Lang r, HasAnn a m, MonadParsec Void Text m, MonadFail m)
+      => Name -> Path -> Binders -> [r a 'SExpr] -> m (r a 'SExpr)
+    buildCtorSugar lhsName lhsPath bs args = case args of
+      [] -> do
+        ann <- freshExprAnn
+        pure (tyConRef ann lhsName lhsPath)
+      _ -> do
+        let n = length args
+            names = freshBinderNames n bs
+            paths = [ extendPath (PsLamBinder i) lhsPath
+                    | i <- [0 .. n - 1] ]
+            np    = zip names paths
+        -- Innermost: C applied to all binder-refs (left-associative).
+        headAnn <- freshExprAnn
+        let headTree = tyConRef headAnn lhsName lhsPath
+        appTree <- foldM
+          (\acc (nm, p) -> do
+             refAnn <- freshExprAnn
+             appAnn <- freshExprAnn
+             pure (app appAnn lhsPath acc (tyParamRef refAnn nm p)))
+          headTree
+          np
+        -- Arrow chain (right-to-left): xₙ → app, xₙ₋₁ → (xₙ → app), …
+        arrTree <- foldrM
+          (\(nm, p) acc -> do
+             refAnn <- freshExprAnn
+             arrAnn <- freshExprAnn
+             pure (arr arrAnn (tyParamRef refAnn nm p) acc))
+          appTree
+          np
+        -- ∀-wrap each binder (outermost = leftmost binder).
+        foldrM
+          (\(nm, p) acc -> do
+             forallAnn <- freshExprAnn
+             pure (forallLv forallAnn nm p acc))
+          arrTree
+          np
+
+    freshBinderNames :: Int -> Binders -> [Name]
+    freshBinderNames n bs =
+      let forbidden = Map.keysSet (lvBinders bs)
+                  <> Map.keysSet (tyBinders bs)
+                  <> Map.keysSet (tcBinders bs)
+                  <> Map.keysSet (valCtors bs)
+                  <> Map.keysSet (valVars bs)
+          candidates = [T.pack ("a" <> show i) | i <- [0 :: Int ..]]
+          go _     []     = []  -- unreachable, infinite list
+          go taken (c:cs)
+            | c `Set.member` forbidden  = go taken cs
+            | c `Set.member` taken      = go taken cs
+            | otherwise                 = c : go (Set.insert c taken) cs
+      in take n (go Set.empty candidates)
 
 program
   :: (Lang r, HasAnn a m, MonadParsec Void Text m, MonadFail m)

@@ -396,6 +396,16 @@ tests =
       \data Witness : *0 { ItsZZ : Eq Z Z -> Witness };\
       \let rt = ItsZZ Refl"
       ["rt"]
+
+  -- The ⋮ sugar: 'S Nat⋮' desugars to 'S : ∀ a0 : Nat. a0 -> S a0'
+  -- via the iso-preserving rule from PLAN.md.  The fresh binder
+  -- 'a0' is chosen to avoid collision with anything in scope
+  -- (Z, S, Nat all forbidden).
+  , acceptsValByHypTwr
+      "⋮ sugar on Nat ctors: 'Z⋮; S Nat⋮' desugars to iso-preserving form"
+      "data Nat\8942 { Z\8942; S Nat\8942 };\
+      \let rt = S Z"
+      ["rt"]
   ]
 
 -- | Helper: parse + elaborate end-to-end via HypLinf → HypTwr; assert

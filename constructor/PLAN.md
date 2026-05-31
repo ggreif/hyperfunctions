@@ -1547,110 +1547,127 @@ What's still ahead:
      declarations (existing Iso test passes through Scott), so
      this is specifically a Hs-codegen gap.
 
-## Open question: `S n⋮` shorthand and the suspension closure rule
+## Sugar: ctor `⋮` desugaring rule (resolved)
 
-Currently the canonical `Nat` declaration writes the recursive
-ctor as `S : n -> S n` (an arrow), explicit in domain and
-codomain.  Tempting shorthand:
+The canonical `Nat` declaration can be written:
 
 ```
-data Nat⋮ { Z⋮; S n⋮ }
+data Nat⋮ { Z⋮; S Nat⋮ }
 ```
 
-mirroring the way `Z⋮` already works for nullary ctors.  The
-intuition: `S` saturated with `n` has singleton type `S n`, so
-the `⋮`-mark on the saturated term `S n` *is* the type-level
-shadow — same operation as `Z⋮`.
+mirroring the existing nullary-ctor `⋮` shorthand (`One⋮` → `One :
+One` from the Iso-style tests).  The agreed semantics: **`⋮` on a
+ctor preserves the value↔type iso uniformly; explicit `:` is the
+opt-out for degeneracy.**
 
-### The inference rule it forces
+### The desugaring rule
 
-For this to type-check, the parser/typer must adopt:
+For a ctor declaration
 
-> In a self-towered declaration `data X⋮ { … }`, free variables
-> in constructor positions default to type `X`.
+```
+<C> <T₁> <T₂> … <Tₙ>⋮
+```
 
-For `data Nat⋮ { Z⋮; S n⋮ }`, this gives `n :: Nat` directly.
-Same rule also rescues the long form `S : n -> S n` (today's
-syntax doesn't actually annotate `n`; it relies on the same
-default).
+inside `data <D>⋮ { … }`, the parser emits
+
+```
+<C> : ∀ x₁ : T₁. ∀ x₂ : T₂. … ∀ xₙ : Tₙ. x₁ → x₂ → … → xₙ → <C> x₁ x₂ … xₙ
+```
+
+where `x₁ … xₙ` are fresh binder names invented by the desugaring.
+Nullary is the n=0 special case: no binders, no arrows, result is
+`<C>` itself.
+
+| Sugared | Desugared |
+|---|---|
+| `Z⋮` (in `data Nat⋮`) | `Z : Z` |
+| `S Nat⋮` (in `data Nat⋮`) | `S : ∀ n : Nat. n → S n` |
+| `Nil⋮` (in `data L⋮`) | `Nil : Nil` |
+| `Cons () L⋮` (in `data L⋮`) | `Cons : ∀ u : (). ∀ l : L. u → l → Cons u l` |
+
+### Why `∀` is right
+
+The binders introduced by the desugaring use the `∀` parser node
+(`forallLv` in the AST, with the tyBinders-binding extension from
+commit `9afc610`).  References to the binder inside the body resolve
+via `tyParamRef`.  The body's `x₁ → x₂ → … → xₙ → <C> x₁ … xₙ`
+reads as: arrow from each "binder-as-type" (since `Tᵢ` is `⋮`-typed,
+its values double as types) to the ctor applied to the binders —
+giving each `<C> a₁ … aₙ` application its own singleton type.
+
+### Fresh-name picking
+
+1. **Preferred name**: lowercase initial of the arg's type.
+   `Nat → n`, `Bool → b`, `List → l`, `Iso → i`.  Fallback `x`
+   when the type is anonymous (`()`, parens, complex expression).
+2. **Forbidden set**: all ctors in scope (program-wide), all type
+   params of the surrounding data, all level vars, all value
+   vars.  Avoid name-shadowing the existing environment.
+3. **Disambiguation**: if the preferred letter collides with the
+   forbidden set, append `1, 2, ...` until clear.
+
+The ctor-filter is load-bearing for soundness — without it, the
+desugaring could emit name-shadowed ASTs that elaborate wrong.
+The naming-preference is aesthetic; user-supplied names (e.g.,
+`S (n : Nat)⋮`) is a future extension.
 
 ### Tied to the (γ)-suspension framing
 
 The `⋮` mark is the syntactic realisation of *suspension*
 (per the calling-convention-as-(γ) git-note on `38d9ed6`):
 "pinch the term's vertical column into a name at one dimension
-below."  The result is a type.
+below."  The `⋮`-iso-preserving form preserves the suspension's
+information content — value and type are linked rung-by-rung.
 
-The inference rule "free variables default to the type being
-declared" is exactly *what makes the suspension legal* — it
-ensures the column being suspended is closed (every free
-variable already lives in `X`), so nothing escapes when we
-collapse the column into a name.  Without that closure,
-suspension would manufacture a type that mentions free
-variables of unknown origin.
+The desugaring's correctness comes from the `∀`-binders living in
+*both* `lvBinders` and `tyBinders` (commit `9afc610` extension).
+Each binder is simultaneously a level-of-type-Nat (via lvBinders)
+and a type-of-kind-Nat (via tyBinders), exactly the two readings
+of the self-tower iso.
 
-### Where the shorthand breaks
+### Spectrum of degeneracy
 
-The closure rule is only sound for **regular non-parametric
-non-refining** data.  Three failure modes:
+The choice of `⋮` vs `:` per ctor selects how much information is
+preserved:
 
-1. **Non-regular nested data.**
-   `data Bush a⋮ { Nil⋮; Cons a (Bush (Bush a))⋮ }` — the
-   `Bush (Bush a)` argument must be written explicitly; the
-   default rule would (wrongly) replace it with `Bush a`.
+| Declaration | Information at type level |
+|---|---|
+| `data Nat⋮ { Z⋮; S Nat⋮ }` | Full iso — each value uniquely typed |
+| `data Nat⋮ { Z : Nat; S Nat⋮ }` | Z degenerates; S preserved |
+| `data Nat⋮ { Z⋮; S : Nat → Nat }` | Z preserved; S degenerates both sides |
+| `data Nat : *0 { Z : Nat; S : Nat → Nat }` | Fully degenerated — values share the type |
 
-2. **Parametric data.**
-   `data List a⋮ { Nil⋮; Cons a (List a)⋮ }` — the parameter
-   `a` is a *parameter*, not a recursive position.  Plausibly
-   fine if the rule is split: "free occurrences in the head =
-   parameter; free occurrences in ctor positions = recursive
-   slot defaulting to `X` instantiated at the parameters."
+The user picks per-ctor.  The fully-degenerated form (last row) is
+the conventional ADT shape; the fully-iso-preserving form (first
+row) is the dependent-Nat for Refl-style equality reasoning.
 
-3. **Refining GADTs.**
-   `data Fin n⋮ { FZ : Fin (S n)⋮; FS : Fin n -> Fin (S n)⋮ }`
-   — `n` is the *index*, with type `Nat`, not `Fin`.  The
-   default rule is exactly wrong here.  Needs either a header
-   that introduces `n : Nat`, or a separate annotation
-   mechanism.
+### Implementation path
 
-### Why this matters
+Pure parser-level transformation.  The parser sees `<C> <Ts>⋮` in a
+ctor position, emits the equivalent AST with explicit `forallLv`
+nodes (one per arg, in order) wrapping the ctor's type signature,
+with fresh binder names chosen per the naming rule.  HypTwr, the
+codegens, and everything downstream see only the desugared AST —
+no machinery changes elsewhere.
 
-Cases 1-3 above are precisely the cases where the value-rung
-↔ type-rung **iso doesn't hold uniformly**.  Non-regular and
-refining GADTs both have constructors whose type-rung shape
-*diverges* from their value-rung shape.  So the shorthand-vs-
-explicit choice tracks something deeper: it's the syntactic
-marker for whether the data declaration's DataKinds promotion
-is *automatic* (regular: shorthand) or *requires explicit
-annotation* (non-regular / refining: long form).
+### Parametric / refining cases handled naturally
 
-This connects directly to `Constructor.Scott`'s three regimes
-(non-parametric / non-refining parametric / refining
-parametric).  The shorthand works exactly where the
-**non-parametric** regime applies.  The other two regimes
-already need explicit annotations for their own reasons; the
-parser could reuse those annotations to permit the shorthand
-on the recursive-slot positions while keeping indices /
-non-regular slots explicit.
+The old worry that the sugar fails for parametric or refining
+data turns out to be moot.  Under the iso-preserving desugaring:
 
-### Action items (needs more thought)
+- **Parametric data** `data List (a : *0)⋮ { Nil⋮; Cons a (List a)⋮ }`:
+  the parameter `a` is in `tyBinders` (from the data's header), so
+  `a` references in the ctor's arg-type expressions resolve as
+  parameters.  No "free variable" problem; the desugaring just
+  introduces fresh binders for the args and uses `a` from scope.
+- **Refining GADTs** `data Fin (n : Nat) : *0 { FZ : Fin Z⋮; FS : Fin n → Fin (S n)⋮ }`:
+  same — `n` is a data parameter in scope, `Z` and `S` are ctors
+  in scope.  The desugaring uses what's there.
 
-- Decide whether to formalise the closure rule and admit
-  `data Nat⋮ { Z⋮; S n⋮ }` as parser sugar.
-- If yes: extend to parametric (rule 2) by splitting
-  parameter-vs-recursive-position semantics; reject the
-  shorthand for non-regular / refining (rules 1, 3) with a
-  clear diagnostic pointing to long form.
-- Investigate whether the same closure rule scales to the
-  *parameter*-position annotations needed by `Fin`, or whether
-  refining GADTs need a separate header (`data Fin (n : Nat)⋮
-  { … }` style).
-- Consider whether `⋮` should attach to the *type* (head) or
-  to *each constructor* (or both, redundantly) — current
-  notation does both, which is workable but worth revisiting.
-- Cross-reference: this is one piece of the broader self-tower
-  / (γ) / suspension story documented in the `38d9ed6` git-note;
-  any shorthand decision should keep that framing consistent.
+The old "failure modes" were artifacts of the wrong inference
+rule (the "free vars default to data type" reading); the correct
+rule (iso-preservation via `∀`-introduction of fresh binders) makes
+these cases work uniformly.
 
 ## Hyper-rise
 
