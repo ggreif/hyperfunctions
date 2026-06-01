@@ -794,15 +794,21 @@ decl path binders = dataD <|> letD <|> ctorD
       -- every ctor's result type ('DataName p1 … pk').
       dataApplied <- buildDataApplied n path params
       ctorEntries <- haskellCtorLoop n path bodyBinders dataApplied 0
-      -- Default kind annotation: @*0@.  Matches the param-kind
-      -- default ('collectParams' assigns @*0@ to un-annotated
-      -- params), so the data and its params share one universe —
-      -- no level tear.  Users who want universe-polymorphic data
-      -- write the explicit @data X a : ∀l. *l { … }@ form and
-      -- thread @l@ into param kinds manually.
-      starAnn <- freshExprAnn
-      let e  = star starAnn 0
-          ds = [d | (_, _, d) <- ctorEntries]
+      -- Default kind annotation: a kind-meta at the data's own
+      -- declaration path (Phase 4 of the iso-tower-parametric arc;
+      -- .claude/plans/lvannot-shape.md).  The 'tyKindMeta' default
+      -- falls through to '*0' for carriers that don't override it,
+      -- preserving classical semantics; HypLinf / Tc / HypTwr will
+      -- (when extended) resolve the meta at use sites — to
+      -- 'Classical' when args are sticky, to 'IsoTower' when args
+      -- are slidable.  Param-kind metas (collectParams) and this
+      -- data-kind meta share the same path-space, so the
+      -- functional dependency 'data kind = f(param kinds)' falls
+      -- out naturally from kind unification.
+      kindAnn <- freshExprAnn
+      let kindMetaPath = extendPath PsDataAnn path
+          e            = tyKindMeta kindAnn kindMetaPath
+          ds           = [d | (_, _, d) <- ctorEntries]
           siblingDecls = [(cn, cp, False) | (cn, cp, _) <- ctorEntries]
       ann <- freshDeclAnn
       let extendSibling (cn, cp, isData)
