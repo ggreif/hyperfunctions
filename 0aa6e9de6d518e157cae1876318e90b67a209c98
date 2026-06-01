@@ -143,6 +143,127 @@ arm a function with type equalities as its givens."  Givens are
 scoped to the arm's body precisely *because the arm is a function
 and functions have local scope*.
 
+## Captured environment enjoys the refinement
+
+A subtle but pleasant consequence of the "arm as function" view:
+**captured variables in the arm body automatically see the refined
+Subst** without any special machinery.
+
+Concretely, when an arm runs with `armSubst` extending the parent
+Subst by `?α := List a Z`, *every* variable lookup that uses
+`resolveView` chases through `armSubst` and sees the refined type —
+including variables that were bound *outside* the case-of and
+merely captured into the arm.
+
+```
+let f xs n = case xs of
+  Nil       -> ... n ...           -- here, `n` looks up to its
+                                   -- declared type, but pattern-
+                                   -- refined info about `xs`'s
+                                   -- index is visible through
+                                   -- `resolveView` if `n`'s type
+                                   -- mentions that index
+  Cons _ _  -> ... n ...
+```
+
+If `n : Fin (lengthOf xs)` (some dependent shape), then in the
+Nil arm `lengthOf xs` reduces under `armSubst` and `n`'s type
+refines accordingly — even though `n` was captured from the
+surrounding lambda, not bound by the pattern.
+
+### Why this is exactly MLTT's motive
+
+In the dependent eliminator,
+
+```
+elim_Vec : forall (P : Nat -> Type). … -> forall n. Vec n a -> P n
+```
+
+the **motive `P`** is what carries the refinement.  Each arm has
+the motive specialised at the arm-local index (`P Z` for the Nil
+arm, `P (S m)` for Cons).  Captured environment variables whose
+types are expressible through `P` get refined *as a consequence of
+the motive being specialised*.
+
+In our setting, `armSubst` plays the role of "motive specialised
+at this arm's index."  The capture mechanism is identical:
+`resolveView` reads through `armSubst`, so anything whose type
+mentions a refined meta gets the arm-local view.
+
+### In HypTwr terms
+
+`HypTwrEnv` carries `hypTwrEnvSubst`.  Running the arm body under
+`armSubst`:
+
+- The body's lookups for captured variables traverse the same
+  `HypTwrEnv` — same `hypTwrEnvValPaths`, same `hypTwrEnvGlobals`.
+- Their *types*, when they mention a meta that the arm refined,
+  are resolved through `armSubst` via `resolveView`.
+- On arm exit, `armSubst` drops; sibling arms re-elaborate captures
+  under their own arm-local Subst.
+
+Each arm gets a *consistent, locally-refined view of the world* —
+not just of the pattern binders, but of everything visible to it.
+
+### The deeper invariant
+
+This is why the "arm as function" framing is *load-bearing*, not
+just metaphorical: a function's body has access to its closure
+under the function's argument substitution.  Pattern arms are
+functions; their "argument" is the equation `?α ~ patIndex`; their
+"closure" is `HypTwrEnv`.  Under `armSubst`, the closure refines
+automatically.
+
+The implementation does this for free: `resolveView` is already
+the right machinery; we only need to ensure the Subst it reads is
+the *arm's* Subst, not a previous arm's.  That's exactly what
+per-arm Subst-fork delivers.
+
+## Inlining back to the syntactic arm
+
+The conceptual function `\bndrs -> body` running under `armSubst`
+is not something the implementation has to *materialise*.  The
+function-call view is a thought experiment — and the call can be
+*inlined back* to recover the original syntactic arm:
+
+```
+-- conceptual view
+case xs of
+  Cons h r -> body      ≡    (\h r -> body) xs.head xs.tail
+                              -- function over h, r at refined codomain
+
+-- but β-reducing the application
+(\h r -> body) xs.head xs.tail   →β   body[h := xs.head, r := xs.tail]
+                                  ≡   the original arm
+```
+
+So:
+
+- **At type-checking time**: each arm is a function, its body
+  elaborated under arm-local Subst, captures refined through
+  `resolveView` reading that Subst.  The Subst drops on arm exit
+  (per-arm Subst-fork).
+- **After type-checking** (or as a conceptual simplification): the
+  function call β-reduces, the pattern binders re-merge into the
+  body, and we're back to the syntactic arm we wrote.
+
+The framing is **conceptually free**: no runtime cost (β-reduction
+erases the wrapping), no syntactic burden (the source-level `case`
+expression stays unchanged), and no new IR — just a discipline on
+how `armSubst` is scoped during elaboration.
+
+This connects to the Rise/suspension story directly: the function
+wrapper is a *suspension* of the body's elaboration, suspended
+under the arm-local refinement.  Inlining the call is the
+suspension's *force* operation — except that here the suspension
+is purely meta-theoretic, used to *explain* and *constrain* the
+elaborator's behaviour, not to introduce thunks at runtime.
+
+Symmetry: **encode arms as functions** to get the scoping right;
+**inline the functions back** to keep the surface and the runtime
+untouched.  The whole machinery is conceptual scaffolding around
+the three-line operational change.
+
 ## Operational fix for HypTwr — per-arm Subst-fork
 
 `HypTwr.hs`'s `arm` rule currently does:
