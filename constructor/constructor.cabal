@@ -41,6 +41,7 @@ library
     Constructor.Hs
     Constructor.Scott
     Constructor.HyperRise
+    Constructor.Interp
   build-depends:
     , base        >= 4.18 && < 5
     , containers  >= 0.6  && < 0.9
@@ -75,6 +76,7 @@ test-suite constructor-test
     AxiomsSpec
     HsSpec
     ScottSpec
+    InterpSpec
   build-depends:
     , base
     , constructor

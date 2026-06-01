@@ -11,6 +11,7 @@ import Constructor.Sort (Sort (..))
 import qualified AxiomsSpec
 import qualified GadtSpec
 import qualified HsSpec
+import qualified InterpSpec
 import qualified ScottSpec
 import qualified HypTinfSpec
 import qualified HypTwrSpec
@@ -63,7 +64,10 @@ main = do
   putStrLn ""
   putStrLn "Scott codegen (runghc oracle):"
   scottOK <- mapM runInfer ScottSpec.tests
-  if and (parseOK ++ inferOK ++ tinfOK ++ meetOK ++ hypTinfOK ++ towerOK ++ hypTwrOK ++ gadtOK ++ axiomsOK ++ hsOK ++ scottOK)
+  putStrLn ""
+  putStrLn "Interp (value-level interpreter):"
+  interpOK <- mapM runInfer InterpSpec.tests
+  if and (parseOK ++ inferOK ++ tinfOK ++ meetOK ++ hypTinfOK ++ towerOK ++ hypTwrOK ++ gadtOK ++ axiomsOK ++ hsOK ++ scottOK ++ interpOK)
     then exitSuccess
     else exitFailure
   where
