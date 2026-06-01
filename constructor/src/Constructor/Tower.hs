@@ -52,6 +52,7 @@ module Constructor.Tower
 import Constructor.HyperLite (hPure, hRun)
 import Constructor.HyperRise (Gamma (..), Γ)
 import Constructor.Level (Lv (..))
+import Constructor.Path (Path)
 import Constructor.Syntax (Name)
 import Constructor.Tinf (TyErr (..))
 import Constructor.TyExpr (TyExpr)
@@ -187,7 +188,21 @@ kindOf s env v0 = case resolveView s v0 of
                              | n == n' && p == p' -> TyConV n p (S offset)
                            other -> other
                          Nothing -> TyUnivV (S (S Z))   -- fallback: @*0@
-  TyAppV f _   -> kindOf s env (hRun f)
+  v@(TyAppV f _)
+    -- Parametric self-loop (Phase 2 of v0.5.0+ iso-tower-parametric
+    -- arc): if the head tycon's kindEnv entry is self-referential
+    -- (its kind has the same head as itself), the kind of the
+    -- whole applied type is the head applied to OUR args with
+    -- offset bumped on the head TyConV.  Generalises the nullary
+    -- self-loop above to parametric data like 'data List⋮ a',
+    -- 'data Pair⋮ a b'.  Falls through to the existing head-only
+    -- kindOf when the head is not self-referential (classical
+    -- parametric data, where kindOf returns just the universe).
+    -> case peelTyConHead s v of
+         Just (n, p, offset, args)
+           | isSelfReferential env n p ->
+               rebuildAppChain (TyConV n p (S offset)) args
+         _ -> kindOf s env (hRun f)
   TyArrV a _   -> kindOf s env (hRun a)
   TyVarV _ _   -> TyUnivV (S (S Z))                      -- parameters default to @*0@
   TyUnivV lv   -> TyUnivV (S lv)
@@ -200,6 +215,40 @@ kindOf s env v0 = case resolveView s v0 of
                                                     -- the same kind; pick
                                                     -- the first.
   TyCaseV _ []   -> TyUnivV (S (S Z))               -- vacuous case-of
+
+-- | Peel a chain of 'TyAppV' down to a head 'TyConV', collecting
+--   the arguments in application order (leftmost first).  Returns
+--   'Nothing' for non-TyConV-headed views.
+peelTyConHead :: Subst -> TyView -> Maybe (Name, Path, Lv, [TyProc])
+peelTyConHead s = go []
+  where
+    go acc v = case resolveView s v of
+      TyConV n p offset -> Just (n, p, offset, acc)
+      TyAppV f x        -> go (x : acc) (hRun f)
+      _                 -> Nothing
+
+-- | A tycon is self-referential iff its 'kindEnv' entry's peeled
+--   head is the same tycon.  Both nullary (env entry = 'TyConV X')
+--   and parametric (env entry = 'TyAppV …(TyConV X) … params') forms
+--   count: the parameter args at the declaration site are immaterial
+--   — what matters is the head identity.
+isSelfReferential :: KindEnv -> Name -> Path -> Bool
+isSelfReferential env n p = case Map.lookup n env of
+  Just kindProc -> case kindHeadName (hRun kindProc) of
+    Just (n', p') -> n == n' && p == p'
+    Nothing       -> False
+  Nothing -> False
+  where
+    kindHeadName (TyConV n' p' _) = Just (n', p')
+    kindHeadName (TyAppV f _)     = kindHeadName (hRun f)
+    kindHeadName _                = Nothing
+
+-- | Build @head arg₁ arg₂ … argₙ@ as a left-associative chain of
+--   'TyAppV' applications.  Used by the parametric self-loop to
+--   reconstruct the application with a freshly-bumped head offset.
+rebuildAppChain :: TyView -> [TyProc] -> TyView
+rebuildAppChain head_ []         = head_
+rebuildAppChain head_ (a:args)   = rebuildAppChain (TyAppV (hPure head_) a) args
 
 -- | Lift a 'TyProc' to a Tower under a given 'Subst' and 'KindEnv'.
 --   The horizontal is the proc's TyView; the vertical is generated
