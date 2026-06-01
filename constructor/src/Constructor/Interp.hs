@@ -49,6 +49,9 @@ import Constructor.Sort (Mode (..), Sort (..))
 import Constructor.Syntax (Name)
 import Constructor.Tower (KindEnv, kindOf)
 import Constructor.TyProc (MetaId (..), Subst, TyView (..), resolveView)
+import Control.Applicative (Alternative (..))
+import Control.Monad.Logic (Logic)
+import Data.Foldable (asum)
 import Data.Kind (Type)
 import Data.List (elemIndex)
 import Data.Map.Strict (Map)
@@ -377,7 +380,7 @@ narrowOnce
   -> KindEnv                             -- ^ for the kind-level slidability gate
   -> Subst
   -> Name -> [TyView]                    -- ^ deferred function + arg views
-  -> [(Subst, TyView)]                   -- ^ candidate (refined-subst, result) pairs
+  -> Logic (Subst, TyView)               -- ^ candidate (refined-subst, result) stream
 narrowOnce gs cps kEnv subst fname argViews = do
   -- For each arg position, decide: concrete (pass through) or a free
   -- meta to narrow against the function's arm patterns at that
@@ -385,21 +388,21 @@ narrowOnce gs cps kEnv subst fname argViews = do
   refinements <- mapM (uncurry narrowArg) (zip [0 ..] argViews)
   let combinedSubst = foldr (\(s, _) acc -> Map.union s acc) subst refinements
       refinedArgs   = map snd refinements
-  reduced <- maybeToList (reduceDeferred gs cps kEnv combinedSubst fname refinedArgs)
+  reduced <- maybeL (reduceDeferred gs cps kEnv combinedSubst fname refinedArgs)
   pure (combinedSubst, reduced)
   where
     -- | Per-arg narrowing decision, by argument position.
-    narrowArg :: Int -> TyView -> [(Subst, TyView)]
+    narrowArg :: Int -> TyView -> Logic (Subst, TyView)
     narrowArg argIdx argView =
       case resolveView subst argView of
         -- Already concrete: pass through with identity subst.
-        v@TyConV{} -> [(Map.empty, v)]
-        v@TyAppV{} -> [(Map.empty, v)]
+        v@TyConV{} -> pure (Map.empty, v)
+        v@TyAppV{} -> pure (Map.empty, v)
         -- A free meta: enumerate the ctors the function matches on at
         -- this position; one branch per arm.
         TyMetaV (MetaId bp up) -> do
-          (cname, arity) <- armCtors gs fname argIdx
-          ctorPath       <- maybeToList (Map.lookup cname cps)
+          (cname, arity) <- asum (map pure (armCtors gs fname argIdx))
+          ctorPath       <- maybeL (Map.lookup cname cps)
           let subMetas = [ TyMetaV (MetaId (extendPath (PsCtorAppArg i) bp)
                                            (extendPath (PsCtorAppArg i) up))
                          | i <- [0 .. arity - 1] ]
@@ -408,11 +411,10 @@ narrowOnce gs cps kEnv subst fname argViews = do
               substExt = Map.singleton (MetaId bp up) ctorView
           pure (substExt, ctorView)
         -- Other shapes (TyArrV, TyUnivV, TyVarV, TyDeferV): skip.
-        _ -> []
+        _ -> empty
 
-    maybeToList :: Maybe a -> [a]
-    maybeToList Nothing  = []
-    maybeToList (Just x) = [x]
+    maybeL :: Maybe a -> Logic a
+    maybeL = maybe empty pure
 
 -- | The constructors a function pattern-matches on at argument
 --   position @argIdx@ — read from its 'Expr' body in 'Globals'.

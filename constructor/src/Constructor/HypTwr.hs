@@ -48,6 +48,8 @@ module Constructor.HypTwr
 import Constructor.HyperLite (hPure, hRun)
 import Constructor.Interp (Globals, narrowOnce, normaliseDeferred)
 import Constructor.Level (Lv (..), starLevel)
+import Control.Applicative (empty)
+import Control.Monad.Logic (Logic, ifte, observeMany)
 import Constructor.Path (Path, emptyPath)
 import Constructor.Sort (Sort (..))
 import Constructor.Syntax (Lang (..), Name)
@@ -502,15 +504,20 @@ meetNorm env p1 p2 =
        Right s' -> Right s'
        Left err ->
          -- Phase D: try narrowing on either side's TyDeferV chain.
+         -- The candidate search is a 'Logic' stream; 'observeMany 1'
+         -- takes the first refinement whose meet succeeds (plain
+         -- '>>=' keeps DFS order, so this matches the previous
+         -- list-based first-wins behaviour).
          let cands1 = candidatesFor gs cps kEnv s v1
              cands2 = candidatesFor gs cps kEnv s v2
-             attempts =
-               [ meet s'' (hPure v1') (hPure v2')
-               | (sub1, v1') <- cands1
-               , (sub2, v2') <- cands2
-               , let s'' = sub2 `Map.union` sub1 `Map.union` s
-               ]
-         in case [ s' | Right s' <- attempts ] of
+             search = do
+               (sub1, v1') <- cands1
+               (sub2, v2') <- cands2
+               let s'' = sub2 `Map.union` sub1 `Map.union` s
+               case meet s'' (hPure v1') (hPure v2') of
+                 Right s' -> pure s'
+                 Left _   -> empty
+         in case observeMany 1 search of
               (s' : _) -> Right s'
               []       -> Left err
   where
@@ -519,14 +526,18 @@ meetNorm env p1 p2 =
     --   return the narrow-once enumeration; otherwise recurse
     --   into TyAppV / TyArrV children so nested deferred-chains
     --   (e.g., the @pickZ ?n@ inside @Eq Z (pickZ ?n)@) surface.
+    candidatesFor :: Globals -> Map Name Path -> Map Name TyProc
+                  -> Subst -> TyView -> Logic (Subst, TyView)
     candidatesFor gs cps kEnv s v = case resolveView s v of
       TyAppV f x ->
         case peelDeferredHead s (TyAppV f x) of
+          -- Narrow if 'narrowOnce' offers anything; else fall back to
+          -- the un-narrowed view ('ifte' = soft cut: run the fallback
+          -- only when the stream is empty).
           Just (fname, argViews) ->
-            let opts = narrowOnce gs cps kEnv s fname argViews
-            in if null opts
-                 then [(Map.empty, TyAppV f x)]   -- no narrow available
-                 else opts
+            ifte (narrowOnce gs cps kEnv s fname argViews)
+                 pure
+                 (pure (Map.empty, TyAppV f x))
           Nothing ->
             -- Not deferred at this level — recurse into children
             -- so a nested deferred-chain can still be discovered.
@@ -537,7 +548,7 @@ meetNorm env p1 p2 =
         do (sa, va) <- candidatesFor gs cps kEnv s (hRun a)
            (sb, vb) <- candidatesFor gs cps kEnv s (hRun b)
            pure (sa `Map.union` sb, TyArrV (hPure va) (hPure vb))
-      other -> [(Map.empty, other)]
+      other -> pure (Map.empty, other)
 
     peelDeferredHead s = peel []
       where

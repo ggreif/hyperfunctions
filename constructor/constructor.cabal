@@ -48,6 +48,7 @@ library
     , mtl         >= 2.2  && < 2.4
     , text        >= 2.0  && < 2.2
     , megaparsec  >= 9.5  && < 9.8
+    , logict      >= 0.7  && < 0.9
 
 executable constructor
   import:         opts
