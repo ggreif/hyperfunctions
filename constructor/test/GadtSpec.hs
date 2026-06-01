@@ -547,6 +547,24 @@ tests =
       "data Nat\8942 { Z\8942; S Nat\8942 };\
       \let p = \\n -> case n { Z -> Z; S k -> S Z }"
       ["p"]
+
+  -- The downstream payoff of the per-arm Subst-fork: 'length' on an
+  -- indexed 'Vec'-shape 'List a n'.  Polymorphic scrutinee (the
+  -- lambda binder 'xs' carries a meta for both 'a' and 'n'), GADT
+  -- pattern match (Nil and Cons refine 'n' differently — to 'Z'
+  -- and 'S _' respectively), and recursion (the body calls 'length
+  -- rest', exercising 'valDecl''s self-reference pre-meta).  Both
+  -- arms return 'Nat', so body types agree horizontally — no
+  -- TyCaseV needed here; just the fork.
+  , acceptsValByHypTwr
+      "length on indexed List (polymorphic scrutinee + GADT + recursion)"
+      "data Nat : *0 { Z : Nat; S : Nat -> Nat };\
+      \data List (a : *0) (n : Nat) : *0\
+      \  { Nil : List a Z\
+      \  ; Cons : a -> List a n -> List a (S n)\
+      \  };\
+      \let length = \\xs -> case xs { Nil -> Z; Cons h rest -> S (length rest) }"
+      ["length"]
   ]
 
 -- | Helper: parse + elaborate end-to-end via HypLinf → HypTwr; assert
