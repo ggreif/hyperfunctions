@@ -565,6 +565,22 @@ tests =
       \  };\
       \let length = \\xs -> case xs { Nil -> Z; Cons h rest -> S (length rest) }"
       ["length"]
+
+  -- Haskell-style sugar: 'data List a = Nil | Cons a (List a)'
+  -- parse-time desugars to the classical form
+  -- 'data List (a : *0) : ∀l. *l { Nil : List a; Cons : a → List a
+  -- → List a }'.  Ctor return types are 'List a' (head matches
+  -- parent), not iso-tower singletons — the elaborator's
+  -- 'checkSaturation' rejects mismatched heads when parent arity
+  -- > 0, so classical desugar is the only shape that works for
+  -- parametric Haskell-style data without relaxing that check.
+  -- Same 'length' on this sugared form elaborates identically.
+  , acceptsValByHypTwr
+      "Haskell-style sugar: 'data List a = Nil | Cons a (List a)' + length"
+      "data Nat : *0 { Z : Nat; S : Nat -> Nat };\
+      \data List a = Nil | Cons a (List a);\
+      \let length = \\xs -> case xs { Nil -> Z; Cons h rest -> S (length rest) }"
+      ["length"]
   ]
 
 -- | Helper: parse + elaborate end-to-end via HypLinf → HypTwr; assert

@@ -747,6 +747,118 @@ decl path binders = dataD <|> letD <|> ctorD
       -- parse time as 'Var "Weird"' and then fail with TyUnbound
       -- when the polymorphic re-emit reaches the type layer.
       let annBinders = extendTc n path binders
+      -- Haskell-style sugar: 'data X a = C1 t1 t2 | C2 | ...' is
+      -- parse-time desugar for the iso-towered form
+      --   'data X⋮ a { C1 t1 t2⋮; C2⋮; ... }'
+      -- — each ctor's RHS becomes its iso-tower-desugared type
+      -- (each ctor value its own singleton), and the data's kind
+      -- is the data itself (covering-space self-reference).  No
+      -- new AST shape; just an alternate concrete-syntax route to
+      -- the same ⋮-form AST.
+      hsForm <- optional (try (symbol "="))
+      case hsForm of
+        Just _  -> haskellStyleBody n path params annBinders
+        Nothing -> classicalBody n path params annBinders
+
+    -- | Haskell-style sugar body: parse @C1 t1 t2 | C2 | …@ as ctor
+    --   sugar.  Each ctor desugars to its classical form
+    --   @C : t1 → t2 → … → DataName p1 … pk@ where the p_i are the
+    --   data's params — i.e. ctor returns the parametric data
+    --   applied to its own params.  Same shape as
+    --   @data List (a : *0) : *0 { Nil : List a; Cons : a → List a
+    --   → List a }@ would produce.  The data's kind is @∀l. *l@
+    --   (universe-polymorphic) when no explicit kind is supplied.
+    --
+    --   (Iso-tower form @Nil : Nil@ would be nicer for the
+    --   covering-space framing but the elaborator's
+    --   'checkSaturation' rejects ctor heads not matching the parent
+    --   when parent arity > 0.  Classical form sidesteps that —
+    --   nullary data still gets covering-space semantics from
+    --   classical desugar too, since 'parentArity == 0' bypasses
+    --   the head check.)
+    haskellStyleBody n path params annBinders = do
+      let paramPaths   = zipWith (\i (p, _) -> (p, extendPath (PsDataParam i) path))
+                                 [0 ..] params
+          bodyBinders  = annBinders
+            { lvBinders = Map.empty
+            , tyBinders = tyBinders annBinders <> Map.fromList paramPaths
+            }
+      -- Build the data-applied-to-its-params expression — reused as
+      -- every ctor's result type ('DataName p1 … pk').
+      dataApplied <- buildDataApplied n path params
+      ctorEntries <- haskellCtorLoop n path bodyBinders dataApplied 0
+      -- Default kind annotation: universe-polymorphic @∀l. *l@.  A
+      -- future extension can let the user write @data X a : K =
+      -- …@ to override; for now the default suffices for the
+      -- non-iso-tower cases the Haskell-style sugar targets.
+      let lName = freshUniverseBinder bodyBinders
+          lPath = extendPath PsDataAnn path
+      starAnn <- freshExprAnn
+      let starExpr = starVar starAnn lName lPath 0
+      forallAnn <- freshExprAnn
+      let e  = forallLv forallAnn lName lPath starExpr
+          ds = [d | (_, _, d) <- ctorEntries]
+          siblingDecls = [(cn, cp, False) | (cn, cp, _) <- ctorEntries]
+      ann <- freshDeclAnn
+      let extendSibling (cn, cp, isData)
+            | isData    = extendTc cn cp
+            | otherwise = extendValCtor cn cp . extendTc cn cp
+          nextBinders = foldr extendSibling
+                              (extendTc n path binders)
+                              siblingDecls
+      pure (dataDecl ann path n params e ds, nextBinders)
+
+    -- Pick a fresh universe-level binder name that doesn't shadow.
+    freshUniverseBinder bs =
+      let forbidden = Map.keysSet (lvBinders bs)
+                  <> Map.keysSet (tyBinders bs)
+                  <> Map.keysSet (tcBinders bs)
+                  <> Map.keysSet (valCtors bs)
+                  <> Map.keysSet (valVars bs)
+          tries = [T.pack ("l" <> show (i :: Int)) | i <- [0 ..]]
+                  <> [T.pack "l"]
+      in head (filter (`Set.notMember` forbidden) (T.pack "l" : tries))
+
+    -- Build @D p1 p2 … pk@ as the data-name applied to its params.
+    buildDataApplied dn dpath params = do
+      headAnn <- freshExprAnn
+      let headTree = tyConRef headAnn dn dpath
+      foldM
+        (\acc (pn, _) -> do
+           paramRefAnn <- freshExprAnn
+           let pIdx = length [() | (qn, _) <- params, qn == pn] - 1
+               pPath = extendPath (PsDataParam pIdx) dpath
+           appAnn <- freshExprAnn
+           pure (app appAnn dpath acc (tyParamRef paramRefAnn pn pPath)))
+        headTree
+        params
+
+    -- Parse one Haskell-style ctor: @CName arg1 arg2 …@.  Args are
+    -- atom-level type expressions.  The ctor's type is built as
+    -- @arg1 → arg2 → … → DataApplied@.
+    haskellCtorLoop dn dpath bs dataApplied i = do
+      let cpath = extendPath (PsDeclIdx i) dpath
+      cname    <- identifier
+      args     <- many (atom (extendPath PsCtorTy cpath) bs)
+      ctorTy   <- buildClassicalCtorTy args dataApplied
+      cdAnn    <- freshDeclAnn
+      let entry = (cname, cpath, ctorDecl cdAnn cname ctorTy)
+      moreBar <- optional (try (symbol "|"))
+      case moreBar of
+        Just _  -> (entry :) <$> haskellCtorLoop dn dpath bs dataApplied (i + 1)
+        Nothing -> pure [entry]
+
+    -- Build @arg1 → arg2 → … → result@ as an arrow chain.
+    buildClassicalCtorTy args result =
+      foldrM
+        (\a acc -> do
+           arrAnn <- freshExprAnn
+           pure (arr arrAnn a acc))
+        result
+        args
+
+    -- Existing path: ': K' or 'args⋮' followed by '{ ctors }'.
+    classicalBody n path params annBinders = do
       e   <- towerOrAnnotated n path PsDataAnn annBinders
       -- Inside the data body, the outer ∀-scope does NOT carry over,
       -- but: the data's own type parameters DO (scoped over each
