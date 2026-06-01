@@ -64,6 +64,10 @@ instance Lang Hs where
     -- clash.  We only need IO / print / Show for 'main = print rt'
     -- and the standalone Show instances each data emits.
     , "import Prelude (IO, print, Show)"
+    -- 'Type' is referenced by data-decls with kind-annotated params
+    -- (e.g. 'data List (a :: Type) (n :: Nat)' for indexed types).
+    -- Always import — unused-import warnings are benign and rare.
+    , "import Data.Kind (Type)"
     , ""
     ] ++ map unHs ds ++
     [ ""

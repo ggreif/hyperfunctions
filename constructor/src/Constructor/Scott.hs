@@ -336,6 +336,16 @@ emitParametric dataName params ctorInfos =
         [ "(" <> T.unpack pn <> " :: " <> pk <> ")" | (pn, pk) <- params ]
       paramRefs = unwords [ T.unpack pn | (pn, _) <- params ]
       xKindChain = concat [ pk <> " -> " | (_, pk) <- params ] <> "Type"
+      -- Per-type show-wrapper: a newtype-of-String with the same kind
+      -- shape as the eliminator's @x@.  Used by 'showD' (below) in
+      -- place of 'Const' — 'Const' only has one phantom slot, so it
+      -- works for single-param indexed types (Fin n) but fails for
+      -- multi-param indexed types (List a n, Expr a, …).  This
+      -- wrapper has exactly the right arity.
+      showWrapTy = "Show" <> dn
+      showWrapLine = "newtype " <> showWrapTy <> " " <> paramSig
+                  <> " = " <> showWrapTy
+                  <> " { un" <> showWrapTy <> " :: String }"
       -- For refining-GADT branches, parent params referenced by
       -- the ctor become per-use foralls in the branch's type
       -- (FS's @n@ is fresh at each elim site).  Combine explicit
@@ -357,8 +367,8 @@ emitParametric dataName params ctorInfos =
       ctorFns =
         [ emitCtorFnParam dn elimTy idx (length enrichedInfos) cn caps res es
         | (idx, (cn, caps, res, es)) <- zip [0 :: Int ..] enrichedInfos ]
-      showFn = emitShowFnParam dn elimTy params enrichedInfos
-  in unlines (newtypeLine : "" : ctorFns ++ ["", showFn])
+      showFn = emitShowFnParam dn elimTy showWrapTy params enrichedInfos
+  in unlines (newtypeLine : "" : showWrapLine : "" : ctorFns ++ ["", showFn])
   where
     nub :: Eq a => [a] -> [a]
     nub []     = []
@@ -392,26 +402,28 @@ emitCtorFnParam dn elimTy idx n cn caps resultArgs existentials =
       _suppress = (idx, n, dn)
   in typeSig <> "\n" <> defLine
 
--- | Show for parametric data uses the Const trick: pick @x = Const
---   String@ so each branch produces a Const-wrapped String at its
---   refined index, then 'getConst' to extract.
+-- | Show for parametric data uses a per-type show-wrapper (passed
+--   in as @showWrapTy@): pick @x = Show<DN>@ so each branch
+--   produces a wrapped String at its refined index, then
+--   'un<showWrapTy>' to extract.  Replaces an earlier @Const String@
+--   approach that only worked for single-param indexed types.
 emitShowFnParam
-  :: String -> String -> [(Name, String)]
+  :: String -> String -> String -> [(Name, String)]
   -> [(Name, [String], [String], [Name])] -> String
-emitShowFnParam dn elimTy params ctorInfos =
+emitShowFnParam dn elimTy showWrapTy params ctorInfos =
   let fnName     = "show" <> dn
       paramRefs  = unwords [ T.unpack pn | (pn, _) <- params ]
       paramFor   = unwords [ T.unpack pn | (pn, _) <- params ]
       branches   =
-        [ emitShowBranchParam cn caps es
+        [ emitShowBranchParam showWrapTy cn caps es
         | (cn, caps, _, es) <- ctorInfos ]
   in fnName <> " :: forall " <> paramFor <> ". " <> elimTy <> " "
      <> paramRefs <> " -> String\n"
-     <> fnName <> " v = getConst (un" <> elimTy
+     <> fnName <> " v = un" <> showWrapTy <> " (un" <> elimTy
      <> " v " <> unwords branches <> ")"
 
-emitShowBranchParam :: Name -> [String] -> [Name] -> String
-emitShowBranchParam cn caps existentials =
+emitShowBranchParam :: String -> Name -> [String] -> [Name] -> String
+emitShowBranchParam showWrapTy cn caps existentials =
   let cnStr = T.unpack cn
       capVars = [ "a" <> show i | i <- [0 .. length caps - 1] ]
       existSet = map T.unpack existentials
@@ -422,8 +434,8 @@ emitShowBranchParam cn caps existentials =
             "\"<existential>\""
         _ -> "\"<unrecognised " <> capTy <> ">\""
       bodyStr = case caps of
-        [] -> "Const \"" <> cnStr <> "\""
-        _  -> "Const (\"(" <> cnStr <> " \" ++ "
+        [] -> showWrapTy <> " \"" <> cnStr <> "\""
+        _  -> showWrapTy <> " (\"(" <> cnStr <> " \" ++ "
               <> intercalate " ++ \" \" ++ "
                    [showOne x | x <- zip caps capVars]
               <> " ++ \")\")"
