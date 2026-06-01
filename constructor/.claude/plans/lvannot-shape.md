@@ -1,5 +1,30 @@
 # LvAnnot + iso-tower-parametric — design arc for v0.5.0+
 
+## Status (post-v0.4.0)
+
+The five-phase foundation arc **shipped in v0.4.0** (tag commit
+61efd8c, 2026-06-01):
+
+| Phase | Commit | Status |
+|---|---|---|
+| 0. LvAnnot + Shape | b30fc4a | ✅ shipped |
+| 1. 'tyKindMeta' AST + parser emission | 968d549 | ✅ shipped |
+| 2. 'kindOf' parametric self-loop | cfb4b8d | ✅ shipped |
+| 3. Slidability gate in 'reduceDeferred' | e251be2 | ✅ shipped (with cleanup bb013e2) |
+| 4. Sugar emits kind-meta default | 61efd8c | ✅ shipped |
+
+v0.5.0-dev (`dfb616c+`) is implementing the carrier overrides that
+turn the foundation on end-to-end.  Status:
+
+| Residual | Commit | Status |
+|---|---|---|
+| R1. HypTwr 'tyKindMeta' override | dfb616c | ✅ landed |
+| R3. Use-site resolution + EOE default | — | next |
+| R4. kEnv self-applied entries | — | open |
+| R2. KindEnv tracks ctor kinds | — | open |
+
+See the git-note on 61efd8c for the full residuals table.
+
 ## Context
 
 `v0.3.1` shipped the per-arm Subst-fork and `TyCaseV` (type-level
