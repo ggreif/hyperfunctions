@@ -403,16 +403,6 @@ threadDecls (d:ds) env = do
   (_, env1) <- runHypTwr d env
   threadDecls ds env1
 
--- | Thread a list of value-side carriers through the env, sort-
---   polymorphic so the same helper serves arm-thread and ctor-arg
---   threading (and any future value-level node with a list of
---   uniform-sort children).
-threadVals :: [HypTwr a s] -> HypTwrEnv -> Either TyErr HypTwrEnv
-threadVals []     env = Right env
-threadVals (x:xs) env = do
-  (_, env1) <- runHypTwr x env
-  threadVals xs env1
-
 -- | Walk a list of arms, collecting each arm's @Maybe Tower@
 --   reachability marker (used by 'case_' to filter to reachable
 --   bodies and pairwise-meet their towers).  Each arm internally
@@ -441,16 +431,6 @@ meetAllTowers s (t1:t2:rest) = do
 -- | Extract the type tower from a value-level carrier.
 sValTower :: HypTwrVal ('SVal m) -> Tower
 sValTower (HypTwrSVal t) = t
-
--- | Extract the reachability-tagged body tower from an arm
---   carrier.  'Just t' if the arm reached (body type @t@);
---   'Nothing' if its pattern clashed with the scrutinee.
-sArmTower :: HypTwrVal 'SArm -> Maybe Tower
-sArmTower (HypTwrSArm m) = fst <$> m
-
--- | Extract the arm-local 'Subst' from a reachable arm carrier.
-sArmSubst :: HypTwrVal 'SArm -> Maybe Subst
-sArmSubst (HypTwrSArm m) = snd <$> m
 
 -- | Build a 'TyView'-app chain: @head[arg0, arg1, ...]@.  Used by
 --   value-level ctor application to construct the result type

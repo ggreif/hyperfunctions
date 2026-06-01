@@ -50,6 +50,7 @@ import Constructor.Syntax (Name)
 import Constructor.Tower (KindEnv, kindOf)
 import Constructor.TyProc (MetaId (..), Subst, TyView (..), resolveView)
 import Control.Applicative (Alternative (..))
+import Control.Monad (guard)
 import Control.Monad.Logic (Logic)
 import Data.Foldable (asum)
 import Data.Kind (Type)
@@ -154,7 +155,10 @@ interp gs env e = case e of
     -- Try each arm against a fully-reduced ctor scrutinee.
     -- First match wins; binders introduced by the pattern flow
     -- into the body's env via 'matchPattern'.
-    tryArms _  _     []                  = VStuck (SCase (VCon "<unreached>" []) [])
+    -- No arm matched a fully-reduced ctor scrutinee: stay stuck on the
+    -- *actual* scrutinee with no arms (rather than fabricating a
+    -- sentinel ctor), so consumers see the real shape.
+    tryArms sn sargs []                  = VStuck (SCase (VCon sn sargs) [])
     tryArms sn sargs (Arm pat body : rest) =
       case matchPattern pat (VCon sn sargs) of
         Just bindings -> interp gs (bindings <> env) body
@@ -325,14 +329,11 @@ reduceDeferred gs cps kEnv subst fname argViews =
 reduceToValue
   :: Globals -> KindEnv -> Subst -> Name -> [TyView] -> Maybe Value
 reduceToValue gs kEnv subst fname argViews = do
-  guardSlidable (all (isSlidable kEnv subst) argViews)
+  guard (all (isSlidable kEnv subst) argViews)
   body     <- Map.lookup fname gs
   argVals  <- traverse (demote subst) argViews
   argExprs <- traverse valueToExpr argVals
   pure (interp gs Map.empty (foldl EApp body argExprs))
-  where
-    guardSlidable True  = Just ()
-    guardSlidable False = Nothing
 
 -- | An argument is "slidable" iff its kind (via 'kindOf') is
 --   self-referential / iso-tower-shaped.  Classical-kinded args
@@ -411,15 +412,11 @@ narrowOnce gs cps kEnv subst fname argViews = do
         VCon{} -> do
           r <- maybeL (promote cps val)
           pure (sub, r)
-        VStuck (SCase (VStuck (SMeta m@(MetaId bp up))) arms) -> do
-          (cname, arity) <- asum (map pure [ (c, length ps)
-                                           | Arm (PCtor c ps) _ <- arms ])
-          ctorPath       <- maybeL (Map.lookup cname cps)
-          let subMetas = [ TyMetaV (MetaId (extendPath (PsCtorAppArg i) bp)
-                                           (extendPath (PsCtorAppArg i) up))
-                         | i <- [0 .. arity - 1] ]
-              cView = foldl (\h a -> TyAppV (hPure h) (hPure a))
-                            (TyConV cname ctorPath Z) subMetas
+        -- Stuck matching an inner `case ?m { … }`: split ?m against
+        -- those arms and re-reduce, one ctor deeper.
+        VStuck (SCase (VStuck (SMeta m)) arms) -> do
+          cView <- ctorRefinement m =<< choose [ (cn, length ps)
+                                               | Arm (PCtor cn ps) _ <- arms ]
           solve (Map.insert m cView sub) args
         _ -> empty
 
@@ -432,18 +429,28 @@ narrowOnce gs cps kEnv subst fname argViews = do
         v@TyAppV{} -> pure (Map.empty, v)
         -- A free meta: enumerate the ctors the function matches on at
         -- this position; one branch per arm.
-        TyMetaV (MetaId bp up) -> do
-          (cname, arity) <- asum (map pure (armCtors gs fname argIdx))
-          ctorPath       <- maybeL (Map.lookup cname cps)
-          let subMetas = [ TyMetaV (MetaId (extendPath (PsCtorAppArg i) bp)
-                                           (extendPath (PsCtorAppArg i) up))
-                         | i <- [0 .. arity - 1] ]
-              ctorView = foldl (\h a -> TyAppV (hPure h) (hPure a))
-                               (TyConV cname ctorPath Z) subMetas
-              substExt = Map.singleton (MetaId bp up) ctorView
-          pure (substExt, ctorView)
+        TyMetaV mid -> do
+          cView <- ctorRefinement mid =<< choose (armCtors gs fname argIdx)
+          pure (Map.singleton mid cView, cView)
         -- Other shapes (TyArrV, TyUnivV, TyVarV, TyDeferV): skip.
         _ -> empty
+
+    -- | Refine a meta to `C ?m1 … ?mk`: the 'TyAppV' spine over k fresh
+    --   path-derived sub-metas (no gensym — each 'MetaId' extends the
+    --   parent's paths with 'PsCtorAppArg' i).  'empty' if C's
+    --   decl-path is unknown.  Shared by level-1 'narrowArg' and the
+    --   recursive 'solve'.
+    ctorRefinement :: MetaId -> (Name, Int) -> Logic TyView
+    ctorRefinement (MetaId bp up) (cname, arity) = do
+      ctorPath <- maybeL (Map.lookup cname cps)
+      let subMetas = [ TyMetaV (MetaId (extendPath (PsCtorAppArg i) bp)
+                                       (extendPath (PsCtorAppArg i) up))
+                     | i <- [0 .. arity - 1] ]
+      pure (foldl (\h a -> TyAppV (hPure h) (hPure a))
+                  (TyConV cname ctorPath Z) subMetas)
+
+    choose :: [a] -> Logic a
+    choose = asum . map pure
 
     maybeL :: Maybe a -> Logic a
     maybeL = maybe empty pure
