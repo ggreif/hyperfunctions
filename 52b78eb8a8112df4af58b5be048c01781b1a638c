@@ -1,0 +1,165 @@
+# `--scott` codegen: residuals after the multi-param show-wrapper fix
+
+This commit fixed one specific Scott emission bug (`Const String` →
+per-type show-wrapper) but the codegen has deeper limitations
+surfaced by `length` on indexed `List a n` and similar
+polymorphic-scrutinee-over-indexed-data programs.
+
+## 1. Constant-family encoding for non-indexed return types
+
+**Symptom**
+
+```motoko
+let length = \xs -> case xs { Nil -> Z; Cons h rest -> S (length rest) }
+```
+
+emits
+
+```haskell
+length = \xs -> unList' xs (\() -> z) (\h rest -> s (length rest))
+```
+
+which GHC rejects with:
+
+```
+Couldn't match expected type 'x a1 Z' with actual type 'Nat''
+```
+
+**Root cause**
+
+`List'`'s eliminator is
+
+```haskell
+newtype List' a n = List' { unList' :: forall (x :: Type -> Nat -> Type).
+    (forall a. () -> x a Z)
+ -> (forall n a. a -> List' a n -> x a (S n))
+ -> x a n }
+```
+
+Each arm must return `x a refinedIdx`.  But `length` returns plain
+`Nat'` regardless of the input's index — there's no way to spell
+"the constant family at Nat'" as a Haskell type-level expression
+(no type-level lambda `\a n. Nat'`).
+
+**Fix shape**
+
+Per-call-site constant-family wrapper:
+
+```haskell
+newtype K_List_Nat (a :: Type) (n :: Nat) = K_List_Nat { unK_List_Nat :: Nat' }
+length xs = unK_List_Nat
+              (unList' xs (\()    -> K_List_Nat z)
+                          (\_ r   -> K_List_Nat (s (length r))))
+```
+
+The wrapper needs to be parameterised by (a) the source data's
+parameter kinds and (b) the function's actual return type.  Each
+distinct (sourceData, returnType) pair gets its own wrapper newtype.
+
+Generalises the show-wrapper this commit added: that's the
+(sourceData, `String`) special case.  A unified emitter could
+factor both — show as `K_<DN> .. String`, general fn as `K_<DN> ..
+<returnTy>` — but the show case is already in place and works.
+
+The plumbing: emitter needs the function's *materialised* return
+type, which means running HypTwr alongside Scott (same as the
+`--hs` let-generalization story).
+
+## 2. Existential capture in show: `<existential>` placeholder
+
+```haskell
+showList v = ... (\a0 a1 -> ShowList ("(Cons " ++ "<existential>"
+                                     ++ " " ++ showList a1 ++ ")"))
+```
+
+`a0` is the element of `Cons`, typed `a` (an existential at the show
+fold's branch).  Without a Show dictionary for `a` (the eliminator
+captures no class constraints), we can't actually print it — so the
+codegen emits a literal `"<existential>"` placeholder.
+
+**Why** Scott encodings can't naturally carry typeclass dictionaries.
+A System-F-style encoding of (a -> r) doesn't know about Show.
+
+**Fix shape options**
+
+- **(easy, lossy)** Keep the placeholder, document the limitation.
+- **(better)** Emit the eliminator-newtype with an additional
+  `(forall a. ShowDict a)` parameter when needed — but this changes
+  the encoding's universal shape.
+- **(best)** Hybrid: emit a `data`-form alongside the Scott
+  `newtype` for `: *0` types (per the user's suggestion); use
+  `deriving Show` on the data form; the show fn just unwraps the
+  Scott to data.  Cleanest for the common case but adds duplication
+  in emission.
+
+## 3. `: *0` non-indexed data still uses Scott newtype
+
+For Bool, Nat, Iso, … the Scott newtype encoding is emitted along
+with hand-rolled show functions.  These work but are heavier than
+`data X = A | B deriving Show`.  Switching `: *0` non-indexed types
+to plain `data` would:
+
+- Avoid the `emitShowFnNonParam` / `emitShowFnNonRefining` paths
+  entirely for the common case.
+- Let GHC derive `Eq`, `Ord`, `Read` trivially.
+- Keep Scott encoding only for the cases that *need* it (indexed
+  refining GADTs, where the eliminator's `x` captures the index).
+
+Tradeoff: two emission codepaths.  Worth it if the common case
+dominates.
+
+## 4. Polymorphic let-generalization (shared with `--hs`)
+
+The elaborator monomorphizes recursive let-bindings to their use-
+site concrete type.  For `length` defined and immediately used:
+
+```motoko
+let length = \xs -> ...
+let rt = length (Cons Z (Cons Z Nil))
+```
+
+`length` materialises as `(List Nat (S (S Z))) -> Nat`, not
+`forall a n. List a n -> Nat`.  Emitting this concrete signature
+into Haskell makes the recursive call `length rest` ill-typed (rest
+has a different `n`).
+
+This is an *elaborator* limitation, not a Scott-specific one — it
+hits `--hs` identically — but Scott's emission has no workaround
+because its encoding fundamentally needs the polymorphic type
+(`unList'` quantifies the elim's `x` per-call).
+
+**Fix shape** Hindley-Milner let-generalization in `valDecl`:
+after meeting the body's type into the pre-meta, generalize any
+metas that don't escape to the outer scope.  Requires a "free
+metas of env" computation.  Mid-sized addition to HypTwr.
+
+## 5. Show for indexed multi-param: tested-by-construction only
+
+This commit's show-wrapper fix makes the *emitted* code compile.
+Whether `showList rt` actually *produces useful output* at runtime
+on indexed Lists isn't covered by an existing ScottSpec test —
+the existing "Scott codegen: Fin refining GADT" test is for
+single-param Fin where `Const` already worked.
+
+**Fix shape** Add a ScottSpec test: an indexed List with concrete
+elements, run `showList`, assert the printed shape (with
+`<existential>` placeholders for the element values).  Pins the
+show-wrapper's correctness; would catch any regression.
+
+## Summary
+
+| residual | severity | fix scope |
+|---|---|---|
+| 1. constant-family for non-indexed return types | high — blocks `length` on Vec | medium (per-call wrapper + plumbing) |
+| 2. existential capture in show | low — cosmetic | small (placeholder) / medium (hybrid data emission) |
+| 3. `: *0` not using `deriving Show` | low — codegen heft | medium (dual emission paths) |
+| 4. polymorphic let-generalization | high — elaborator limit | medium (HM-style in valDecl) |
+| 5. multi-param show untested at runtime | low — no regression coverage | small (add test) |
+
+Residuals 1 and 4 are the load-bearing ones for "Scott prints
+length-on-Vec correctly."  4 is shared with `--hs`.
+
+The fix in this commit (multi-param show-wrapper) is sound and
+unblocks the `showD` compile-error class for indexed data — but
+the codegens as a whole still lag the elaborator's polymorphic-
+scrutinee-GADT support.
