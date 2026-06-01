@@ -1,0 +1,22 @@
+# v0.7.0-dev scope
+
+Cycle opened by `e80560d` (cabal bump after the v0.6.0 tag —
+narrowing matures: D-full/D-disj/D-rec on a stock-LogicT substrate).
+Candidate scope, roughly ordered by tractability:
+
+- **Per-branch depth/fuel bound** on `narrowOnce`'s `solve` — cheap
+  guard so a non-terminating narrowing fails gracefully instead of
+  diverging on one branch.  Smallest, do first.
+- **Hyper-LogicT drop-in** — if Kidney/Wu deliver the hyperfunction
+  `LogicT`, swap it for stock `Control.Monad.Logic` behind
+  `narrowOnce :: … -> Logic …`.  Efficiency only; pure substrate swap.
+- **Induction frontier (begin)** — cycle detection for
+  `∀`-over-recursive-data: recognise a step-case subgoal as an
+  instance of an ancestor goal (= the IH) and close it coinductively
+  rather than unfolding.  The `add`/`add'` commutativity `Refl` is the
+  litmus.  Big — likely spans sub-cycles; see narrowing.md's boundary
+  analysis under the motivating example.
+
+Source of truth: narrowing.md status table.  Each piece that lands
+updates that table inline (per the convention in the v0.6.0 note on
+`224b699`).
