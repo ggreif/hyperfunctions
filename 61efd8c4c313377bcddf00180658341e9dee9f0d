@@ -1,0 +1,118 @@
+# v0.4.0 — Iso-tower-parametric arc (foundation)
+
+This release ships the **foundation** for use-site-driven
+iso-tower-parametric data.  Every piece of plumbing is in place,
+existing semantics are preserved end-to-end via 'tyKindMeta's
+default-to-'*0' fall-through, and the rails are laid for the
+v0.5.0+ carrier-specific overrides that turn the story on.
+
+## Shipped (Phases 0–4)
+
+| Phase | Commit | Capability |
+|---|---|---|
+| 0 | b30fc4a | LvAnnot extended with 'Shape' field (Classical / IsoTower / IsoTowerMeta) |
+| 1 | 968d549 | 'tyKindMeta' AST primitive; parser emits it for un-annotated data params |
+| 2 | cfb4b8d | 'kindOf' parametric self-loop for iso-tower-parametric tycons |
+| 3 | e251be2 | slidability gate in 'reduceDeferred' (structural ctor-path check) |
+| 3-clean | bb013e2 | drop vestigial 'KindEnv' plumbing |
+| 4 | 61efd8c | Haskell-style sugar emits kind-meta as the data's default kind |
+
+Also shipped in the v0.3.1 → v0.4.0 window: per-arm Subst-fork
+(543417c), type-level case-of TyCaseV (0a5c48c), TyCaseV
+multi-fire agreed-refinements policy (e95e37f), Haskell-style
+'data X a = …' sugar (2d42e8a), level-tear fix (8332439),
+'length' on indexed List validated (a3250f0), codegen fixes
+(52b78eb).
+
+## Residuals — v0.5.0 work
+
+### R1. Carrier overrides for 'tyKindMeta'
+
+Today: every carrier falls through to 'star ann 0' (classical
+'*0'), so kind metas are emitted by the parser but never actually
+*tracked* through inference.  Need overrides in:
+
+- **HypTwr**: emit a 'TyMetaV' at a 'PsKindMeta'-marked path so the
+  meta enters 'Subst' alongside type metas; meet rules propagate
+  resolution at use sites.  **The load-bearing piece** — without
+  it, the arc is a no-op.
+- **HypLinf / Tc**: emit 'LvAExpr lv (IsoTowerMeta path)' so the
+  shape travels alongside the level through inference.  Resolution
+  at end-of-elaboration defaults to 'Classical'.
+- **Hs / Scott / Pp**: handle the new AST shape in
+  pretty-printing/emission.  Currently the 'tyKindMeta' AST node
+  shouldn't surface at codegen time (it should have resolved by
+  then), but defensive handling prevents crashes.
+
+### R2. 'KindEnv' extension to track ctor kinds
+
+Phase 3's slidability gate uses 'ctorPaths' (structural) because
+today's 'KindEnv' only carries data-declaration kinds.  An ideal
+kind-level gate consults 'kindOf' on each arg's kind — but for
+that, ctors need 'KindEnv' entries too.
+
+The extension: at 'ctorDecl' time, register each ctor's kind in
+'kindEnv'.  Then 'isSlidable' can switch from 'ctorPaths' lookup
+to 'kindOf' inspection (and the 'KindEnv' parameter we just
+dropped from 'reduceDeferred' returns).
+
+### R3. Use-site resolution of param-kind metas
+
+When 'List a' is applied at 'List Bool' (classical) vs
+'List Bool⋮' (iso-tower), the param-kind meta '?κ_a' should
+resolve to the arg's actual kind shape.  This requires HypTwr's
+ctor-application meet (the existing 'valCtor' path) to also unify
+kind annotations, not just types.
+
+Currently: only the value-level type is meet; the kind dimension
+flows through untouched.
+
+### R4. Parametric self-loop activation in kEnv
+
+Phase 2's 'kindOf' parametric self-loop machinery is in place,
+but no carrier emits the *kEnv entry shape* that would activate
+it.  For 'data List⋮ a' (parametric iso-tower) to actually live
+through kindOf, the HypTwr 'dataDecl' handler needs to register
+'kindEnv[List]' as a self-applied form when the iso-tower kind
+is detected.
+
+R1+R4 together unlock end-to-end iso-tower-parametric semantics.
+
+### R5. Per-slot iso-tower-ness (Phase 3 refinement, v0.6.0+)
+
+Mixed-shape data like 'data Tagged a b' with 'a' iso-tower
+and 'b' classical: the slidability gate is all-or-nothing today;
+per-slot precision would let slot-1's iso-tower-ness carry
+singleton refinement while slot-2 stays sticky.  Deferred.
+
+### R6. TyCaseV multi-fire policy refinement
+
+The current agreed-refinements policy works structurally
+(e95e37f).  v0.6.0+ could explore: smallest-meet-winner, or
+join-of-arms-by-kind, for tighter unification in edge cases.
+
+### R7. Codegen catch-up
+
+From the residuals note on 52b78eb:
+
+- '--hs' polymorphic let-generalization (recursive GADT functions
+  need type signatures; elaborator monomorphizes today).
+- '--scott' constant-family encoding (non-indexed return types
+  over indexed eliminators — 'length' on Vec returns 'Nat' but
+  'unList'`'s 'x a n' is per-index).
+
+Both blocking 'length' / 'map' / 'foldr' to actually *run* via
+codegen.  Independent of the iso-tower arc but mutually relevant
+(when iso-tower lands, more functions become expressible).
+
+## v0.5.0 starting point
+
+The natural first piece: **R1 (HypTwr's 'tyKindMeta' override)**.
+It's the load-bearing carrier — without it, the arc's plumbing
+sits idle.  Once HypTwr tracks kind metas through 'Subst', R3
+(use-site resolution) and R4 (kEnv self-applied entries) become
+the natural follow-ons, and the iso-tower-parametric story turns
+on end-to-end.
+
+Estimated effort for R1: 2-3 hours.  Once R1 lands, R3 + R4 are
+each ~2 hours.  v0.5.0 could be three commits beyond v0.4.0.
