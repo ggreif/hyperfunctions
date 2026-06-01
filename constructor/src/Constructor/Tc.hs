@@ -28,6 +28,7 @@
 --   re-specialisation then needs a Tree intermediate.
 module Constructor.Tc
   ( LvAnnot (..)
+  , Shape (..)
   , TcVal (..)
   , TcResult (..)
   , Tc
@@ -39,6 +40,7 @@ module Constructor.Tc
 
 import Constructor.Level (Lv (..), addOffset, starLevel)
 import Constructor.LevelInfer (LevelMap, LvErr (..))
+import Constructor.Path (Path)
 import Constructor.Sheet
 import Constructor.Sort (Sort (..))
 import Constructor.Syntax (Lang (..), Name)
@@ -46,16 +48,42 @@ import Data.Kind (Type)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 
--- | Annotation carrying the inferred level at each node.  Specialise the
+-- | Annotation carrying the inferred level at each node, plus a
+--   'Shape' classifying whether the node's kind is classical
+--   (universe-level), iso-tower self-referential, or an unresolved
+--   kind-meta to be pinned at use sites.  Specialise the
 --   polymorphic term in 'tcRunWith''s result at any @Lang r@ to see it
 --   threaded through that carrier.
 data LvAnnot (s :: Sort) where
-  LvAExpr :: !Lv -> LvAnnot 'SExpr
-  LvADecl :: !Lv -> LvAnnot 'SDecl
-  LvAProg ::         LvAnnot 'SProg
+  LvAExpr :: !Lv -> !Shape -> LvAnnot 'SExpr
+  LvADecl :: !Lv -> !Shape -> LvAnnot 'SDecl
+  LvAProg ::                  LvAnnot 'SProg
 
 deriving instance Show (LvAnnot s)
 deriving instance Eq (LvAnnot s)
+
+-- | The kind-shape dimension that travels alongside the universe
+--   level in 'LvAnnot'.  Co-evolves with the level during inference:
+--   resolution of a kind-meta resolves both the level and the shape
+--   together.
+--
+--   v0.5.0+ plan (.claude/plans/lvannot-shape.md) drives the
+--   transition from default-'Classical' to inference-resolved
+--   shapes; today all callsites use 'Classical' as the default,
+--   preserving v0.4.0-dev semantics.
+data Shape = Classical
+              -- ^ Universe-level kind ('*0', '*1', …).  The "sticky"
+              --   shape that blocks the demote-interp-promote slide.
+           | IsoTower !Name
+              -- ^ Self-referential kind on the named tycon (the
+              --   covering-space form: @data Bool⋮@ etc.).  Slidable.
+           | IsoTowerMeta !Path
+              -- ^ Unresolved kind-meta; resolves to 'Classical' or
+              --   'IsoTower' at the meta's use site.  Defaults to
+              --   'Classical' at end-of-elaboration when no resolution
+              --   has occurred.  Path identifies the meta's
+              --   allocation site.
+  deriving (Eq, Show)
 
 -- | Carrier value: exposes the substrate 'Place' for sorts that carry one.
 data TcVal (s :: Sort) where
@@ -173,7 +201,7 @@ instance Lang Tc where
     let polyParams = [(p, Nothing) | (p, _) <- params]
     pure ( TcVDecl pn
          , env3 { tcEnvParent = tcEnvParent env1' }
-         , dataDecl (LvADecl ln) declPath n polyParams polyE polys
+         , dataDecl (LvADecl ln Classical) declPath n polyParams polyE polys
          )
 
   ctorDecl _ann n t = Tc $ \env -> do
@@ -187,13 +215,13 @@ instance Lang Tc where
     let (pc, sheet3) = freshPlace sheet2
     sheet4 <- pin mergeLv pc lc sheet3
     env2 <- bind n pc (env1 { tcEnvSheet = sheet4 })
-    pure (TcVDecl pc, env2, ctorDecl (LvADecl lc) n polyT)
+    pure (TcVDecl pc, env2, ctorDecl (LvADecl lc Classical) n polyT)
 
   var _ann x = Tc $ \env -> case Map.lookup x (tcEnvNames env) of
     Just p  ->
       let (mLv, _) = levelOf p (tcEnvSheet env)
       in case mLv of
-        Just lv -> Right (TcVExpr p, env, var (LvAExpr lv) x)
+        Just lv -> Right (TcVExpr p, env, var (LvAExpr lv Classical) x)
         Nothing -> Left UnpinnedLevel
     Nothing -> Left (Unbound x)
 
@@ -206,7 +234,7 @@ instance Lang Tc where
     let (p, sheet1) = freshPlace (tcEnvSheet env)
     sheet2 <- pin mergeLv p (starLevel w) sheet1
     let lv = starLevel w
-    pure (TcVExpr p, env { tcEnvSheet = sheet2 }, star (LvAExpr lv) w)
+    pure (TcVExpr p, env { tcEnvSheet = sheet2 }, star (LvAExpr lv Classical) w)
 
   arr _ann a b = Tc $ \env -> do
     (av, env1, polyA) <- runTc a env
@@ -218,7 +246,7 @@ instance Lang Tc where
     sheet2 <- unify mergeLv parr pa sheet1
     let (mLv, sheet3) = levelOf parr sheet2
     lv <- maybe (Left UnpinnedLevel) Right mLv
-    pure (TcVExpr parr, env2 { tcEnvSheet = sheet3 }, arr (LvAExpr lv) polyA polyB)
+    pure (TcVExpr parr, env2 { tcEnvSheet = sheet3 }, arr (LvAExpr lv Classical) polyA polyB)
 
   -- The parser resolved the binder + use names to 'Path's; the carrier
   -- just uses them.  No internal binder env, no counter.
@@ -229,7 +257,7 @@ instance Lang Tc where
     lv <- maybe (Left UnpinnedLevel) Right mLv
     pure ( TcVExpr pBody
          , env1 { tcEnvSheet = sheet' }
-         , forallLv (LvAExpr lv) name binderPath polyBody
+         , forallLv (LvAExpr lv Classical) name binderPath polyBody
          )
 
   existsTy _ann name binderPath body = Tc $ \env -> do
@@ -239,14 +267,14 @@ instance Lang Tc where
     lv <- maybe (Left UnpinnedLevel) Right mLv
     pure ( TcVExpr pBody
          , env1 { tcEnvSheet = sheet' }
-         , existsTy (LvAExpr lv) name binderPath polyBody
+         , existsTy (LvAExpr lv Classical) name binderPath polyBody
          )
 
   starVar _ann name binderPath offset = Tc $ \env -> do
     let lv = addOffset (LVar binderPath) offset
         (p, sheet1) = freshPlace (tcEnvSheet env)
     sheet2 <- pin mergeLv p lv sheet1
-    pure (TcVExpr p, env { tcEnvSheet = sheet2 }, starVar (LvAExpr lv) name binderPath offset)
+    pure (TcVExpr p, env { tcEnvSheet = sheet2 }, starVar (LvAExpr lv Classical) name binderPath offset)
 
 -- ----------------------------------------------------------------------
 -- Solver.  Pure record-projection over 'TcResult'.

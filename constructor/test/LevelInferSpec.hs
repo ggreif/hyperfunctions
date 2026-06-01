@@ -10,7 +10,7 @@ import Constructor.Level (Lv (..), starLevel)
 import Constructor.LevelInfer (LevelMap, Lvl, LvErr (..), inferProgram)
 import Constructor.Parser (parseProgram)
 import Constructor.Path (Path (..), PathStep (..))
-import Constructor.Tc (LvAnnot (..), Tc, solveLevels, tcProgram, tcRunWith)
+import Constructor.Tc (LvAnnot (..), Shape (..), Tc, solveLevels, tcProgram, tcRunWith)
 import Data.Functor.Const (Const (..))
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
@@ -264,15 +264,19 @@ tcRunWithTreeCheck = do
       Left err -> reportFail (show err)
       Right (_, tree)
         | Prog LvAProg
-            [ DataDecl (LvADecl lnX) _ "X" []
-                (Star (LvAExpr lvStar) 0)
-                [ CtorDecl (LvADecl lcC) "c" (Var (LvAExpr lvVar) "X")
+            [ DataDecl (LvADecl lnX shapeX) _ "X" []
+                (Star (LvAExpr lvStar shapeStar) 0)
+                [ CtorDecl (LvADecl lcC shapeC) "c" (Var (LvAExpr lvVar shapeVar) "X")
                 ]
             ] <- tree
         , lnX    == lv 1  -- X at level 1 (data inhabiting *0)
         , lvStar == lv 2  -- *0 itself at level 2
         , lcC    == lv 0  -- c at level 0 (value of X)
         , lvVar  == lv 1  -- the 'X' reference, at level 1 (same as X)
+        , shapeX    == Classical  -- Phase 0: every node defaults to Classical
+        , shapeStar == Classical
+        , shapeC    == Classical
+        , shapeVar  == Classical
         -> pure True
       Right (_, tree) -> reportFail $ "unexpected tree shape:\n    " <> show tree
 

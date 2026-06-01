@@ -41,7 +41,7 @@ import Constructor.Level (Lv (..), addOffset, starLevel)
 import Constructor.LevelInfer (LevelMap, LvErr (..))
 import Constructor.Sort (Sort (..))
 import Constructor.Syntax (Lang (..), Name)
-import Constructor.Tc (Discard, LvAnnot (..))
+import Constructor.Tc (Discard, LvAnnot (..), Shape (..))
 import Data.Kind (Type)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
@@ -211,7 +211,7 @@ instance Lang HypLinf where
          , env3 { hypLinfEnvParent = hypLinfEnvParent env1
                 , hypLinfEnvNames  = restoredNames
                 }
-         , dataDecl (LvADecl ln) declPath n polyParams polyE polys
+         , dataDecl (LvADecl ln Classical) declPath n polyParams polyE polys
          )
 
   ctorDecl _ann n t = HypLinf $ \env -> do
@@ -226,12 +226,12 @@ instance Lang HypLinf where
         lc <- maybe (Left (DataAnnotationTooLow n lp)) Right (predLv lp)
         let procC = hPure lc
         env2 <- bind n procC env1
-        pure (HypLinfDecl procC, env2, ctorDecl (LvADecl lc) n polyT)
+        pure (HypLinfDecl procC, env2, ctorDecl (LvADecl lc Classical) n polyT)
 
   var _ann x = HypLinf $ \env -> case Map.lookup x (hypLinfEnvNames env) of
     Just proc ->
       let lv = hRun proc
-      in Right (HypLinfExpr proc, env, var (LvAExpr lv) x)
+      in Right (HypLinfExpr proc, env, var (LvAExpr lv Classical) x)
     Nothing -> Left (Unbound x)
 
   -- Look the tycon up by name (level inference ignores the def-path
@@ -255,11 +255,11 @@ instance Lang HypLinf where
   tyConRef _ann n path = HypLinf $ \env -> case Map.lookup n (hypLinfEnvNames env) of
     Just proc ->
       let lv = hRun proc
-      in Right (HypLinfExpr proc, env, tyConRef (LvAExpr lv) n path)
+      in Right (HypLinfExpr proc, env, tyConRef (LvAExpr lv Classical) n path)
     Nothing -> case hypLinfEnvParent env of
       Just parentProc ->
         let lv = hRun parentProc
-        in Right (HypLinfExpr parentProc, env, tyConRef (LvAExpr lv) n path)
+        in Right (HypLinfExpr parentProc, env, tyConRef (LvAExpr lv Classical) n path)
       Nothing ->
         -- Top-level forward reference fallback.  The parser's
         -- top-level prescan vetted the name and gave us its
@@ -273,7 +273,7 @@ instance Lang HypLinf where
         -- top-level analog of the body-mutual parent fallback.
         let lv   = LVar path
             proc = hPure lv
-        in Right (HypLinfExpr proc, env, tyConRef (LvAExpr lv) n path)
+        in Right (HypLinfExpr proc, env, tyConRef (LvAExpr lv Classical) n path)
 
   -- Parameter uses look the param up by name (just like tyConRef),
   -- and likewise re-emit the path in the polymorphic output for
@@ -281,7 +281,7 @@ instance Lang HypLinf where
   tyParamRef _ann n path = HypLinf $ \env -> case Map.lookup n (hypLinfEnvNames env) of
     Just proc ->
       let lv = hRun proc
-      in Right (HypLinfExpr proc, env, tyParamRef (LvAExpr lv) n path)
+      in Right (HypLinfExpr proc, env, tyParamRef (LvAExpr lv Classical) n path)
     Nothing -> Left (Unbound n)
 
   -- Application levels: two shapes are accepted.
@@ -310,13 +310,13 @@ instance Lang HypLinf where
     if lvF == lvX || predLv lvF == Just lvX
       then
         let lv = lvF
-        in Right (HypLinfExpr procF, env2, app (LvAExpr lv) appPath polyF polyX)
+        in Right (HypLinfExpr procF, env2, app (LvAExpr lv Classical) appPath polyF polyX)
       else Left (LevelTear lvF lvX)
 
   star _ann w = HypLinf $ \env -> do
     let lv   = starLevel w
         proc = hPure lv
-    pure (HypLinfExpr proc, env, star (LvAExpr lv) w)
+    pure (HypLinfExpr proc, env, star (LvAExpr lv Classical) w)
 
   arr _ann a b = HypLinf $ \env -> do
     (av, env1, polyA) <- runHypLinf a env
@@ -333,7 +333,7 @@ instance Lang HypLinf where
         -- (groupoid) reading, this is the trivial identification —
         -- the path from procA to procB is the no-op.
         let lv = lvA
-        in Right (HypLinfExpr procA, env2, arr (LvAExpr lv) polyA polyB)
+        in Right (HypLinfExpr procA, env2, arr (LvAExpr lv Classical) polyA polyB)
 
   -- The parser resolved binder + use names to 'Path's; the carrier
   -- just uses them.
@@ -343,7 +343,7 @@ instance Lang HypLinf where
         lv = hRun procBody
     pure ( HypLinfExpr procBody
          , env1
-         , forallLv (LvAExpr lv) name binderPath polyBody
+         , forallLv (LvAExpr lv Classical) name binderPath polyBody
          )
 
   -- Existential type binder.  Step 3c-a is surface-only; semantic
@@ -369,13 +369,13 @@ instance Lang HypLinf where
         lv = hRun procBody
     pure ( HypLinfExpr procBody
          , env2
-         , existsTy (LvAExpr lv) name binderPath polyBody
+         , existsTy (LvAExpr lv Classical) name binderPath polyBody
          )
 
   starVar _ann name binderPath offset = HypLinf $ \env ->
     let lv = addOffset (LVar binderPath) offset
         proc = hPure lv
-    in Right (HypLinfExpr proc, env, starVar (LvAExpr lv) name binderPath offset)
+    in Right (HypLinfExpr proc, env, starVar (LvAExpr lv Classical) name binderPath offset)
 
 -- ----------------------------------------------------------------------
 -- Solver: invoke each name's hyperfunction to extract its level.
