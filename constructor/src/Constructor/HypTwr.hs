@@ -722,6 +722,21 @@ instance Lang HypTwr where
   starVar _ann _name _binderPath _offset = HypTwr $ \env ->
     Right (HypTwrExpr (leafTower env (TyUnivV Z)), env)
 
+  -- R1 of v0.5.0 (.claude/plans/lvannot-shape.md): emit a 'TyMetaV'
+  -- at the kind-meta's allocation path so the meta participates in
+  -- 'Subst' alongside type metas.  Unification at use sites refines
+  -- it: sticky args (TyUnivV) leave it unresolved (defaulting to
+  -- '*0' at end-of-elaboration via R3 work); iso-tower args bind
+  -- it to a self-referential 'TyConV' shape.
+  --
+  -- Both 'MetaId' paths set to the kind-meta's allocation path —
+  -- there's no separate "use site" at allocation time; use-site
+  -- distinctness comes from the freshly-emitted 'tyKindMeta' calls
+  -- in 'collectParams' (each param gets a different 'PsDataParamKind
+  -- i' path) and 'haskellStyleBody' ('PsDataAnn').
+  tyKindMeta _ann path = HypTwr $ \env ->
+    Right (HypTwrExpr (leafTower env (TyMetaV (MetaId path path))), env)
+
   -- ------------------------------------------------------------------
   -- Value-level / pattern-match elaboration.
   --
