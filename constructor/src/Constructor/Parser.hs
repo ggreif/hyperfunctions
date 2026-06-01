@@ -787,16 +787,14 @@ decl path binders = dataD <|> letD <|> ctorD
       -- every ctor's result type ('DataName p1 … pk').
       dataApplied <- buildDataApplied n path params
       ctorEntries <- haskellCtorLoop n path bodyBinders dataApplied 0
-      -- Default kind annotation: universe-polymorphic @∀l. *l@.  A
-      -- future extension can let the user write @data X a : K =
-      -- …@ to override; for now the default suffices for the
-      -- non-iso-tower cases the Haskell-style sugar targets.
-      let lName = freshUniverseBinder bodyBinders
-          lPath = extendPath PsDataAnn path
+      -- Default kind annotation: @*0@.  Matches the param-kind
+      -- default ('collectParams' assigns @*0@ to un-annotated
+      -- params), so the data and its params share one universe —
+      -- no level tear.  Users who want universe-polymorphic data
+      -- write the explicit @data X a : ∀l. *l { … }@ form and
+      -- thread @l@ into param kinds manually.
       starAnn <- freshExprAnn
-      let starExpr = starVar starAnn lName lPath 0
-      forallAnn <- freshExprAnn
-      let e  = forallLv forallAnn lName lPath starExpr
+      let e  = star starAnn 0
           ds = [d | (_, _, d) <- ctorEntries]
           siblingDecls = [(cn, cp, False) | (cn, cp, _) <- ctorEntries]
       ann <- freshDeclAnn
@@ -807,17 +805,6 @@ decl path binders = dataD <|> letD <|> ctorD
                               (extendTc n path binders)
                               siblingDecls
       pure (dataDecl ann path n params e ds, nextBinders)
-
-    -- Pick a fresh universe-level binder name that doesn't shadow.
-    freshUniverseBinder bs =
-      let forbidden = Map.keysSet (lvBinders bs)
-                  <> Map.keysSet (tyBinders bs)
-                  <> Map.keysSet (tcBinders bs)
-                  <> Map.keysSet (valCtors bs)
-                  <> Map.keysSet (valVars bs)
-          tries = [T.pack ("l" <> show (i :: Int)) | i <- [0 ..]]
-                  <> [T.pack "l"]
-      in head (filter (`Set.notMember` forbidden) (T.pack "l" : tries))
 
     -- Build @D p1 p2 … pk@ as the data-name applied to its params.
     buildDataApplied dn dpath params = do
