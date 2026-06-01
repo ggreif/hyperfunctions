@@ -1,0 +1,171 @@
+# Haskell-style sugar `data X a = ...`: residuals before v0.4.0
+
+The sugar landed as parse-time desugar to classical-ctor form
+(`Nil : List a`, `Cons : a → List a → List a`).  Two outstanding
+issues must be resolved before this becomes part of the v0.4.0
+release surface.
+
+## 1. Iso-tower form for parametric data is locked out
+
+**What's missing**
+
+The user's intended desugar was the iso-tower form
+
+```
+data List a = Nil | Cons a (List a)
+   ⇓
+data List⋮ a { Nil⋮; Cons a (List a)⋮ }
+   ≡
+data List⋮ a { Nil : Nil
+             ; Cons : ∀x:a. ∀y:List a. x → y → Cons x y }
+```
+
+— each ctor value its own singleton type, `List a` as the
+covering space.  This gives precise typing at use sites (e.g.
+`Cons True Nil : Cons True Nil` lets pattern-matching pin the
+singleton index without an explicit length parameter).
+
+**Why it doesn't work today**
+
+`HypTwr.checkSaturation` enforces that a ctor's result type's
+head must match the parent data's name when parent arity > 0:
+
+```haskell
+-- src/Constructor/HypTwr.hs:362-377
+checkSaturation env ctorName tower = case ... of
+  Just (parentName, _) ->
+    let (_, headView, args) = peelCtorTower subst tower
+        nargs               = length args
+        parentArity         = ... lookup parentName ...
+    in case headView of
+         TyConV h _ _
+           | h == parentName -> ...
+           | parentArity == 0 -> Right ()  -- nullary parent OK
+           | otherwise        -> Left (TyCtorWrongHead ...)
+         _ -> Left (TyCtorBadResult ctorName)
+```
+
+For nullary parents (`Bool`, `Iso`, `Mirror`, `Swap` — arity 0),
+the check bypasses head-matching, so iso-tower works.  For
+parametric parents (arity > 0), it doesn't — `Nil`'s head is
+`Nil`, not `List`, so `TyCtorWrongHead "Nil" "List" "Nil"` fires.
+
+**What needs to change**
+
+`checkSaturation` needs an "iso-tower parametric" mode where the
+parent contributes a *covering relation*, not a head-identity
+requirement.  Specifically:
+
+- Detect when the data's kind expression is the
+  covering-space self-reference (the iso-tower marker).
+- In that mode, accept any ctor head whose type-tower can
+  be *lifted* to share a rung with the data's tower
+  (existing `meetTowers` machinery — climb-then-match).
+- Reject heads whose covering doesn't intersect the data's.
+
+This is a semantic relaxation, not a syntax-only change.
+Concretely: the per-arm-Subst-fork + TyCaseV story makes
+polymorphic-scrutinee pattern matching work; iso-tower data
+just *produces* the GADT-shaped types those mechanisms consume.
+Closing the loop means lifting `checkSaturation` to be
+covering-aware.
+
+**Workaround until then**
+
+Use the classical-ctor desugar (this commit) — `data List a =
+Nil | Cons a (List a)` becomes plain ADT with `Nil : List a`,
+`Cons : a → List a → List a`.  Loses the singleton precision;
+gains standard Haskell semantics.  `length`, `map`, `foldr`
+etc. work straightforwardly because per-arm Subst-fork handles
+the polymorphic scrutinee in pattern matching.
+
+## 2. Level tear: `(a : *0)` vs. `: ∀l. *l`
+
+**What's wrong**
+
+The parse-time desugar emits:
+
+```
+data List (a : *0) : ∀l. *l { Nil : List a; Cons : ... }
+                ─┬─       ─┬─
+       param kind '*0'  data kind '∀l. *l'
+```
+
+The data CLAIMS to be universe-polymorphic (`∀l. *l`) but the
+param is hard-coded to `*0`.  This is a tear: the data's outer
+quantification ranges over all universes, but its inner
+parameter only inhabits one.
+
+For a true universe-polymorphic data, the param's kind should
+also be `∀l. *l` (or be quantified alongside the data's `l`).
+E.g.
+
+```
+data List a : ∀l. *l where
+  Nil : ∀l. (a : *l) → List a
+  Cons : ∀l. (a : *l) → a → List a → List a
+```
+
+The tear manifests at use sites that try to apply `List` to a
+non-`*0`-kinded type (none currently in tests, but the
+inconsistency is latent).
+
+**Why the tear is there**
+
+- The default kind for un-annotated params in `collectParams` is
+  `*0` (see `collectParams` in `Parser.hs`).
+- The default kind for un-annotated data in the Haskell-style
+  desugar (this commit) is `∀l. *l` — picked because it matches
+  what existing universe-polymorphic data declarations use
+  (`data Mirror : ∀l. *l { ... }`).
+- Nobody connects them: the data's `l` doesn't propagate to the
+  params' kind.
+
+**What needs to change**
+
+Pick one consistent policy:
+
+- **Option A:** Default both to `*0`.  Data kind becomes `*0`,
+  params stay `*0`.  Loses universe-polymorphism but is
+  simplest; matches Haskell-1990 semantics.
+- **Option B:** Make the data's `l` bind across params and
+  ctors.  Params become `(a : *l)`, data kind stays `∀l. *l`.
+  Requires the parser to thread `l` into the body-binder
+  environment.
+- **Option C:** Drop the explicit kind annotation on
+  Haskell-style data entirely; let `dataDecl`'s elaborator
+  infer the kind from ctor types (HM-style for kinds).
+
+Option B is the principled one if level-polymorphism is part
+of the language's vocabulary.  Option A is the safe fallback
+if level inference isn't ready.  Option C is the long-term
+right answer.
+
+**Concrete failure mode**
+
+```
+data List a = Nil | Cons a (List a)
+let bogus : List *0 = Nil
+```
+
+Should type-check if the level-tear were sane (since `*0 : *1`
+and the data is `∀l. *l`), but currently `a` is locked to `*0`
+so `*0 : *1` doesn't satisfy `a : *0`.  Not exercised by tests
+yet — discovery vector for users who try level-polymorphic
+data via the sugar.
+
+## Priority for v0.4.0
+
+| issue | severity | fix scope |
+|---|---|---|
+| 1. iso-tower for parametric data | medium — sugar's *intended* semantics | medium (relax `checkSaturation` to be covering-aware) |
+| 2. level tear in Haskell-style default kind | medium — latent unsoundness | small (pick Option A) or medium (Option B) |
+
+Both should resolve before v0.4.0 ships — issue 1 because the
+user explicitly asked for iso-tower semantics in the sugar, and
+issue 2 because the tear is a soundness hazard surfaced by the
+sugar's default emission.
+
+Until then, the sugar is *useful* (`length`, `map`, `foldr` work)
+but *incomplete*: covering-space iso-tower precision is missing,
+and the level annotation is cosmetic-only.
