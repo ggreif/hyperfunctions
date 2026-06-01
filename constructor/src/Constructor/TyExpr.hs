@@ -34,11 +34,17 @@ import qualified Data.Text as T
 --   higher-kinded uses the path machinery extends naturally to
 --   address instantiation freshness.
 data TyExpr
-  = TyVar  !Name !Path            -- ^ type variable; identified by binder path
-  | TyCon  !Name !Path            -- ^ nullary type constructor; identified by decl path
-  | TyApp  !TyExpr !TyExpr        -- ^ type application: @f x@
-  | TyArr  !TyExpr !TyExpr        -- ^ function type: @a -> b@
-  | TyUniv !Lv                    -- ^ universe at the given level
+  = TyVar   !Name !Path           -- ^ type variable; identified by binder path
+  | TyCon   !Name !Path           -- ^ nullary type constructor; identified by decl path
+  | TyApp   !TyExpr !TyExpr       -- ^ type application: @f x@
+  | TyArr   !TyExpr !TyExpr       -- ^ function type: @a -> b@
+  | TyUniv  !Lv                   -- ^ universe at the given level
+  | TyDefer !Name !Path           -- ^ deferred value-level reference (a 'let'
+                                  --   binding used in a type position).  The
+                                  --   slide-down rule in HypTwr.var emits this;
+                                  --   future phases will reduce 'TyApp (TyDefer
+                                  --   f _) args' via the value-level
+                                  --   interpreter.
   deriving (Eq, Ord, Show)
 
 -- | Compact pretty representation, useful in tests + error messages.
@@ -51,6 +57,7 @@ prettyTy = go
     go (TyApp f x)     = goAtom f <> " " <> goAtom x
     go (TyArr a b)     = goAtom a <> " -> " <> go b
     go (TyUniv l)      = "*" <> T.pack (show l)
+    go (TyDefer n _)   = n  -- print surface name; "deferred" tag elided
 
     goAtom t@(TyArr _ _) = "(" <> go t <> ")"
     goAtom t@(TyApp _ _) = "(" <> go t <> ")"

@@ -406,6 +406,35 @@ tests =
       "data Nat\8942 { Z\8942; S Nat\8942 };\
       \let rt = S Z"
       ["rt"]
+
+  -- Slide-down (Phase A): 'foo' is a value-level let-binding,
+  -- referenced in a type position inside 'Box's ctor 'Wrap'.
+  -- HypTwr's 'var' previously emitted TyUnbound; now it slides
+  -- down the hyper-rise via 'hypTwrEnvValPaths' and emits a
+  -- 'TyDeferV' marker.  No meet is forced on the deferred
+  -- reference (Wrap is never used at a value site), so
+  -- elaboration completes.  Future phases (B+C+D) will reduce
+  -- 'TyAppV (TyDefer foo _) args' to its value-level result.
+  , acceptsValByHypTwr
+      "Slide-down: 'foo' (let-binding on ⋮-typed Nat) in type position emits TyDeferV"
+      "data Nat\8942 { Z\8942; S Nat\8942 };\
+      \let foo = Z;\
+      \data Box : *0 { Wrap : foo -> Box }"
+      ["foo"]
+
+  -- Slide-down on a non-⋮ binding.  'flag' is a Bool let-binding
+  -- where Bool is declared with explicit '*0' kind (not '⋮' self-
+  -- towered).  The slide still emits TyDeferV — Phase A doesn't
+  -- check iso-soundness; that's a Phase C concern (where
+  -- demote-interpret-promote wouldn't fire for non-⋮ types).
+  -- Confirms the slide is type-agnostic: it surfaces ANY let-
+  -- binding regardless of whether its type admits the iso bridge.
+  , acceptsValByHypTwr
+      "Slide-down: non-⋮ let-binding (Bool) in type position emits TyDeferV"
+      "data Bool : *0 { T : Bool; F : Bool };\
+      \let flag = T;\
+      \data Box : *0 { Wrap : flag -> Box }"
+      ["flag"]
   ]
 
 -- | Helper: parse + elaborate end-to-end via HypLinf → HypTwr; assert

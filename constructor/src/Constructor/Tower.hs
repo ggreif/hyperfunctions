@@ -192,6 +192,10 @@ kindOf s env v0 = case resolveView s v0 of
   TyVarV _ _   -> TyUnivV (S (S Z))                      -- parameters default to @*0@
   TyUnivV lv   -> TyUnivV (S lv)
   TyMetaV m    -> TyMetaV m   -- after resolveView, this means truly unbound
+  TyDeferV{}   -> TyUnivV (S (S Z))   -- deferred value-level ref: kind @*0@
+                                       -- as a placeholder until Phase B+C
+                                       -- (interpreter + meet hook) compute
+                                       -- the actual kind from the binding.
 
 -- | Lift a 'TyProc' to a Tower under a given 'Subst' and 'KindEnv'.
 --   The horizontal is the proc's TyView; the vertical is generated
@@ -372,4 +376,5 @@ compareTowers = go
       (TyMetaV m1,      TyMetaV m2)      -> m1 == m2
       (TyAppV{},        TyAppV{})        -> True
       (TyArrV{},        TyArrV{})        -> True
+      (TyDeferV n1 p1,  TyDeferV n2 p2)  -> n1 == n2 && p1 == p2
       _                                  -> False

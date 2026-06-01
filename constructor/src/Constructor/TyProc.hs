@@ -67,6 +67,16 @@ data TyView
   | TyUnivV !Lv                -- ^ universe at a level
   | TyMetaV !MetaId            -- ^ fresh metavariable allocated at a parametric
                                --   tycon use-site.
+  | TyDeferV !Name !Path       -- ^ deferred value-level reference: a top-level
+                               --   'let'-binding used in a type position.  The
+                               --   slide-down rule in HypTwr.var emits this
+                               --   when a name resolves to a value-level
+                               --   binding rather than a type-level entity.
+                               --   At meet-time, TyDeferV is opaque (matched
+                               --   structurally by name+path) unless an
+                               --   evaluator hook is wired in (Phase B+C);
+                               --   future phases will reduce 'TyAppV (deferred
+                               --   f) args' via demote-interpret-promote.
 
 -- | Identity of a metavariable allocated at a parametric tycon
 --   use-site.  The first 'Path' is the parameter binder's def-path
@@ -108,11 +118,12 @@ type TyProc = Hyper TyView TyView
 tyToProc :: TyExpr -> TyProc
 tyToProc = hPure . oneLayer
   where
-    oneLayer (TyCon n p) = TyConV n p Z
-    oneLayer (TyVar n p) = TyVarV n p
-    oneLayer (TyApp f x) = TyAppV (tyToProc f) (tyToProc x)
-    oneLayer (TyArr a b) = TyArrV (tyToProc a) (tyToProc b)
-    oneLayer (TyUniv l)  = TyUnivV l
+    oneLayer (TyCon n p)   = TyConV n p Z
+    oneLayer (TyVar n p)   = TyVarV n p
+    oneLayer (TyApp f x)   = TyAppV (tyToProc f) (tyToProc x)
+    oneLayer (TyArr a b)   = TyArrV (tyToProc a) (tyToProc b)
+    oneLayer (TyUniv l)    = TyUnivV l
+    oneLayer (TyDefer n p) = TyDeferV n p
 
 -- | Extract a 'TyExpr' from a 'TyProc' web by self-application.
 --   This is the dual of 'tyToProc': the "probe" / final-coalgebra
@@ -133,6 +144,7 @@ viewToTy (TyVarV n pa) = TyVar n pa
 viewToTy (TyAppV f x)  = TyApp (procToTy f) (procToTy x)
 viewToTy (TyArrV a b)  = TyArr (procToTy a) (procToTy b)
 viewToTy (TyUnivV l)   = TyUniv l
+viewToTy (TyDeferV n pa) = TyDefer n pa
 viewToTy (TyMetaV _)   =
   error "Constructor.TyProc.viewToTy: unresolved metavariable; \
         \use 'materialize' with the carrier's 'Subst' instead"
@@ -150,6 +162,7 @@ viewToTySoft s v = case resolveView s v of
   TyAppV f x   -> TyApp (procToTySoft s f) (procToTySoft s x)
   TyArrV a b   -> TyArr (procToTySoft s a) (procToTySoft s b)
   TyUnivV l    -> TyUniv l
+  TyDeferV n pa -> TyDefer n pa
   TyMetaV _    -> TyVar "?meta" emptyPath
 
 procToTySoft :: Subst -> TyProc -> TyExpr
@@ -201,6 +214,8 @@ meet s p1 p2 = meetView s (resolveView s (hRun p1)) (resolveView s (hRun p2))
         meet s1 b1 b2
       (TyUnivV l1, TyUnivV l2)
         | l1 == l2 -> Right s'
+      (TyDeferV n1 p1', TyDeferV n2 p2')
+        | n1 == n2 && p1' == p2' -> Right s'
       _ -> Left (TyMismatch (viewToTySoft s' v1) (viewToTySoft s' v2))
 
     bind s' m@(MetaId bp up) v
@@ -218,6 +233,7 @@ occurs s m v0 = case resolveView s v0 of
   TyConV{}    -> False
   TyVarV{}    -> False
   TyUnivV{}   -> False
+  TyDeferV{}  -> False
 
 -- | Walk a 'TyProc' web under a 'Subst', producing a syntactic
 --   'TyExpr'.  Bound metavariables are followed through the
@@ -230,4 +246,5 @@ materialize s p = materializeView (resolveView s (hRun p))
     materializeView (TyAppV f x)  = TyApp <$> materialize s f <*> materialize s x
     materializeView (TyArrV a b)  = TyArr <$> materialize s a <*> materialize s b
     materializeView (TyUnivV l)   = Right (TyUniv l)
+    materializeView (TyDeferV n pa) = Right (TyDefer n pa)
     materializeView (TyMetaV (MetaId bp up)) = Left (TyUnresolvedMeta bp up)

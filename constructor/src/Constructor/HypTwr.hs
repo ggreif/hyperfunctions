@@ -122,6 +122,13 @@ data HypTwrEnv = HypTwrEnv
     --   for pattern-introduced binders today the tower is a fresh
     --   meta (Dissect-side typing happens next sub-commit, when
     --   the scrutinee's type flows in to refine the meta).
+  , hypTwrEnvValPaths  :: !(Map Name Path)
+    -- ^ The decl path of each top-level let binding.  Used by the
+    --   slide-down rule in 'var' to construct a 'TyDeferV' that
+    --   identifies the binding by its source location.  Populated
+    --   alongside 'hypTwrEnvValVars' in 'valDecl'.  Pattern
+    --   binders don't populate this — only top-level lets, since
+    --   only top-level bindings are slideable at type level.
   , hypTwrEnvMode      :: !ElabMode
     -- ^ Runtime mode: 'ElabBuild' (the default) flips to
     --   'ElabDissect' while elaborating an arm's pattern, and
@@ -139,7 +146,7 @@ data HypTwrEnv = HypTwrEnv
 
 emptyHypTwrEnv :: HypTwrEnv
 emptyHypTwrEnv = HypTwrEnv Map.empty Map.empty Map.empty emptySubst Nothing
-                            Map.empty ElabBuild Nothing
+                            Map.empty Map.empty ElabBuild Nothing
 
 data HypTwrResult = HypTwrResult
   { hypTwrDataTypes :: !(Map Name Int)
@@ -436,6 +443,7 @@ substTyVarsInView m v = case v of
   TyConV {}   -> v
   TyMetaV {}  -> v
   TyUnivV {}  -> v
+  TyDeferV {} -> v  -- deferred refs are opaque to type-var subst
 
 substTyVarsInProc :: Map (Name, Path) TyProc -> TyProc -> TyProc
 substTyVarsInProc m p = hPure (substTyVarsInView m (hRun p))
@@ -489,9 +497,21 @@ instance Lang HypTwr where
               { hypTwrEnvCtors = Map.insert name tower (hypTwrEnvCtors env1) }
         Right (HypTwrDecl (Just (name, tower)), env2)
 
-  -- Parser owns tycon resolution; bare 'var' is only reached for
-  -- genuinely unbound names.
-  var _ann n = HypTwr $ \_env -> Left (TyUnbound n)
+  -- Slide down the hyper-rise: a name unresolved at the type level
+  -- (not in tcBinders/tyBinders, so the parser emitted 'var') might
+  -- still be bound at the value level by a top-level 'let'.  The
+  -- '⋮'-iso bridges value and type rungs for self-towered data, so
+  -- a value-level binding lifts cleanly into type position via the
+  -- iso pair (arg-side and result-side).  We emit a 'TyDeferV'
+  -- marker — Phase A surfaces the binding; Phases B-D wire in the
+  -- interpreter + narrowing that actually reduce 'TyAppV (deferred)
+  -- args' to a result.  Truly unbound names still error with
+  -- TyUnbound.
+  var _ann n = HypTwr $ \env ->
+    case Map.lookup n (hypTwrEnvValPaths env) of
+      Just declPath ->
+        Right (HypTwrExpr (leafTower env (TyDeferV n declPath)), env)
+      Nothing -> Left (TyUnbound n)
 
   tyConRef _ann n path = HypTwr $ \env ->
     Right (HypTwrExpr (leafTower env (TyConV n path Z)), env)
@@ -579,6 +599,8 @@ instance Lang HypTwr where
         let env2 = env1
               { hypTwrEnvValVars =
                   Map.insert name bodyTower (hypTwrEnvValVars env1)
+              , hypTwrEnvValPaths =
+                  Map.insert name declPath (hypTwrEnvValPaths env1)
               , hypTwrEnvSubst = subst'
               }
         Right (HypTwrDecl Nothing, env2)
