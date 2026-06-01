@@ -1,0 +1,146 @@
+# v0.6.0-dev scope — narrowing improvements
+
+Cycle opened by commit 986cbc0 (cabal bump after v0.5.0 tag).
+The primary v0.6.0 scope is **narrowing improvements**, with
+selected narrowing-adjacent v0.5.0 residuals folded in.
+
+## Narrowing-core (primary scope)
+
+Source of truth: [.claude/plans/narrowing.md](.claude/plans/narrowing.md).
+Phases A–D-min landed in v0.3.0 (commits `04eef5c` →
+`f89dd6f` → `df54e4a` → `5194a31`).  Pending pieces, roughly
+ordered by tractability:
+
+### D-full — Multi-arg / unary-ctor narrowing
+
+Today's D-min handles only nullary-ctor candidates (e.g., the
+single 'Z' inhabitant of 'Nat' at a stuck meta).  D-full extends
+this to unary and higher-arity ctors: when narrowing on '?n'
+with candidate 'S k', allocate a fresh sub-meta '?k_sub' and
+recurse.  Tractable; one focused commit.
+
+Test target: 'pickPair' or 'pickList' where the meta narrows
+through 'Cons' / 'S' candidates.
+
+### D-disj — All-branches disjunctive search
+
+Today's narrowOnce picks the first candidate whose meet
+succeeds.  D-disj would explore all candidates and combine
+their refinements (e.g., agreed-refinements policy mirroring
+TyCaseV's multi-fire handling, or full backtracking with
+disjunctive results).
+
+Test target: a meta with multiple firing candidates whose
+disjunctive resolution matters (overlapping ctor patterns).
+
+### Hyper-LogicT — substrate change
+
+Replace the '[]'-list disjunctive bag with Kidney/Wu's
+'LogicT'-via-hyperfunctions substrate.  Bigger change — affects
+narrowOnce's return type and all callers.  Unlocks proper
+interleaving + cuts (no more first-wins commitment).  Test:
+narrowing search that requires fairness across infinite
+branches.
+
+Estimated effort: 2-3 commits, plus design discussion of the
+Hyper-LogicT shape.
+
+### Layer 3 — Equational theorems
+
+User-supplied lemmas as rewrites.  Trusted-axioms initially
+(no verifier).  Adds a new declaration form 'theorem name : T'
+that registers a rewrite rule.  Narrowing consults the
+theorem store before / alongside the value-level interpreter.
+
+Significant — touches parser, elaborator, narrowing core.
+Maybe split across two v0.6.x sub-cycles.
+
+### Layer 4-Lite — Presburger decision
+
+Homogeneous-type essence extraction + Cooper's algorithm.
+Auto-discharges arithmetic identities over linear-essence types
+(Nat, Z, +, -, min/max).  Per narrowing.md, this is a smaller
+addition than Layer 4-Full and pays off on common cases (Vec
+length arithmetic).
+
+Substantial.  Probably v0.7.0+ unless prioritised.
+
+### Layer 4-Full — IH reuse
+
+Automatic induction-hypothesis reuse via structural recursion
+detection.  Agda-style termination + IH-stop.  The biggest
+deferred narrowing piece.  v0.8.0+ scope.
+
+## Narrowing-adjacent v0.5.0 residuals
+
+### R6 — TyCaseV multi-fire policy
+
+Current policy (commit e95e37f): commit only refinements all
+firing arms agree on structurally (eqView).  Conservative and
+correct.  v0.6.0+ refinement could explore:
+
+- Smallest-meet-winner (pick the arm whose refinement is most
+  restrictive).
+- Join-of-arms-by-kind (use the kind structure to tighten).
+
+This overlaps D-disj's framing: both handle multiple firing
+candidates.  Worth doing them together as a single
+disjunctive-search arc.
+
+## Out of v0.6.0 scope
+
+The following v0.5.0 residuals are tracked but NOT prioritised
+for v0.6.0 (they're independent of narrowing):
+
+- **R5** Per-slot iso-tower-ness for mixed-shape data.
+- **R7** Codegen catch-up (--hs let-gen, --scott constant-family).
+  See 52b78eb's note for the codegen story.
+- **R8** Cross-use kind locking — per-use kind-meta freshening.
+- **R9** Phase 2 self-loop exercise via type-level data.
+
+These remain queued; address as separate arcs when narrowing
+improvements stabilise.
+
+## Older queues (not narrowing-related)
+
+For completeness — these remain in PLAN.md's Queued section
+and don't fit v0.6.0:
+
+- 'KnownRise' implementation (deferred until a consumer
+  surfaces; Wasm-codegen is the likely first surface).
+- 'Rise' instances for '(->)' and 'Iso' carriers.
+- Wasm-codegen execution per
+  [.claude/plans/wasm-codegen.md](.claude/plans/wasm-codegen.md)
+  (10 concrete steps).
+- Cross-reference 'hyper-rise' Haskell vocabulary into the
+  '38d9ed6' (γ)-only git-note.
+
+## Tentative v0.6.0 release shape
+
+If D-full + D-disj + R6 land cleanly, v0.6.0 ships as
+"narrowing matures: multi-arg + disjunctive."
+
+If Hyper-LogicT also lands, v0.6.0 becomes
+"narrowing reaches its first principled substrate."
+
+Layer 3 / Layer 4-Lite are stretch goals — could slip to
+v0.7.0 without changing the v0.6.0 framing.
+
+## Status board entry point
+
+For ongoing tracking:
+
+- `narrowing.md` Status table (top of file) — primary
+  reference for D-full / D-disj / Hyper-LogicT / Layer 3 /
+  Layer 4-Lite / Layer 4-Full progress.
+- `lvannot-shape.md` Status table — covers v0.4.0 + v0.5.0
+  iso-tower-parametric arc (now complete; v0.6.0 doesn't
+  touch this).
+- 61efd8c git-note's status board — v0.4.0 release residuals
+  (now mostly resolved by v0.5.0).
+- v0.5.0 release note on 392b591 — v0.5.0 deliverable + R5-R9
+  queue.
+
+Each piece that lands in v0.6.0 updates the relevant table /
+note inline (per the convention in PLAN.md's "Post-0.2.0
+arcs" pointer index).
