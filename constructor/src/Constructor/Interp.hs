@@ -48,6 +48,7 @@ import Constructor.Level (Lv (..))
 import Constructor.Path (Path, PathStep (..), extendPath)
 import Constructor.Sort (Mode (..), Sort (..))
 import Constructor.Syntax (Name)
+import Constructor.Tower (KindEnv, kindOf)
 import Constructor.TyProc (Subst, TyProc, TyView (..), resolveView)
 import Data.Kind (Type)
 import Data.Map.Strict (Map)
@@ -326,10 +327,10 @@ valueToExpr v = case v of
 --       inapplicable).
 --     * Result Value can't promote (ctor path unknown).
 reduceDeferred
-  :: Globals -> Map Name Path -> Subst
+  :: Globals -> Map Name Path -> KindEnv -> Subst
   -> Name -> [TyView] -> Maybe TyView
-reduceDeferred gs cps subst fname argViews = do
-  guardSlidable (all (isSlidable cps subst) argViews)
+reduceDeferred gs cps kEnv subst fname argViews = do
+  guardSlidable (all (isSlidable kEnv subst) argViews)
   body     <- Map.lookup fname gs
   argVals  <- traverse (demote subst) argViews
   argExprs <- traverse valueToExpr argVals
@@ -342,24 +343,29 @@ reduceDeferred gs cps subst fname argViews = do
     guardSlidable True  = Just ()
     guardSlidable False = Nothing
 
--- | An argument is "slidable" iff it's a ctor application
---   (structurally identifiable via the 'ctorPaths' lookup).  Mirrors
---   'demote's structural check, but at the slide-time entry point —
---   passing a non-ctor tycon (e.g. the classical type 'Bool' itself)
---   blocks the slide, even though it would structurally demote to a
---   'VCon'.
+-- | An argument is "slidable" iff its kind (via 'kindOf') is
+--   self-referential / iso-tower-shaped.  Classical-kinded args
+--   ('TyUnivV') block here even when they structurally demote.
 --
---   Note: an ideal kind-level check would consult 'kindOf' against a
---   'KindEnv' that tracks iso-tower-ness directly.  Today's 'KindEnv'
---   only carries data-declaration kinds (not ctor kinds), so a
---   kind-based check would over-restrict.  When 'KindEnv' is
---   extended to track ctor kinds (v0.6.0+), this can switch to a
---   true kind-level gate.
-isSlidable :: Map Name Path -> Subst -> TyView -> Bool
-isSlidable cps s v = case resolveView s v of
-  TyConV n _ _ -> Map.member n cps
-  TyAppV f _   -> isSlidable cps s (hRun f)
-  _            -> False
+--   R2 (v0.5.0): switched from structural 'ctorPaths' lookup to
+--   a real kind-level check.  'KindEnv' now tracks ctor kinds (set
+--   at 'ctorDecl' time, R2's other half), so 'kindOf' on a ctor
+--   application gives a meaningful answer for both iso-tower
+--   ('TyConV' self-referential) and classical ('TyUnivV') ctors.
+--
+--   Iso-tower ctors are slidable; classical ctors are not.
+--   Unresolved kind metas and deferred chains conservatively
+--   block.
+isSlidable :: KindEnv -> Subst -> TyView -> Bool
+isSlidable kEnv s v = case kindOf s kEnv v of
+  TyConV{}    -> True   -- nullary iso-tower (self-ref)
+  TyAppV{}    -> True   -- parametric iso-tower (self-applied)
+  TyUnivV{}   -> False  -- sticky classical
+  TyMetaV{}   -> False  -- conservative on unresolved kind
+  TyDeferV{}  -> False  -- nested deferred chain
+  TyVarV{}    -> False  -- type variable
+  TyArrV{}    -> False  -- function type
+  TyCaseV{}   -> False  -- conservative — case-of resolution is future
 
 -- | One level of narrowing on a 'TyAppV' chain rooted at a
 --   'TyDeferV' head: enumerate ctor possibilities for each meta
@@ -380,10 +386,11 @@ narrowOnce
   -> Map Name [(Name, Int)]              -- ^ data → [(ctor, arity)]
   -> Map Name TyView                     -- ^ function → its declared TyView shape
                                           --   (used to find each arg's expected type)
+  -> KindEnv                             -- ^ for the kind-level slidability gate
   -> Subst
   -> Name -> [TyView]                    -- ^ deferred function + arg views
   -> [(Subst, TyView)]                   -- ^ candidate (refined-subst, result) pairs
-narrowOnce gs cps dataCtors fnTypes subst fname argViews = do
+narrowOnce gs cps dataCtors fnTypes kEnv subst fname argViews = do
   -- Peel the function's signature to get expected arg types.
   fnSig    <- maybeToList (Map.lookup fname fnTypes)
   let argTypes = peelArrTypes fnSig
@@ -400,7 +407,7 @@ narrowOnce gs cps dataCtors fnTypes subst fname argViews = do
       refinedArgs   = map snd refinements
   -- Now run the bridge with refined args.  The args should all be
   -- concrete now.
-  reduced <- maybeToList (reduceDeferred gs cps combinedSubst fname refinedArgs)
+  reduced <- maybeToList (reduceDeferred gs cps kEnv combinedSubst fname refinedArgs)
   pure (combinedSubst, reduced)
   where
     -- | Per-arg narrowing decision.
@@ -468,13 +475,13 @@ narrowOnce gs cps dataCtors fnTypes subst fname argViews = do
 --   (in 'meet') so 'TyDeferV' applications either resolve to their
 --   computed value or stay deferred for Phase D narrowing.
 normaliseDeferred
-  :: Globals -> Map Name Path -> Subst -> TyView -> TyView
-normaliseDeferred gs cps subst = go
+  :: Globals -> Map Name Path -> KindEnv -> Subst -> TyView -> TyView
+normaliseDeferred gs cps kEnv subst = go
   where
     go v = case resolveView subst v of
       TyAppV f x -> case peelDeferredHead (TyAppV f x) of
         Just (fname, argViews) ->
-          case reduceDeferred gs cps subst fname argViews of
+          case reduceDeferred gs cps kEnv subst fname argViews of
             Just reduced -> reduced
             Nothing -> TyAppV (mapProc f) (mapProc x)
         Nothing -> TyAppV (mapProc f) (mapProc x)

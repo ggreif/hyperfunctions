@@ -595,6 +595,24 @@ tests =
       \data List a = Nil | Cons a (List a);\
       \let lst = Cons T Nil"
       ["lst"]
+
+  -- v0.5.0 R2 end-to-end demo: 'pickT' on Haskell-style 'data Bool
+  -- = T | F'.  The sugar now desugars to iso-tower form, so 'T : T'
+  -- and 'F : F' are singletons.  R2 set 'kindEnv[T]' to 'T' (the
+  -- ctor's result-view), so 'kindOf T' triggers Phase 2's
+  -- parametric self-loop and returns 'T @offset+1' — a
+  -- self-referential kind that 'isSlidable' reads as iso-tower.
+  -- The slide engages on 'pickT T', the value-level interpreter
+  -- reduces to 'T', and 'W T' typechecks.  The whole pipe — from
+  -- Haskell-style sugar through R2's kind-level slidability —
+  -- works end-to-end.
+  , acceptsBridged
+      "v0.5.0 R2 demo: pickT on 'data Bool = T | F' (Haskell-style sugar)"
+      "data Bool = T | F;\
+      \let pickT = \\b -> case b { T -> T; F -> T };\
+      \data Wit : *0 { W : pickT T -> Wit };\
+      \let rt = W T"
+      ["pickT", "rt"]
   ]
 
 -- | Helper: parse + elaborate end-to-end via HypLinf → HypTwr; assert
