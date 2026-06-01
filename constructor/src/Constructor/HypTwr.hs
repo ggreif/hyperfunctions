@@ -56,6 +56,7 @@ import Constructor.Tinf (TyErr (..))
 import Constructor.Tower
   ( Tower
   , Gamma (..)
+  , kindOf
   , meetTowers
   , towerOfView
   , horizontalView
@@ -387,6 +388,17 @@ elabParamKind env (_n, Nothing)        = Right env
 elabParamKind env (_n, Just kindExpr)  = do
   (_, env') <- runHypTwr kindExpr env
   pure env'
+
+-- | Is a 'kindOf' result concrete enough to bind a kind-meta to it?
+--   Used by 'app's R3c use-site resolution rule.  Self-referential
+--   ('TyConV' iso-tower) and classical ('TyUnivV') both qualify;
+--   unresolved metas and deferred chains don't.
+isKindMetaResolvable :: TyView -> Bool
+isKindMetaResolvable v = case v of
+  TyConV{}  -> True
+  TyAppV{}  -> True
+  TyUnivV{} -> True
+  _         -> False
 
 threadDecls :: [HypTwr a 'SDecl] -> HypTwrEnv -> Either TyErr HypTwrEnv
 threadDecls []     env = Right env
@@ -726,16 +738,33 @@ instance Lang HypTwr where
     pure (HypTwrExpr tower, env2)
 
   -- Application: children's TyView slots are wrapped back as TyProcs
-  -- (option-β's horizontal layer stores TyProcs, not Towers).  No
-  -- parametric-meta customer at commit-4 scope; the shape extracts
-  -- the same as HypTinf on the corpus.
+  -- (option-β's horizontal layer stores TyProcs, not Towers).
+  --
+  -- R3c (v0.5.0): if f's kindOf is an unresolved kind-meta and x's
+  -- kindOf is concrete, bind the meta to x's kind.  This is the
+  -- use-site resolution rule from .claude/plans/lvannot-shape.md —
+  -- 'List Bool' resolves List's kind-meta to '*0', 'List Bool⋮'
+  -- resolves it to 'Bool' (self-ref).  Locks on first use (subsequent
+  -- uses with conflicting arg kinds will TyMismatch — that's the
+  -- correct conservative behaviour pending a more nuanced
+  -- per-use freshening pass).
   app _ann _appPath f x = HypTwr $ \env -> do
     (vf, env1) <- runHypTwr f env
     (vx, env2) <- runHypTwr x env1
     let fProc = horizontal (exprTower vf)
         xProc = horizontal (exprTower vx)
-        tower = leafTower env2 (TyAppV fProc xProc)
-    pure (HypTwrExpr tower, env2)
+        s     = hypTwrEnvSubst env2
+        kEnv  = hypTwrEnvKindEnv env2
+        fKind = kindOf s kEnv (hRun fProc)
+        xKind = kindOf s kEnv (hRun xProc)
+    env3 <- case fKind of
+      TyMetaV m | isKindMetaResolvable xKind ->
+        case Map.lookup m s of
+          Nothing -> Right env2 { hypTwrEnvSubst = Map.insert m xKind s }
+          Just _  -> Right env2  -- already bound; skip
+      _ -> Right env2
+    let tower = leafTower env3 (TyAppV fProc xProc)
+    pure (HypTwrExpr tower, env3)
 
   forallLv _ann _name _binderPath body = HypTwr $ runHypTwr body
   existsTy _ann _name _binderPath body = HypTwr $ runHypTwr body
