@@ -49,7 +49,7 @@ import Constructor.Path (Path, PathStep (..), extendPath)
 import Constructor.Sort (Mode (..), Sort (..))
 import Constructor.Syntax (Name)
 import Constructor.Tower (KindEnv, kindOf)
-import Constructor.TyProc (Subst, TyProc, TyView (..), resolveView)
+import Constructor.TyProc (MetaId (..), Subst, TyView (..), resolveView)
 import Data.Kind (Type)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
@@ -63,6 +63,11 @@ data Expr
   | ELam !Name !Expr
   | EApp !Expr !Expr
   | ECase !Expr ![Arm]
+  | EMeta !MetaId        -- ^ a free type-level sub-meta demoted to value
+                          --   level (Phase D-full narrowing): stands for a
+                          --   not-yet-known ctor argument.  Reduces to a
+                          --   'VStuck (SMeta …)'; pattern-binds and is
+                          --   discarded when the arm body ignores it.
   deriving (Eq, Show)
 
 -- | Patterns appearing in case arms.
@@ -94,6 +99,9 @@ data Value
 --   Phase D will case-split on 'SCase' with a 'VCon'-ctor scrutinee.
 data Stuck
   = SVar !Name
+  | SMeta !MetaId         -- ^ a free type-level sub-meta carried through
+                           --   reduction (Phase D-full); holds the 'MetaId'
+                           --   directly (paths intact, no stringification).
   | SApp !Value !Value
   | SCase !Value ![Arm]
   deriving (Eq, Show)
@@ -127,6 +135,8 @@ interp gs env e = case e of
   ECtor n args -> VCon n (map (interp gs env) args)
 
   ELam x body -> VClos env x body
+
+  EMeta m -> VStuck (SMeta m)
 
   EApp f a -> case interp gs env f of
     VClos env' x body -> interp gs (Map.insert x va env') body
@@ -230,11 +240,17 @@ extractCtorPaths (AST.Prog _ ds) = foldr collectProg Map.empty ds
 --   the ctor's type signature.
 extractDataCtors :: forall (a :: Sort -> Type). Tree a 'SProg -> Map Name [(Name, Int)]
 extractDataCtors (AST.Prog _ ds) =
-  let baseMap     = foldr collectProg Map.empty ds
+  let -- Each ctor is also its own iso-tower singleton "data": the
+      -- type 'C'-headed has sole ctor-shape 'C' at its own arity.
+      -- Nullary 'Z' → 'Z' ↦ [(Z,0)]; unary 'S' → 'S' ↦ [(S,1)].
+      -- Narrowing (Phase D) enumerates these when an arg's expected
+      -- type heads on a ctor (e.g. a single-arm 'case n { S m -> … }'
+      -- pins the parameter to the 'S'-headed singleton).
+      baseMap     = foldr collectProg Map.empty ds
       singletons  = Map.fromList
-        [ (cname, [(cname, 0)])
+        [ (cname, [(cname, ar)])
         | (_, ctors) <- Map.toList baseMap
-        , (cname, 0) <- ctors
+        , (cname, ar) <- ctors
         ]
   in Map.union baseMap singletons
   where
@@ -275,6 +291,11 @@ demote s = go . resolveView s
       TyAppV{}     -> do
         (headName, argViews) <- peelCtorChain v
         VCon headName <$> traverse (demote s) argViews
+      -- A free sub-meta (Phase D-full): carry it as a stuck value.
+      -- The interpreter pattern-binds it; arms that ignore it reduce
+      -- to a ground result, arms that need it leave the result stuck
+      -- (→ promote fails → that narrowing candidate is rejected).
+      TyMetaV mid  -> Just (VStuck (SMeta mid))
       _            -> Nothing
 
     peelCtorChain :: TyView -> Maybe (Name, [TyView])
@@ -309,8 +330,9 @@ promote cps = go
 --   ctor-arg expressions.
 valueToExpr :: Value -> Maybe Expr
 valueToExpr v = case v of
-  VCon n args -> ECtor n <$> traverse valueToExpr args
-  _           -> Nothing
+  VCon n args        -> ECtor n <$> traverse valueToExpr args
+  VStuck (SMeta m)   -> Just (EMeta m)   -- round-trip a free sub-meta
+  _                  -> Nothing
 
 -- | The core bridge operation: given a deferred-head name and its
 --   args (as 'TyView's), demote → interp → promote.  Returns
@@ -424,14 +446,22 @@ narrowOnce gs cps dataCtors fnTypes kEnv subst fname argViews = do
         v@TyConV{} -> [(Map.empty, v)]
         v@TyAppV{} -> [(Map.empty, v)]
         -- A free meta: try each ctor of the meta's expected data type.
-        TyMetaV mid -> do
+        -- D-full: for an arity-k ctor, mint k fresh sub-metas (no
+        -- gensym — their identities extend this meta's paths with
+        -- 'PsCtorAppArg i') and build the ctor view as a 'TyAppV'
+        -- spine over them.  Nullary (k=0) reduces to the old
+        -- 'TyConV'-only behaviour.
+        TyMetaV (MetaId bp up) -> do
           dataName    <- maybeToList (headDataName (resolveView s argType))
           ctorsOfData <- maybeToList (Map.lookup dataName dctors)
           (cname, arity) <- ctorsOfData
-          guard (arity == 0)               -- nullary-only for now
           ctorPath    <- maybeToList (Map.lookup cname cps')
-          let ctorView = TyConV cname ctorPath Z
-              substExt = Map.singleton mid ctorView
+          let subMetas = [ TyMetaV (MetaId (extendPath (PsCtorAppArg i) bp)
+                                           (extendPath (PsCtorAppArg i) up))
+                         | i <- [0 .. arity - 1] ]
+              ctorView = foldl (\h a -> TyAppV (hPure h) (hPure a))
+                               (TyConV cname ctorPath Z) subMetas
+              substExt = Map.singleton (MetaId bp up) ctorView
           pure (substExt, ctorView)
         -- Other shapes (TyArrV, TyUnivV, TyVarV, TyDeferV): skip.
         _ -> []
@@ -461,10 +491,6 @@ narrowOnce gs cps dataCtors fnTypes kEnv subst fname argViews = do
     maybeToList :: Maybe a -> [a]
     maybeToList Nothing  = []
     maybeToList (Just x) = [x]
-
-    guard :: Bool -> [()]
-    guard True  = [()]
-    guard False = []
 
 -- | Walk a 'TyView' recursively, attempting to reduce any
 --   'TyAppV'-chain rooted at a 'TyDeferV' head.  Successful

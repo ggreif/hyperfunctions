@@ -478,6 +478,25 @@ tests =
       \let rt = W Z"
       ["pickZ", "rt"]
 
+  -- Phase D-full: unary-ctor narrowing via a fresh sub-meta.
+  -- Mirrors the D-min shape (single-arm function → parameter pinned
+  -- to a concrete singleton type) but on the *unary* ctor 'S'.
+  -- 'W T' forces 'sT ?n ≡ T'.  The single 'S m' arm pins the
+  -- parameter's type to 'S'-headed, so narrowing enumerates 'S'
+  -- (arity 1) and — newly in D-full — mints a fresh sub-meta '?m'
+  -- (path-derived, no gensym), refines '?n := S ?m', and reduces
+  -- 'sT (S ?m) = T' because the 'S m -> T' arm body ignores 'm'.
+  -- The sub-meta stays legitimately free; the ground result 'T'
+  -- meets the LHS.  D-min could not reach this (nullary ctors only).
+  , acceptsBridgedWithCtors
+      "Phase D-full: 'W T' with W : sT n -> Wit n forces n := S ?m via unary narrowing"
+      "data Nat\8942 { Z\8942; S Nat\8942 };\
+      \data Bool\8942 { T\8942; F\8942 };\
+      \let sT = \\n -> case n { S m -> T };\
+      \data Wit (n : Nat) : *0 { W : sT n -> Wit n };\
+      \let rt = W T"
+      ["rt", "sT"]
+
   -- "Decay via 1-parameter GADT" demonstration: a length-indexed
   -- 'List a n' (Vec-shape).  A value 'Cons True (Cons False Nil)'
   -- gets the singleton type 'List Bool (S (S Z))' from the
