@@ -1,0 +1,115 @@
+# v0.5.0 — Iso-tower-parametric data, end-to-end
+
+This release turns the v0.4.0 foundation arc into a **user-visible
+capability**: Haskell-style data declarations like
+`data List a = Nil | Cons a (List a)` now produce iso-tower-
+parametric data, where each ctor application carries singleton-
+precise typing.
+
+## What's new
+
+### End-to-end iso-tower-parametric
+
+```
+data Bool⋮ { T⋮; F⋮ };
+data List a = Nil | Cons a (List a);
+let lst = Cons T Nil
+```
+
+⇒ `lst :: Cons T Nil` — the covering-space framing made concrete.
+
+Each value carries its own singleton type, with `List a` as the
+implicit covering space.  Previously this would have been
+`lst :: List T` (classical-parametric).
+
+### Kind-level slidability + Haskell-style sugar in deferred-fn args
+
+```
+data Bool = T | F;
+let pickT = \b -> case b { T -> T; F -> T };
+data Wit : *0 { W : pickT T -> Wit };
+let rt = W T
+```
+
+The Haskell-style sugar (`data Bool = T | F`) plus the iso-tower
+desugar means `T : T`; R2's kind-level slidability gate accepts
+the slide on `pickT T`; the value-level interpreter reduces it to
+`T`; and `W T` typechecks against the reduced result.  All
+without explicit `⋮` markers on the data declaration.
+
+## Phases + residuals landed
+
+The v0.5.0-dev cycle implemented the carrier overrides on top of
+the v0.4.0 foundation:
+
+| Piece | Commit | Capability |
+|---|---|---|
+| R1 | dfb616c | HypTwr `tyKindMeta` override — kind metas in Subst |
+| R3a | 7daf5d4 | Param-kind elaboration in `dataDecl` |
+| R3b | 7daf5d4 | Materialise-time default unresolved kind metas → '*0' |
+| R3c | 8eea51f | Type-level `app` kind-meta resolution |
+| R4 + demo | be64b15 | Haskell-style sugar emits iso-tower form; `Cons T Nil` test |
+| R2 + pickT | 392b591 | `KindEnv` tracks ctor kinds; kind-level `isSlidable`; pickT demo |
+
+## v0.6.0+ open work
+
+### R5. Per-slot iso-tower-ness for mixed-shape data
+
+The slidability gate is all-or-nothing today.  For data like
+`data Tagged a b` with `a : Bool⋮` and `b : Nat` (classical), the
+slide currently blocks because not *all* args are slidable.
+Per-slot precision would let slot-1's iso-tower-ness carry
+singleton refinement while slot-2 stays sticky.
+
+### R6. TyCaseV multi-fire policy refinement
+
+The agreed-refinements policy (commit e95e37f) is correct.
+v0.6.0+ could explore smallest-meet-winner, or join-of-arms-by-
+kind, for tighter unification in edge cases.
+
+### R7. Codegen catch-up
+
+From the residuals note on 52b78eb, unchanged by v0.5.0:
+
+- '--hs' polymorphic let-generalization (recursive GADT functions
+  like `length` need explicit type signatures; elaborator
+  monomorphizes today).
+- '--scott' constant-family encoding (non-indexed return types
+  over indexed eliminators).
+
+Both blocking `length` / `map` / `foldr` on Vec to actually *run*
+via codegen.  Independent of the iso-tower arc but mutually
+relevant — the v0.5.0 iso-tower capability surfaces more
+programs that exercise these codegen gaps.
+
+### R8. Cross-use kind locking (R3c follow-up)
+
+R3c (type-level `app` kind-meta resolution) locks the data's
+kind on first use — a subsequent use with a different arg-kind
+shape would TyMismatch on the already-bound kind.  Conservative
+and correct, but a per-use freshening pass would let data be used
+with mixed-kind args across the same program.  Deferred.
+
+### R9. Phase 2 self-loop in 'kindOf' for the iso-tower-parametric chain
+
+Phase 2 (cfb4b8d) provides the parametric self-loop machinery
+but it's currently exercised through R2's ctor-kind path
+(ctor's result-view = self-applied → Phase 2 fires).  A more
+thorough exercise would land when type-level `Cons T Nil` is
+applied as a kind (e.g., `data Witness (xs : List T) : *0 { …}`).
+Deferred — no test corpus currently uses kinds that thick.
+
+## Status
+
+The v0.4.0 foundation (Phases 0-4) + v0.5.0 carrier overrides
+(R1-R4) together deliver the iso-tower-parametric story end-to-
+end.  Two user-visible test programs demonstrate it:
+
+- 'Iso-tower-parametric List via Haskell-style sugar'
+  (commit be64b15)
+- 'v0.5.0 R2 demo: pickT on data Bool = T | F (Haskell-style
+  sugar)' (commit 392b591)
+
+The cycle ships as a coherent release.  Residuals are bona fide
+extensions (per-slot precision, codegen catch-up) rather than
+gaps in the core capability.
