@@ -169,3 +169,65 @@ sugar's default emission.
 Until then, the sugar is *useful* (`length`, `map`, `foldr` work)
 but *incomplete*: covering-space iso-tower precision is missing,
 and the level annotation is cosmetic-only.
+
+---
+
+## Update: Issue 2 resolved on 8332439
+
+The level tear is gone — Haskell-style sugar now defaults the
+data's kind to `*0`, matching the param-kind default.  Data and
+params share one universe; the latent `List *0 = Nil`
+unsoundness vector closes.
+
+## Update: Issue 1 — depth re-assessed
+
+The note above suggested "relax `checkSaturation` to be
+covering-aware" as the fix.  On closer look, that's necessary
+but not sufficient.
+
+Even with the head-check relaxed (so `Nil : Nil` is accepted
+as a ctor of `List a`), the elaborator's pattern matching
+breaks down:
+
+```
+case xs { Nil -> ...; Cons h r -> ... }
+where xs : List a
+```
+
+- Nil arm: pattern `Nil` has type `Nil`.  Meet `List a ~ Nil`
+  at the horizontal layer fails structurally (different
+  tycons).
+- Tower-climbing: `List a`'s upward tower is `List a → *0 →
+  *1 → …`; `Nil`'s upward tower under iso-tower semantics is
+  `Nil → ??? → …` (the "???" depends on how the covering
+  relation is represented).  Even if both reach `*0` at some
+  rung, the meet at `*0` is `*0` — no refinement signal flows
+  back into `xs`'s meta.
+- Without the refinement, the Nil arm doesn't *learn*
+  anything about `xs`, and the Cons arm's "pattern type"
+  `Cons h r` doesn't refine `xs` either.
+
+What's actually needed: **covering-space pattern matching** as
+a first-class elaborator capability.  Concretely:
+
+1. When the parent data type is declared with iso-tower kind
+   (kindEnv self-reference), record it as a *covering* of its
+   ctor singletons.
+2. Pattern matching `xs : List a` against `Nil` looks up the
+   covering relation, sees that `Nil ⊆ List`, and refines
+   `xs`'s meta to "Nil-instance of List a" — a TyCaseV-shaped
+   refinement, or a new refinement primitive.
+3. The case-of's per-arm refinements then carry the
+   instance-of-covering info into arm bodies.
+
+This is a sibling effort to the per-arm Subst-fork + TyCaseV
+work, not a localized extension.  Estimated scope: 1–2 weeks
+of focused elaborator work, plus designing the covering-space
+representation.
+
+**Recommendation for v0.4.0:** ship the sugar with classical
+desugar (this commit), and treat iso-tower for parametric
+data as v0.5.0+ scope.  The sugar still delivers the user-
+visible win (`data List a = Nil | Cons a (List a)` syntax
+works, `length` works, etc.) — just without the singleton-
+precision the iso-tower form would provide.
