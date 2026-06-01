@@ -1,0 +1,229 @@
+# Per-arm Subst-fork — making GADT pattern matching work for polymorphic binders
+
+Discussion notes 2026-06-01 attached to `0aa6e9d`.  The accompanying
+test ("1-param GADT decay: case of indexed List on singleton-typed
+input") demonstrates that GADT-style index refinement WORKS today
+for *concrete-scrutinee* `case`-of.  This note records the
+adjacent limitation — the *polymorphic-scrutinee* case — together
+with a fix path and the conceptual framing that motivates it.
+
+## The minimal failure
+
+```
+data Nat : *0 { Z : Nat; S : Nat -> Nat };
+data List (a : *0) (n : Nat) : *0
+  { Nil  : List a Z
+  ; Cons : a -> List a n -> List a (S n)
+  };
+let isCons = \xs -> case xs { Nil -> Z; Cons _ _ -> S Z }
+```
+
+This fails with `TyMismatch (TyCon "Z" …) (TyApp (TyCon "S" …) …)`.
+The user's body code doesn't write `S n ~ Z` anywhere — the
+mismatch is in the elaborator's internal handling of the
+lambda-binder's meta.
+
+### Why
+
+`xs` is a fresh meta `?α`.  The case body has two arms with
+refining ctors:
+
+- **Nil arm**: pattern type `List a Z`.  Meet `List a Z ~ ?α` →
+  **binds `?α := List a Z`**.  Subst extended.
+- The arm's Subst is then **threaded forward** to the next arm via
+  `threadArmsCarrying`.
+- **Cons arm**: pattern type `List a (S n)`.  Meet `List a (S n) ~
+  ?α`.  `resolveView` chases `?α := List a Z` → meets `List a (S
+  n) ~ List a Z` → child meet `S n ~ Z` → TyMismatch.
+
+The Nil arm's refinement poisoned the meta for the Cons arm.
+
+## Why concrete-scrutinee works but polymorphic doesn't
+
+| Pattern-match kind | Scrutinee type | Works today? |
+|---|---|---|
+| Plain ADT (no refining ctors) | concrete or meta | ✅ yes |
+| GADT (`Fin n`, `Vec n a`, `Eq a b`, …) | **concrete** (`FS FZ` etc.) | ✅ yes — `0aa6e9d`'s test |
+| GADT — same | **polymorphic** (lambda binder, parametric arg) | ❌ no — this note |
+
+For concrete scrutinees the meta-binding issue doesn't arise (no
+meta to bind).  For polymorphic scrutinees the first arm to refine
+the meta commits a global binding that other arms can't override.
+
+**The limitation is general GADT support, not specific to iso-towers
+or singleton-style declarations.**  Iso-towered data merely
+*produces* GADT-shaped types (each ctor refines a parameter); the
+wall hit is the GADT story, not the sugar.
+
+## How Haskell and Agda handle it
+
+### Haskell (GHC, OutsideIn(X) — Vytiniotis, Peyton Jones, Schrijvers, Sulzmann, JFP 2011)
+
+- GADT ctors compile to *coercion witnesses*: `VCons :: forall n a
+  m. (n ~ S m) => a -> Vec m a -> Vec n a`.  The `(n ~ S m)` is a
+  type-equality constraint stashed inside the constructor.
+- Pattern matching *unpacks* the witness: matching `VCons _ rest`
+  introduces `n ~ S m` as a **local given** — a fact available in
+  this arm's body only.
+- Local givens are **scope-restricted**.  GHC's constraint tree
+  mirrors the program structure; givens drop out when the arm
+  ends.
+- The solver runs **inside-out**: wanted constraints flow inward;
+  givens flow outward only to the arm they're in.  Sibling arms
+  never see each other's local givens.
+- Runtime cost: zero.  Coercion witnesses erase.
+
+The architectural commitment: **the type-checker carries a
+constraint tree, not a global Subst.**  GADT pattern matches add
+nodes with scoped givens.
+
+### Agda (dependent pattern matching)
+
+- No coercion witnesses needed — the type theory is dependent.
+  `Vec n a` is literally indexed by `n`.
+- Pattern matches refine the *type* of the surrounding context.
+  Matching `xs : Vec n a` against `VNil` *substitutes* `n := Z`
+  everywhere in the arm's goal type.  Direct elaboration, no
+  constraint solver.
+- Coverage checker distinguishes forced / inaccessible / refined
+  patterns.
+- Substitution is **local to elaboration** — doesn't escape the
+  arm.
+- Higher-dimensional structure: in `--without-K` mode, refinement
+  is a path in the type universe; HoTT-aware.
+
+The mechanism is structurally similar to Haskell's: arm-local
+refinement, no leak to siblings — just sitting on a more powerful
+type theory.
+
+## The "arm as function" framing
+
+Each `case`-arm is conceptually a *function* with a refined-domain
+type and the case-result codomain.  Pattern matching is the
+*application* of a dispatch function to the scrutinee plus the
+per-arm functions.  Three perspectives, all the same:
+
+### MLTT eliminator
+
+Each data type comes with a canonical eliminator:
+
+```
+elim_Vec : forall (P : Nat -> Type).
+           P Z                                      -- Nil arm at refined codomain
+        -> (forall m. a -> Vec m a -> P (S m))      -- Cons arm at refined codomain
+        -> forall n. Vec n a -> P n
+```
+
+Pattern matching is sugar for an application of this eliminator.
+Each arm is *literally a function* — the eliminator's argument —
+with its own refined type.
+
+### Scott encoding (what our `Constructor.Scott` already does)
+
+Scott-encoded values carry their eliminator inside.  Pattern
+matching = applying the value to the arm functions:
+
+```
+case xs of { Nil -> e_nil; Cons h r -> e_cons h r }
+
+  ≡
+
+xs (\() -> e_nil)             -- Nil-branch is a unit-thunk function
+   (\h r -> e_cons h r)       -- Cons-branch is a function over h, r
+```
+
+Each arm becomes a lambda.  Lambda scoping handles binder hygiene.
+**No Subst bleed across arms because lambdas don't share Subst** —
+each is a separate closure.
+
+### Haskell elaboration
+
+GHC's elaboration of pattern matching is essentially "make each
+arm a function with type equalities as its givens."  Givens are
+scoped to the arm's body precisely *because the arm is a function
+and functions have local scope*.
+
+## Operational fix for HypTwr — per-arm Subst-fork
+
+`HypTwr.hs`'s `arm` rule currently does:
+
+```haskell
+case meetNorm env (horizontal patTower) (horizontal scrutTower) of
+  Right subst' ->
+    -- body elaborates under subst'
+    ... runHypTwr body env { hypTwrEnvSubst = subst' } ...
+    -- returned env keeps subst' — propagates to next arm
+  Left _ -> ... { hypTwrEnvSubst = hypTwrEnvSubst env } ...  -- unreachable; restore
+```
+
+The fix (3 lines):
+
+```haskell
+case meetNorm env (horizontal patTower) (horizontal scrutTower) of
+  Right armSubst -> do
+    (bodyTower, env1) <- runHypTwr body env { hypTwrEnvSubst = armSubst }
+    -- ← restore parent's subst before returning, dropping arm-local refinements
+    pure (HypTwrSArm (Just bodyTower), env1 { hypTwrEnvSubst = hypTwrEnvSubst env })
+  Left _ -> ... (already restores)
+```
+
+Each arm captures parent's Subst, runs body under arm-local Subst,
+restores parent's Subst before returning to
+`threadArmsCarrying`.  Sibling arms now see the unrefined
+scrutinee meta — they get to refine it themselves.
+
+This is the operational mirror of "each arm is a refined-domain
+function": functions don't leak local refinements to siblings.
+
+## Trade-off
+
+The current threading preserves *arm-by-arm consistent refinements*
+of the scrutinee meta (if all arms agreed on a refinement, it'd
+propagate outward).  With per-arm forking, that consistency is
+lost — every arm's refinement drops on exit.
+
+Recovery options:
+
+1. **Drop the refinements** — Haskell's behaviour.  Outer context
+   doesn't see arm-local refinements.  Simplest.
+2. **Compute the meet (intersection) of arm Substs** at the
+   case-of's exit.  Keep only refinements present in every
+   reachable arm.  Lattice-theoretic "all arms agree" rule.  More
+   precise but more work.
+
+For most code, (1) suffices — non-GADT cases never refine the
+scrutinee meta anyway, so there's no propagated info to lose.
+
+## Connection to the long-term vision
+
+The "arm as function" view unifies several pieces of the
+constructor's architecture:
+
+- **Scott codegen**: already emits arms as lambdas at runtime; the
+  fix would mirror that at type-check time.
+- **Narrowing (Phase D)**: narrowing case-splits operate over
+  ctor possibilities much like an eliminator's per-arm methods.
+- **MLTT eliminators**: the canonical dependent-typed view; our
+  case_ can be derived from it.
+
+Implementation-wise:
+
+**Step 1** — the operational fix (per-arm Subst-fork in `arm`):
+~3 lines.  Lift the `length`-on-Vec test from "limitation" to
+"passes."
+
+**Step 2** — refactor `case_` to *literally* an eliminator
+application internally: cleaner; aligns case-of with valLam in the
+AST; bigger.
+
+Step 1 is the immediate unblock; Step 2 is the architectural
+cleanup that makes the framing literal.
+
+## When to land it
+
+Not in the narrowing arc (which lives in `narrowing.md`).  This is
+its own Phase E or sibling — "GADT-style polymorphic pattern
+matching," concerning the type checker's `arm`-scoping behaviour.
+Once landed, it lifts a whole class of pattern-matching functions
+(length, map, foldr on Vec; well-typed eval on indexed Expr; etc.)
+from "fails today" to "works."
