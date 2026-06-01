@@ -144,3 +144,21 @@ For ongoing tracking:
 Each piece that lands in v0.6.0 updates the relevant table /
 note inline (per the convention in PLAN.md's "Post-0.2.0
 arcs" pointer index).
+
+## Landed (D-full + D-disj) — update
+
+D-full and D-disj did NOT land as the two separate pieces sketched
+above.  They merged: narrowing now sources candidate ctors from the
+deferred function's own `case` arms (Interp.armCtors), not from the
+argument's type.  This dissolved the "two-arm parameter infers to an
+unresolved meta" blocker that the type-sourced route hit, and made
+disjunction fall out (one branch per arm).
+
+- D-full  951bfdf — path-derived sub-metas + SMeta/EMeta bridge.
+- D-disj  36eeae3 — arm-sourced enumeration (supersedes the
+  "agreed-refinements / backtracking" framing above; still
+  first-meet-wins — true fairness remains the Hyper-LogicT item).
+- cleanup b2ca9bd — removed the now-dead type-sourced plumbing
+  (extractDataCtors / hypTwrEnvDataCtors / hypTwrProgramWithCtors).
+
+Detail + worked examples: narrowing.md (D-full / D-disj sections).
