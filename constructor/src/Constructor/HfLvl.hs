@@ -5,11 +5,10 @@
 
 -- | Hyperfunction-backed level inference (warm-up rehearsal).
 --
---   Functionally identical to "Constructor.LevelInfer": the algorithm is
---   the same and produces the same 'LevelMap'.  The difference is that
---   each subterm's level is carried as a @Hyper Lv Lv@ rather than a raw
---   'Lv'.  Self-application ('hRun') is the extraction operation; values
---   travel as constant hyperfunctions ('hPure').
+--   Produces a 'LevelMap' by the standard level-inference algorithm,
+--   but each subterm's level is carried as a @Hyper Lv Lv@ rather than
+--   a raw 'Lv'.  Self-application ('hRun') is the extraction operation;
+--   values travel as constant hyperfunctions ('hPure').
 --
 --   At this stage the encoding adds no power — levels are flat scalars,
 --   so the hyperfunction collapses to its constant.  The point is to

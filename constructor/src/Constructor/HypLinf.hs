@@ -6,23 +6,20 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
--- | Architecture B: hyperfunction-driven level-inference carrier.
---   Parallel sibling to 'Constructor.Tc' (Architecture A, Sheet-driven
---   level inference).
+-- | Hyperfunction-driven level-inference carrier.
 --
---   The 'Sheet' substrate is replaced by a web of 'Hyper'-valued
---   level-processes.  Each place in the web IS a hyperfunction; two
---   places are "identified" when their self-applications yield
---   compatible values.  For v0 (flat levels, no inference variables)
---   the web is shallow — every level-process is 'hPure n' — so the
---   architectural difference doesn't show up in expressive power.
---   It earns its keep when level-inference variables arrive and the
---   path-tracing character of hyperfunction self-application starts
+--   Level inference runs over a web of 'Hyper'-valued level-processes:
+--   each place in the web IS a hyperfunction; two places are
+--   "identified" when their self-applications yield compatible values.
+--   For v0 (flat levels, no inference variables) the web is shallow —
+--   every level-process is 'hPure n' — so the encoding adds no power
+--   yet.  It earns its keep when level-inference variables arrive and
+--   the path-tracing character of hyperfunction self-application starts
 --   carrying real information (the witness of each identification).
 --
---   The carrier is impredicative in the same shape as 'Constructor.Tc':
---   each method emits the analysis result and a polymorphic
---   finally-tagless term decorated by inferred levels in one go.
+--   The carrier is impredicative: each method emits the analysis
+--   result and a polymorphic finally-tagless term decorated by
+--   inferred levels in one go.
 --   That polymorphic third slot is what 'Constructor.HypTinf' (B-side
 --   type inference) consumes — specialise at @r ~ HypTinf@ via
 --   'hypLinfRunWith' and the level annotations flow into type
@@ -68,8 +65,7 @@ emptyHypLinfEnv :: HypLinfEnv
 emptyHypLinfEnv = HypLinfEnv Map.empty Nothing
 
 -- | Solver-facing analysis result.  Just the bound-name → level-process
---   map; no Sheet to consult.  Levels are obtained by self-applying
---   each process via 'hRun'.
+--   map; levels are obtained by self-applying each process via 'hRun'.
 data HypLinfResult = HypLinfResult
   { hypLinfResultNames :: !(Map Name LvProc)
   }
