@@ -5,6 +5,7 @@
 
 module Constructor.Syntax
   ( Lang (..)
+  , Discard (..)
   , HasAnn (..)
   , Name
   ) where
@@ -297,3 +298,21 @@ instance Applicative m => HasAnn (Const ()) m where
   freshBuildAnn   = pure (Const ())
   freshDissectAnn = pure (Const ())
   freshArmAnn     = pure (Const ())
+
+-- | A trivial 'Lang' instance that throws all inputs away.  Used to
+--   specialise a @forall r. Lang r => …@ term slot when the caller
+--   only wants a carrier's analysis side-effects, not the term it
+--   would build (e.g. level inference's analysis-only entry points).
+--
+--   Only the six methods that lack a class default need a body; the
+--   rest inherit 'Lang''s 'error' / pass-through defaults.  Callers
+--   never force the produced term, so those defaults never fire.
+newtype Discard (a :: Sort -> Type) (s :: Sort) = Discard ()
+
+instance Lang Discard where
+  prog     _ _         = Discard ()
+  dataDecl _ _ _ _ _ _ = Discard ()
+  ctorDecl _ _ _       = Discard ()
+  var      _ _         = Discard ()
+  star     _ _         = Discard ()
+  arr      _ _ _       = Discard ()

@@ -15,7 +15,6 @@ import qualified InterpSpec
 import qualified ScottSpec
 import qualified HypTinfSpec
 import qualified HypTwrSpec
-import qualified LevelInferSpec
 import qualified TinfSpec
 import qualified TowerSpec
 import qualified TyProcSpec
@@ -34,9 +33,6 @@ main :: IO ()
 main = do
   putStrLn "parsing:"
   parseOK <- mapM run cases
-  putStrLn ""
-  putStrLn "level inference:"
-  inferOK <- mapM runInfer LevelInferSpec.tests
   putStrLn ""
   putStrLn "type inference:"
   tinfOK <- mapM runInfer TinfSpec.tests
@@ -67,7 +63,7 @@ main = do
   putStrLn ""
   putStrLn "Interp (value-level interpreter):"
   interpOK <- mapM runInfer InterpSpec.tests
-  if and (parseOK ++ inferOK ++ tinfOK ++ meetOK ++ hypTinfOK ++ towerOK ++ hypTwrOK ++ gadtOK ++ axiomsOK ++ hsOK ++ scottOK ++ interpOK)
+  if and (parseOK ++ tinfOK ++ meetOK ++ hypTinfOK ++ towerOK ++ hypTwrOK ++ gadtOK ++ axiomsOK ++ hsOK ++ scottOK ++ interpOK)
     then exitSuccess
     else exitFailure
   where

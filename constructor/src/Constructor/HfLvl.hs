@@ -23,8 +23,7 @@ module Constructor.HfLvl
   ) where
 
 import Constructor.HyperLite (Hyper, hPure, hRun)
-import Constructor.Level (Lv (..), addOffset, starLevel)
-import Constructor.LevelInfer (LevelMap, LvErr (..))
+import Constructor.Level (Lv (..), LevelMap, LvErr (..), addOffset, starLevel)
 import Constructor.Sort (Sort (..))
 import Constructor.Syntax (Lang (..), Name)
 import Data.Kind (Type)

@@ -37,11 +37,9 @@ module Constructor.HypLinf
   ) where
 
 import Constructor.HyperLite (Hyper, hPure, hRun)
-import Constructor.Level (Lv (..), addOffset, starLevel)
-import Constructor.LevelInfer (LevelMap, LvErr (..))
+import Constructor.Level (Lv (..), LevelMap, LvErr (..), LvAnnot (..), Shape (..), addOffset, starLevel)
 import Constructor.Sort (Sort (..))
-import Constructor.Syntax (Lang (..), Name)
-import Constructor.Tc (Discard, LvAnnot (..), Shape (..))
+import Constructor.Syntax (Discard, Lang (..), Name)
 import Data.Kind (Type)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map

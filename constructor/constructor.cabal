@@ -23,11 +23,8 @@ library
     Constructor.Sort
     Constructor.Path
     Constructor.Level
-    Constructor.Sheet
-    Constructor.LevelInfer
     Constructor.HyperLite
     Constructor.HfLvl
-    Constructor.Tc
     Constructor.HypLinf
     Constructor.TyExpr
     Constructor.Tinf
@@ -67,7 +64,6 @@ test-suite constructor-test
   hs-source-dirs: test
   main-is:        Spec.hs
   other-modules:
-    LevelInferSpec
     TinfSpec
     TyProcSpec
     HypTinfSpec

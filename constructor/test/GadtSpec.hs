@@ -46,7 +46,7 @@ import Constructor.HypTwr
   , hypTwrProgramWith
   )
 import Constructor.Interp (extractCtorPaths, extractGlobals)
-import Constructor.LevelInfer (LvErr (..))
+import Constructor.Level (LvErr (..))
 import Constructor.Parser (parseProgram)
 import Constructor.Path (Path (..), PathStep (..))
 import Constructor.Syntax (Name)
