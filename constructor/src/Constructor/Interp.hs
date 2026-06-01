@@ -25,9 +25,28 @@ module Constructor.Interp
   , interp
   , Env
   , Globals
+    -- * Tree → Expr translation
+  , fromBuild
+  , fromDissect
+  , extractGlobals
+  , extractCtorPaths
+    -- * Bridge: demote / promote / reduce
+  , demote
+  , promote
+  , valueToExpr
+  , reduceDeferred
+  , normaliseDeferred
   ) where
 
+import qualified Constructor.AST as AST
+import Constructor.AST (Tree)
+import Constructor.HyperLite (Hyper, hPure, hRun)
+import Constructor.Level (Lv (..))
+import Constructor.Path (Path, PathStep (..), extendPath)
+import Constructor.Sort (Mode (..), Sort (..))
 import Constructor.Syntax (Name)
+import Constructor.TyProc (Subst, TyProc, TyView (..), resolveView)
+import Data.Kind (Type)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 
@@ -138,3 +157,171 @@ matchPattern pat v = case (pat, v) of
     | pn == vn && length ps == length vs ->
         mconcat <$> traverse (uncurry matchPattern) (zip ps vs)
   _ -> Nothing
+
+-- ---------------------------------------------------------------------
+-- Tree → Expr translation
+-- ---------------------------------------------------------------------
+
+-- | Convert a Build-mode 'Tree' AST node to an 'Expr'.  Sort-indexed
+--   GADT pattern-match keeps this exhaustive: only ctors that can
+--   inhabit @'SVal 'Build@ appear.
+fromBuild :: forall (a :: Sort -> Type). Tree a ('SVal 'Build) -> Expr
+fromBuild t = case t of
+  AST.ValVar _ n _       -> EVar n
+  AST.ValCtor _ n _ args -> ECtor n (map fromBuild args)
+  AST.ValLam _ n _ body  -> ELam n (fromBuild body)
+  AST.ValApp _ _ f x     -> EApp (fromBuild f) (fromBuild x)
+  AST.Case _ scrut arms  -> ECase (fromBuild scrut) (map fromArm arms)
+  where
+    fromArm :: Tree a 'SArm -> Arm
+    fromArm (AST.Arm _ pat body) = Arm (fromDissect pat) (fromBuild body)
+
+-- | Convert a Dissect-mode 'Tree' AST node (pattern position) to a
+--   'Pattern'.  Sort-indexed; only ctors that can inhabit
+--   @'SVal 'Dissect@ appear.
+fromDissect :: forall (a :: Sort -> Type). Tree a ('SVal 'Dissect) -> Pattern
+fromDissect t = case t of
+  AST.ValVar _ n _       -> PVar n
+  AST.ValWild _          -> PWild
+  AST.ValCtor _ n _ args -> PCtor n (map fromDissect args)
+  AST.ValAt _ n _ inner  -> PAt n (fromDissect inner)
+
+-- | Walk a program's top-level decls and harvest each 'ValDecl' as a
+--   'Globals' entry mapping its binder name to the body's 'Expr'.
+--   Other decl shapes (data declarations, ctor declarations) are
+--   skipped — they don't contribute value-level bindings.
+extractGlobals :: forall (a :: Sort -> Type). Tree a 'SProg -> Globals
+extractGlobals (AST.Prog _ ds) = foldr collect Map.empty ds
+  where
+    collect :: Tree a 'SDecl -> Globals -> Globals
+    collect d gs = case d of
+      AST.ValDecl _ _ name body -> Map.insert name (fromBuild body) gs
+      _                         -> gs
+
+-- | Harvest all ctor declarations' decl-paths from a program's tree.
+--   Walks each 'DataDecl' and its body of 'CtorDecl's, deriving each
+--   ctor's path by extending the data's path with 'PsDeclIdx' for
+--   the ctor's position.  Used by 'promote' to reconstruct TyView
+--   shapes from interpreter Values.
+extractCtorPaths :: forall (a :: Sort -> Type). Tree a 'SProg -> Map Name Path
+extractCtorPaths (AST.Prog _ ds) = foldr collectProg Map.empty ds
+  where
+    collectProg :: Tree a 'SDecl -> Map Name Path -> Map Name Path
+    collectProg (AST.DataDecl _ dataPath _ _ _ ctors) cps =
+      foldr (collectCtor dataPath) cps (zip [0 :: Int ..] ctors)
+    collectProg _ cps = cps
+
+    collectCtor :: Path -> (Int, Tree a 'SDecl) -> Map Name Path -> Map Name Path
+    collectCtor dataPath (i, AST.CtorDecl _ name _) cps =
+      Map.insert name (extendPath (PsDeclIdx i) dataPath) cps
+    collectCtor _ _ cps = cps
+
+-- ---------------------------------------------------------------------
+-- Bridge: TyView ↔ Value via the ⋮-iso
+-- ---------------------------------------------------------------------
+
+-- | Demote a 'TyView' to an interpreter 'Value', when the view is a
+--   fully-ctor-headed structure.  Returns 'Nothing' for stuck shapes
+--   (TyMetaV, TyDeferV, TyVarV, TyArrV, TyUnivV).
+--
+--   'TyConV' / 'TyAppV' chains rooted at a 'TyConV' demote to a
+--   'VCon' with the head's name and recursively-demoted args.
+demote :: Subst -> TyView -> Maybe Value
+demote s = go . resolveView s
+  where
+    go v = case v of
+      TyConV n _ _ -> Just (VCon n [])
+      TyAppV{}     -> do
+        (headName, argViews) <- peelCtorChain v
+        VCon headName <$> traverse (demote s) argViews
+      _            -> Nothing
+
+    peelCtorChain :: TyView -> Maybe (Name, [TyView])
+    peelCtorChain = peel []
+      where
+        peel acc t = case resolveView s t of
+          TyConV n _ _  -> Just (n, acc)
+          TyAppV f x    -> peel (hRun x : acc) (hRun f)
+          _             -> Nothing
+
+-- | Promote a 'Value' to a 'TyView'.  Requires a @Map Name Path@ of
+--   ctor → decl-path to reconstruct 'TyConV' shapes.  Returns
+--   'Nothing' for non-ctor Values (closures, stuck) or for ctor
+--   names absent from the ctor-paths map.
+promote :: Map Name Path -> Value -> Maybe TyView
+promote cps = go
+  where
+    go v = case v of
+      VCon n args -> do
+        ctorPath <- Map.lookup n cps
+        argViews <- traverse go args
+        pure (mkAppChain (TyConV n ctorPath Z) argViews)
+      _ -> Nothing  -- VClos / VStuck — can't promote
+
+    mkAppChain :: TyView -> [TyView] -> TyView
+    mkAppChain head_ []     = head_
+    mkAppChain head_ (a:as) = mkAppChain (TyAppV (hPure head_) (hPure a)) as
+
+-- | Convert a fully-reduced 'Value' back to an 'Expr'.  Used when
+--   feeding demoted arguments into 'interp' via 'EApp'.  Returns
+--   'Nothing' for stuck/closure shapes — those can't be re-used as
+--   ctor-arg expressions.
+valueToExpr :: Value -> Maybe Expr
+valueToExpr v = case v of
+  VCon n args -> ECtor n <$> traverse valueToExpr args
+  _           -> Nothing
+
+-- | The core bridge operation: given a deferred-head name and its
+--   args (as 'TyView's), demote → interp → promote.  Returns
+--   'Nothing' if any step fails:
+--
+--     * Args don't fully demote (some still have metas / deferred).
+--     * Function name not in 'Globals'.
+--     * Interpreter produces a stuck/closure value (incomplete or
+--       inapplicable).
+--     * Result Value can't promote (ctor path unknown).
+reduceDeferred
+  :: Globals -> Map Name Path -> Subst
+  -> Name -> [TyView] -> Maybe TyView
+reduceDeferred gs cps subst fname argViews = do
+  body     <- Map.lookup fname gs
+  argVals  <- traverse (demote subst) argViews
+  argExprs <- traverse valueToExpr argVals
+  let applied = foldl EApp body argExprs
+      result  = interp gs Map.empty applied
+  case result of
+    VCon{} -> promote cps result
+    _      -> Nothing
+
+-- | Walk a 'TyView' recursively, attempting to reduce any
+--   'TyAppV'-chain rooted at a 'TyDeferV' head.  Successful
+--   reductions replace the chain with the resulting concrete
+--   'TyView'; unreachable / partial sub-views are left intact.
+--
+--   Idempotent on fully-reduced views.  Applied before unification
+--   (in 'meet') so 'TyDeferV' applications either resolve to their
+--   computed value or stay deferred for Phase D narrowing.
+normaliseDeferred
+  :: Globals -> Map Name Path -> Subst -> TyView -> TyView
+normaliseDeferred gs cps subst = go
+  where
+    go v = case resolveView subst v of
+      TyAppV f x -> case peelDeferredHead (TyAppV f x) of
+        Just (fname, argViews) ->
+          case reduceDeferred gs cps subst fname argViews of
+            Just reduced -> reduced
+            Nothing -> TyAppV (mapProc f) (mapProc x)
+        Nothing -> TyAppV (mapProc f) (mapProc x)
+      TyArrV a b -> TyArrV (mapProc a) (mapProc b)
+      other -> other
+
+    mapProc :: Hyper TyView TyView -> Hyper TyView TyView
+    mapProc p = hPure (go (hRun p))
+
+    peelDeferredHead :: TyView -> Maybe (Name, [TyView])
+    peelDeferredHead = peel []
+      where
+        peel acc t = case resolveView subst t of
+          TyDeferV n _    -> Just (n, acc)
+          TyAppV f x      -> peel (hRun x : acc) (hRun f)
+          _               -> Nothing

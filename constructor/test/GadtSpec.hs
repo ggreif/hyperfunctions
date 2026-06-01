@@ -34,6 +34,7 @@
 --   when the corresponding feature lands.
 module GadtSpec (tests) where
 
+import Constructor.AST (Tree)
 import Constructor.HypLinf (HypLinf, hypLinfRunWith)
 import Constructor.HypTwr
   ( CtorSig (..)
@@ -42,7 +43,9 @@ import Constructor.HypTwr
   , extractCtorSig
   , hypTwrCtorTypes
   , hypTwrProgram
+  , hypTwrProgramWith
   )
+import Constructor.Interp (extractCtorPaths, extractGlobals)
 import Constructor.LevelInfer (LvErr (..))
 import Constructor.Parser (parseProgram)
 import Constructor.Path (Path (..), PathStep (..))
@@ -435,6 +438,22 @@ tests =
       \let flag = T;\
       \data Box : *0 { Wrap : flag -> Box }"
       ["flag"]
+
+  -- Phase C: end-to-end demote/interp/promote.  'pickZ Z' appears
+  -- in W's expected arg type.  The bridge:
+  --   demote (TyConV Z) → VCon "Z" []
+  --   interp (pickZ Z) → VCon "Z" []  (case Z dispatches to first arm)
+  --   promote (VCon "Z" []) → TyConV "Z" zPath
+  -- So 'pickZ Z' normalises to 'Z' at type level.  Then 'W Z'
+  -- meets Z's type (Z) against the normalised 'Z' — success.
+  -- Without the bridge, this would TyMismatch (TyDeferV vs Z).
+  , acceptsBridged
+      "Phase C: 'W Z' with W : pickZ Z -> Wit typechecks via demote-interp-promote"
+      "data Nat\8942 { Z\8942; S Nat\8942 };\
+      \let pickZ = \\n -> case n { Z -> Z; S k -> S Z };\
+      \data Wit : *0 { W : pickZ Z -> Wit };\
+      \let rt = W Z"
+      ["pickZ", "rt"]
   ]
 
 -- | Helper: parse + elaborate end-to-end via HypLinf → HypTwr; assert
@@ -540,6 +559,32 @@ inspectCtorSigs name src expected = (name, go)
 --   layer to infer), elaborate, and confirm the resulting 'let'
 --   binders match the expected set.  Used for programs containing
 --   value-level decls.
+-- | Helper: double-parse — first via 'Tree' (to harvest 'Globals'
+--   and ctor-paths), then via 'HypTwr' (to elaborate), then run
+--   'hypTwrProgramWith' so the slide-down → bridge → interp
+--   pipeline (Phases A+B+C) is wired in.  Use for programs whose
+--   types involve value-level let-bindings reducible at type level.
+acceptsBridged :: String -> Text -> [Name] -> (String, IO Bool)
+acceptsBridged name src wantLets = (name, go)
+  where
+    go = case parseProgram @Tree @(Const ()) name src of
+      Left e -> fail_ $ "parse error: " <> errorBundlePretty e
+      Right tree ->
+        let gs  = extractGlobals tree
+            cps = extractCtorPaths tree
+        in case parseProgram @HypTwr @(Const ()) name src of
+          Left e -> fail_ $ "parse error: " <> errorBundlePretty e
+          Right pTwr -> case hypTwrProgramWith gs cps pTwr of
+            Left ty -> fail_ $ "HypTwr rejected: " <> show ty
+            Right r ->
+              let got  = Map.keys (hypTwrValVars r)
+                  want = wantLets
+              in if got == want
+                   then pure True
+                   else fail_ $
+                     "let-binder set mismatch:\n  want: " <> show want
+                     <> "\n  got:  " <> show got
+
 acceptsValByHypTwr :: String -> Text -> [Name] -> (String, IO Bool)
 acceptsValByHypTwr name src wantLets = (name, go)
   where

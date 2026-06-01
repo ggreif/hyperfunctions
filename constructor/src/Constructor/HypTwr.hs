@@ -39,12 +39,14 @@ module Constructor.HypTwr
   , HypTwrVal (..)
   , HypTwrResult (..)
   , hypTwrProgram
+  , hypTwrProgramWith
   , hypTwrCtorTypes
   , CtorSig (..)
   , extractCtorSig
   ) where
 
 import Constructor.HyperLite (hPure, hRun)
+import Constructor.Interp (Globals, normaliseDeferred)
 import Constructor.Level (Lv (..), starLevel)
 import Constructor.Path (Path, PathStep (..), emptyPath, extendPath)
 import Constructor.Sort (Mode (..), Sort (..))
@@ -129,6 +131,16 @@ data HypTwrEnv = HypTwrEnv
     --   alongside 'hypTwrEnvValVars' in 'valDecl'.  Pattern
     --   binders don't populate this — only top-level lets, since
     --   only top-level bindings are slideable at type level.
+  , hypTwrEnvGlobals   :: !Globals
+    -- ^ Value-level bodies of all top-level let-bindings, in
+    --   'Interp.Expr' form.  Pre-computed from the Tree AST before
+    --   HypTwr elaboration starts (via 'hypTwrProgramWith').  Used
+    --   by the bridge ('Interp.reduceDeferred') to evaluate
+    --   'TyDeferV' applications during 'meet' normalisation.
+  , hypTwrEnvCtorPaths :: !(Map Name Path)
+    -- ^ Ctor → decl-path map, also pre-computed from the Tree.
+    --   Used by 'Interp.promote' to reconstruct 'TyConV' shapes
+    --   from Values when 'reduceDeferred' succeeds.
   , hypTwrEnvMode      :: !ElabMode
     -- ^ Runtime mode: 'ElabBuild' (the default) flips to
     --   'ElabDissect' while elaborating an arm's pattern, and
@@ -146,7 +158,8 @@ data HypTwrEnv = HypTwrEnv
 
 emptyHypTwrEnv :: HypTwrEnv
 emptyHypTwrEnv = HypTwrEnv Map.empty Map.empty Map.empty emptySubst Nothing
-                            Map.empty Map.empty ElabBuild Nothing
+                            Map.empty Map.empty Map.empty Map.empty
+                            ElabBuild Nothing
 
 data HypTwrResult = HypTwrResult
   { hypTwrDataTypes :: !(Map Name Int)
@@ -170,8 +183,23 @@ newtype HypTwr (a :: Sort -> Type) (s :: Sort) = HypTwr
   { runHypTwr :: HypTwrEnv -> Either TyErr (HypTwrVal s, HypTwrEnv) }
 
 hypTwrProgram :: HypTwr a 'SProg -> Either TyErr HypTwrResult
-hypTwrProgram p = do
-  (_, env) <- runHypTwr p emptyHypTwrEnv
+hypTwrProgram = hypTwrProgramWith Map.empty Map.empty
+
+-- | Run HypTwr elaboration with pre-populated 'Globals' (value-level
+--   bodies of top-level let-bindings) and ctor-paths.  Used by
+--   callers that want demote-interpret-promote bridging for
+--   'TyDeferV' applications (the Phase C wiring).  When both maps
+--   are empty, behaves identically to 'hypTwrProgram' (no
+--   reductions fire because 'normaliseDeferred' has nothing to look
+--   up).
+hypTwrProgramWith
+  :: Globals -> Map Name Path -> HypTwr a 'SProg -> Either TyErr HypTwrResult
+hypTwrProgramWith gs cps p = do
+  let env0 = emptyHypTwrEnv
+        { hypTwrEnvGlobals   = gs
+        , hypTwrEnvCtorPaths = cps
+        }
+  (_, env) <- runHypTwr p env0
   pure (HypTwrResult
           (hypTwrEnvDataTypes env)
           (hypTwrEnvCtors env)
@@ -354,8 +382,24 @@ checkValArg
 checkValArg env (arg, input) = do
   (argVal, env1) <- runHypTwr arg env
   let argProc = horizontal (sValTower argVal)
-  newSubst <- meet (hypTwrEnvSubst env1) input argProc
+  newSubst <- meetNorm env1 input argProc
   Right (env1 { hypTwrEnvSubst = newSubst })
+
+-- | Normalising 'meet': pre-reduce any 'TyDeferV' applications via
+--   the bridge (demote-interpret-promote) before structural
+--   unification.  Phase C hook — wires the slide-detected
+--   'TyDeferV' from Phase A through Phase B's interpreter.
+--   Stuck cases (metas in args, partial reduction) leave the
+--   'TyDeferV' intact and the standard 'meet' surfaces a
+--   'TyMismatch' (which Phase D narrowing will later refine).
+meetNorm :: HypTwrEnv -> TyProc -> TyProc -> Either TyErr Subst
+meetNorm env p1 p2 =
+  let s   = hypTwrEnvSubst env
+      gs  = hypTwrEnvGlobals env
+      cps = hypTwrEnvCtorPaths env
+      v1  = normaliseDeferred gs cps s (hRun p1)
+      v2  = normaliseDeferred gs cps s (hRun p2)
+  in meet s (hPure v1) (hPure v2)
 
 -- | Shared elaboration of a value-level constructor application,
 --   used by 'valCtor' in both modes:
@@ -593,9 +637,9 @@ instance Lang HypTwr where
                   Map.insert name preMeta (hypTwrEnvValVars env) }
         (bodyVal, env1) <- runHypTwr body envPre
         let bodyTower = sValTower bodyVal
-        subst' <- meet (hypTwrEnvSubst env1)
-                       (horizontal preMeta)
-                       (horizontal bodyTower)
+        subst' <- meetNorm env1
+                            (horizontal preMeta)
+                            (horizontal bodyTower)
         let env2 = env1
               { hypTwrEnvValVars =
                   Map.insert name bodyTower (hypTwrEnvValVars env1)
@@ -679,7 +723,7 @@ instance Lang HypTwr where
     case hypTwrEnvScrutTy env1 of
       Nothing -> Left (TyUnbound "scrutinee")  -- arm fired outside case_
       Just scrutTower ->
-        case meet (hypTwrEnvSubst env1)
+        case meetNorm env1
                   (horizontal patTower)
                   (horizontal scrutTower) of
           Left _ ->
@@ -758,7 +802,7 @@ instance Lang HypTwr where
         resultMeta   = leafTower env2 (TyMetaV (MetaId appPath appPath))
         expectedView = TyArrV (horizontal xTower) (horizontal resultMeta)
         expected     = hPure expectedView
-    case meet (hypTwrEnvSubst env2) (horizontal fTower) expected of
+    case meetNorm env2 (horizontal fTower) expected of
       Left e       -> Left e
       Right subst' ->
         let env3 = env2 { hypTwrEnvSubst = subst' }
