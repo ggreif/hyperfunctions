@@ -51,6 +51,7 @@ import Constructor.Syntax (Name)
 import Constructor.Tower (KindEnv, kindOf)
 import Constructor.TyProc (MetaId (..), Subst, TyView (..), resolveView)
 import Data.Kind (Type)
+import Data.List (elemIndex)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 
@@ -390,14 +391,26 @@ isSlidable kEnv s v = case kindOf s kEnv v of
   TyCaseV{}   -> False  -- conservative — case-of resolution is future
 
 -- | One level of narrowing on a 'TyAppV' chain rooted at a
---   'TyDeferV' head: enumerate ctor possibilities for each meta
---   argument and return all (refined-subst, reduced-result) pairs.
+--   'TyDeferV' head: for each meta argument, enumerate the
+--   constructors the deferred function actually pattern-matches on,
+--   and return all (refined-subst, reduced-result) pairs.
 --
---   Phase D simple form: handles only nullary ctors of the meta's
---   expected type (no fresh sub-meta generation yet).  Multi-meta
---   args and unary ctors are queued for the 'Hyper'-LogicT upgrade
---   (Kidney/Wu) — for now, the plain list-monad serves as the
---   disjunctive bag of branches.
+--   The candidate ctors come from the function's own @case@ arms
+--   (read out of its 'Expr' body in 'Globals'), not from the
+--   argument's declared type.  This is exactly the set that could
+--   make the deferred application reduce — any other ctor hits no
+--   arm and goes stuck — so it is both precise (no wasted branches)
+--   and disjunctive (a multi-arm function yields one candidate per
+--   arm, the list monad serving as the branch bag).
+--
+--   For an arity-k arm pattern @C p1 … pk@, mint k fresh sub-metas
+--   (no gensym — their 'MetaId's extend the narrowed meta's paths
+--   with 'PsCtorAppArg i') and build the refined arg as the 'TyAppV'
+--   spine @C ?m1 … ?mk@.  Nullary arms (k=0) give a bare 'TyConV'.
+--   Free sub-metas ride through the demote/interp/promote bridge as
+--   'SMeta' (see 'demote'); an arm body that ignores them reduces to
+--   a ground result, one that needs them leaves the result stuck so
+--   'promote' rejects that candidate.
 --
 --   The caller (HypTwr's 'meetNorm') uses this when standard
 --   normalisation fails to reduce: try each candidate refinement,
@@ -405,57 +418,32 @@ isSlidable kEnv s v = case kindOf s kEnv v of
 narrowOnce
   :: Globals
   -> Map Name Path                       -- ^ ctor → decl-path
-  -> Map Name [(Name, Int)]              -- ^ data → [(ctor, arity)]
-  -> Map Name TyView                     -- ^ function → its declared TyView shape
-                                          --   (used to find each arg's expected type)
   -> KindEnv                             -- ^ for the kind-level slidability gate
   -> Subst
   -> Name -> [TyView]                    -- ^ deferred function + arg views
   -> [(Subst, TyView)]                   -- ^ candidate (refined-subst, result) pairs
-narrowOnce gs cps dataCtors fnTypes kEnv subst fname argViews = do
-  -- Peel the function's signature to get expected arg types.
-  fnSig    <- maybeToList (Map.lookup fname fnTypes)
-  let argTypes = peelArrTypes fnSig
-  -- Pair each arg view with its expected type.  Only proceed if we
-  -- have at least as many expected slots as actual args.
-  args' <- maybeToList (zipArgs argViews argTypes)
-  -- For each (argView, argType) pair, decide: concrete (no narrow)
-  -- or meta + narrow.  Yields a list of (Subst-extension, ctor view
-  -- to use in place of the meta) per combination.
-  refinements <- mapM (narrowArg dataCtors cps subst) args'
-  -- Combine: merge all refinements; reconstruct ctor-views as the
-  -- new arg views.
+narrowOnce gs cps kEnv subst fname argViews = do
+  -- For each arg position, decide: concrete (pass through) or a free
+  -- meta to narrow against the function's arm patterns at that
+  -- position.  Each yields a (Subst-extension, refined arg view).
+  refinements <- mapM (uncurry narrowArg) (zip [0 ..] argViews)
   let combinedSubst = foldr (\(s, _) acc -> Map.union s acc) subst refinements
       refinedArgs   = map snd refinements
-  -- Now run the bridge with refined args.  The args should all be
-  -- concrete now.
   reduced <- maybeToList (reduceDeferred gs cps kEnv combinedSubst fname refinedArgs)
   pure (combinedSubst, reduced)
   where
-    -- | Per-arg narrowing decision.
-    narrowArg
-      :: Map Name [(Name, Int)]
-      -> Map Name Path
-      -> Subst
-      -> (TyView, TyView)
-      -> [(Subst, TyView)]
-    narrowArg dctors cps' s (argView, argType) =
-      case resolveView s argView of
-        -- If the arg is already concrete (TyConV-headed or TyAppV
-        -- chain), no narrow needed; pass through with identity subst.
+    -- | Per-arg narrowing decision, by argument position.
+    narrowArg :: Int -> TyView -> [(Subst, TyView)]
+    narrowArg argIdx argView =
+      case resolveView subst argView of
+        -- Already concrete: pass through with identity subst.
         v@TyConV{} -> [(Map.empty, v)]
         v@TyAppV{} -> [(Map.empty, v)]
-        -- A free meta: try each ctor of the meta's expected data type.
-        -- D-full: for an arity-k ctor, mint k fresh sub-metas (no
-        -- gensym — their identities extend this meta's paths with
-        -- 'PsCtorAppArg i') and build the ctor view as a 'TyAppV'
-        -- spine over them.  Nullary (k=0) reduces to the old
-        -- 'TyConV'-only behaviour.
+        -- A free meta: enumerate the ctors the function matches on at
+        -- this position; one branch per arm.
         TyMetaV (MetaId bp up) -> do
-          dataName    <- maybeToList (headDataName (resolveView s argType))
-          ctorsOfData <- maybeToList (Map.lookup dataName dctors)
-          (cname, arity) <- ctorsOfData
-          ctorPath    <- maybeToList (Map.lookup cname cps')
+          (cname, arity) <- armCtors gs fname argIdx
+          ctorPath       <- maybeToList (Map.lookup cname cps)
           let subMetas = [ TyMetaV (MetaId (extendPath (PsCtorAppArg i) bp)
                                            (extendPath (PsCtorAppArg i) up))
                          | i <- [0 .. arity - 1] ]
@@ -466,31 +454,29 @@ narrowOnce gs cps dataCtors fnTypes kEnv subst fname argViews = do
         -- Other shapes (TyArrV, TyUnivV, TyVarV, TyDeferV): skip.
         _ -> []
 
-    -- | Peel a 'TyView' arrow chain into its arg-type list.
-    --   'Nat -> Nat -> Bool' → ['Nat', 'Nat'].  Returns the empty
-    --   list for non-arrow types.
-    peelArrTypes :: TyView -> [TyView]
-    peelArrTypes (TyArrV a b) = hRun a : peelArrTypes (hRun b)
-    peelArrTypes _            = []
-
-    -- | Zip args with their expected types; fail if args outnumber
-    --   types (over-application).
-    zipArgs :: [TyView] -> [TyView] -> Maybe [(TyView, TyView)]
-    zipArgs []     _      = Just []
-    zipArgs (_:_)  []     = Nothing
-    zipArgs (a:as) (t:ts) = ((a, t) :) <$> zipArgs as ts
-
-    -- | Extract the head data-type name from a TyView (e.g., 'Nat'
-    --   from 'Nat', or 'Maybe' from 'Maybe a').
-    headDataName :: TyView -> Maybe Name
-    headDataName v = case v of
-      TyConV n _ _ -> Just n
-      TyAppV f _   -> headDataName (hRun f)
-      _            -> Nothing
-
     maybeToList :: Maybe a -> [a]
     maybeToList Nothing  = []
     maybeToList (Just x) = [x]
+
+-- | The constructors a function pattern-matches on at argument
+--   position @argIdx@ — read from its 'Expr' body in 'Globals'.
+--   For @\\x0 … xk -> case xj { C1 … -> …; C2 … -> … }@ this is
+--   @[(C1, arity1), (C2, arity2), …]@ when @argIdx == j@, else @[]@.
+--   Non-'PCtor' arms (wildcards, var binders) are skipped — they
+--   match any ctor and so give narrowing nothing to enumerate.
+armCtors :: Globals -> Name -> Int -> [(Name, Int)]
+armCtors gs fname argIdx = case Map.lookup fname gs of
+  Nothing   -> []
+  Just body ->
+    let (params, inner) = peelLams body
+    in case inner of
+         ECase (EVar v) arms
+           | Just j <- elemIndex v params, j == argIdx ->
+               [ (c, length ps) | Arm (PCtor c ps) _ <- arms ]
+         _ -> []
+  where
+    peelLams (ELam x b) = let (xs, e) = peelLams b in (x : xs, e)
+    peelLams e          = ([], e)
 
 -- | Walk a 'TyView' recursively, attempting to reduce any
 --   'TyAppV'-chain rooted at a 'TyDeferV' head.  Successful

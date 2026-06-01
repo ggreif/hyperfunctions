@@ -14,8 +14,8 @@ also tracks what's done vs what's still ahead.
 | **B** | Value-level interpreter (`Constructor.Interp`) | ✅ done | `f89dd6f` | 11 in InterpSpec |
 | **C** | Demote / interp / promote bridge at meet sites | ✅ done | `df54e4a` | 1 end-to-end in GadtSpec |
 | **D-min** | Narrowing on stuck meta args (nullary ctors) | ✅ done | `5194a31` | 1 end-to-end in GadtSpec |
-| **D-full** | Unary/multi-arg narrowing (fresh path-derived sub-meta) | ✅ done | (this commit) | 1 end-to-end in GadtSpec |
-| D-disj | All-branches disjunctive search (vs first-wins) | pending | — | — |
+| **D-full** | Unary/multi-arg narrowing (fresh path-derived sub-meta) | ✅ done | `951bfdf` | 1 end-to-end in GadtSpec |
+| **D-disj** | All-branches search; candidates from the fn's case arms | ✅ done | (this commit) | two-arm `isS` in GadtSpec |
 | **Hyper-LogicT** | Replace `[]`-list bag with Kidney/Wu's substrate | pending | — | — |
 | Layer 3 | User-supplied equational theorems as rewrites | pending | — | — |
 | Layer 4-Lite | Homogeneous-type essence + Presburger decision | pending | — | — |
@@ -46,40 +46,60 @@ data Wit (n : Nat) : *0 { W : sT n -> Wit n };
 let rt = W T
 ```
 
-`W T` forces `sT ?n ≡ T`.  Narrowing enumerates the `S`-headed
-singleton (the single `S m` arm pins the parameter's type to `S`),
-which now has arity 1.  D-full mints one **path-derived** sub-meta
-`?m` (its `MetaId` extends `?n`'s paths with `PsCtorAppArg 0` — no
-gensym), refines `?n := S ?m`, and reduces `sT (S ?m) = T` because
-the arm body ignores `m`.  The sub-meta stays legitimately free; the
-ground result `T` meets the LHS.
+`W T` forces `sT ?n ≡ T`.  Narrowing reads `sT`'s sole arm pattern
+`S m` (from its `Expr` body in `Globals`), mints one **path-derived**
+sub-meta `?m` (its `MetaId` extends `?n`'s paths with `PsCtorAppArg 0`
+— no gensym), refines `?n := S ?m`, and reduces `sT (S ?m) = T`
+because the arm body ignores `m`.  The sub-meta stays legitimately
+free; the ground result `T` meets the LHS.
+
+### D-disj — disjunctive search; candidates from the function's arms
+
+The enumeration source is the **deferred function's own `case`
+arms**, not the argument's declared type:
+
+```
+data Nat⋮ { Z⋮; S Nat⋮ };  data Bool⋮ { T⋮; F⋮ };
+let isS = \n -> case n { Z -> F; S m -> T };
+data Wit (n : Nat) : *0 { W : isS n -> Wit n };
+let rt = W T
+```
+
+`W T` forces `isS ?n ≡ T`.  `isS`'s arms are `{Z, S}`, so narrowing
+tries both: `?n := Z` gives `isS Z = F` (meet with `T` fails) and
+`?n := S ?m` gives `isS (S ?m) = T` (meet succeeds, first wins).
+Refinement `?n := S ?m`.
+
+This is the candidate set that could *possibly* make the application
+reduce — any ctor not in the arms hits no arm and goes stuck — so it
+is both **precise** (no wasted branches) and **disjunctive** (one
+branch per arm, the list monad as the bag).  It also makes the
+multi-arm case fall out for free.
 
 Mechanism:
 
-- **Sub-meta minting** (`narrowArg`): for an arity-*k* ctor, build a
-  `TyAppV` spine over *k* path-derived sub-metas.  Nullary (*k*=0)
-  collapses to the D-min `TyConV`-only form.
+- **Candidate source** (`armCtors`): read `fname`'s body from
+  `Globals`, peel its lambda binders, and if the body is
+  `case xⱼ { … }` collect each arm pattern's `(ctor, arity)` for
+  argument position *j*.  No type lookup, no side table.
+- **Sub-meta minting** (`narrowArg`): for an arity-*k* arm pattern,
+  build a `TyAppV` spine over *k* path-derived sub-metas.  Nullary
+  (*k*=0) gives a bare `TyConV`.
 - **Free sub-metas through the bridge**: `demote` carries a free meta
   as `VStuck (SMeta mid)` (holding the `MetaId` directly — paths
   intact); `EMeta`/`valueToExpr` round-trip it through `interp`.  An
   arm body that *uses* the sub-meta yields a stuck result → `promote`
   fails → that candidate is rejected (conservative + correct).
-- **Self-singleton registration** (`extractDataCtors`): every ctor —
-  not just nullary — is registered as its own iso-tower singleton at
-  its actual arity (`S ↦ [(S,1)]`).  Without this, a parameter typed
-  `S ?a` had no enumeration target.
 
-**Known constraint (D-full).**  Narrowing reads the data type to
-enumerate from the deferred function's *declared parameter type*.
-When that type is an unresolved meta — e.g. a **two-arm** function
-`isS = \n -> case n { Z -> F; S m -> T }` whose parameter infers to
-`Nat` but is left as a meta in the outer subst — `headDataName`
-yields nothing and narrowing can't start.  D-min and D-full both
-sidestep this via **single-arm** functions, where the lone arm pins
-the parameter to a concrete singleton (`Z`-headed / `S`-headed).
-Lifting this needs either parameter-type materialisation at
-let-binders, or threading the *argument's* type (the meta's own
-declared type) into `narrowOnce` — tracked for a later arc.
+**Resolved.**  The earlier D-full draft sourced candidates from the
+argument's *declared type*, which a two-arm function leaves as an
+unresolved meta (per-arm Subst-fork commits no agreed parameter
+refinement — git-note `0aa6e9d`).  Reading the arms instead sidesteps
+that entirely: a function that matches on `S` *tells us* to try `S`,
+regardless of how its parameter's type inferred.  The type-sourced
+path (`narrowOnce`'s old `dataCtors`/`fnTypes` args, `extractDataCtors`,
+`hypTwrEnvDataCtors`) is now vestigial — removal is a follow-up
+cleanup commit.
 
 ---
 

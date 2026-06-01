@@ -497,6 +497,24 @@ tests =
       \let rt = W T"
       ["rt", "sT"]
 
+  -- Phase D-disj: a *two-arm* function narrows disjunctively.
+  -- Candidate ctors come from 'isS''s own arm patterns {Z, S}, not
+  -- from any type.  'W T' forces 'isS ?n ≡ T': the 'Z' branch gives
+  -- 'isS Z = F' (meet with T fails), the 'S' branch mints '?m',
+  -- refines '?n := S ?m', and 'isS (S ?m) = T' (the 'S m' arm body
+  -- ignores 'm') — first meet that succeeds wins.  This is the case
+  -- the type-sourced enumeration could not reach (a two-arm body
+  -- leaves the parameter's type an unresolved meta); reading the
+  -- arms sidesteps that entirely.
+  , acceptsBridgedWithCtors
+      "Phase D-disj: two-arm 'isS' narrows ?n := S ?m from arm patterns"
+      "data Nat\8942 { Z\8942; S Nat\8942 };\
+      \data Bool\8942 { T\8942; F\8942 };\
+      \let isS = \\n -> case n { Z -> F; S m -> T };\
+      \data Wit (n : Nat) : *0 { W : isS n -> Wit n };\
+      \let rt = W T"
+      ["isS", "rt"]
+
   -- "Decay via 1-parameter GADT" demonstration: a length-indexed
   -- 'List a n' (Vec-shape).  A value 'Cons True (Cons False Nil)'
   -- gets the singleton type 'List Bool (S (S Z))' from the
