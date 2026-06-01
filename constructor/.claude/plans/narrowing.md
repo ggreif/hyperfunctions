@@ -15,8 +15,9 @@ also tracks what's done vs what's still ahead.
 | **C** | Demote / interp / promote bridge at meet sites | ✅ done | `df54e4a` | 1 end-to-end in GadtSpec |
 | **D-min** | Narrowing on stuck meta args (nullary ctors) | ✅ done | `5194a31` | 1 end-to-end in GadtSpec |
 | **D-full** | Unary/multi-arg narrowing (fresh path-derived sub-meta) | ✅ done | `951bfdf` | 1 end-to-end in GadtSpec |
-| **D-disj** | All-branches search; candidates from the fn's case arms | ✅ done | (this commit) | two-arm `isS` in GadtSpec |
-| **Hyper-LogicT** | Replace `[]`-list bag with Kidney/Wu's substrate | pending | — | — |
+| **D-disj** | All-branches search; candidates from the fn's case arms | ✅ done | `36eeae3` | two-arm `isS` in GadtSpec |
+| **D-rec** | Stuck-term-driven recursive narrowing (nested case-of) | ✅ done | (this commit) | nested `isSS` in GadtSpec |
+| **LogicT** | Search on `Control.Monad.Logic` (stock; Hyper drop-in TBD) | ✅ substrate | `60f0f90` | (all D-* on it) |
 | Layer 3 | User-supplied equational theorems as rewrites | pending | — | — |
 | Layer 4-Lite | Homogeneous-type essence + Presburger decision | pending | — | — |
 | Layer 4-Full | Automatic IH reuse via structural recursion | pending | — | — |
@@ -100,6 +101,46 @@ regardless of how its parameter's type inferred.  The old type-sourced
 path (`narrowOnce`'s `dataCtors`/`fnTypes` args, `extractDataCtors`,
 `hypTwrEnvDataCtors`, `hypTwrProgramWithCtors`) has been removed —
 `hypTwrProgramWith` is now the sole Phase-C/D entry point.
+
+### D-rec — stuck-term-driven recursive narrowing
+
+Candidates need not come from the *top-level* arms only.  After a
+level-1 split, `narrowOnce` reduces and inspects the resulting
+`Value`:
+
+- `VCon …` (ground) → success (promote, done).
+- `VStuck (SCase (SMeta ?m) arms)` — reduction got stuck matching an
+  *inner* `case` on a still-free sub-meta `?m` → split `?m` against
+  **that** case's arms (mint sub-metas as in D-full), extend the
+  Subst, and **re-reduce**.  Because `demote` resolves metas through
+  the Subst, re-running goes one ctor deeper automatically.
+- anything else → dead branch.
+
+```
+data Nat⋮ { Z⋮; S Nat⋮ };  data Bool⋮ { T⋮; F⋮ };
+let isSS = \n -> case n { S k -> case k { S m -> T } };   -- n = S (S _)
+data Wit (n : Nat) : *0 { W : isSS n -> Wit n };
+let rt = W T
+```
+
+`W T` ⇒ `isSS ?n ≡ T`: level-1 `?n := S ?k`; reduction stuck on
+`case ?k { S m -> T }`; split `?k := S ?m`; re-reduce → `T` ground.
+Refinement `?n := S (S ?m)`.  One-level narrowing can't reach this
+(the inner case on free `?k` just goes stuck) — it needs the loop.
+
+**Substrate.**  The search runs in `Control.Monad.Logic` (stock
+logict): `narrowOnce :: … -> Logic (Subst, TyView)`, `meetNorm`
+takes the first meet-succeeding refinement via `observeMany 1`.  A
+Hyper-LogicT (Kidney/Wu) is a drop-in optimisation if/when available.
+
+**Caveat — no depth bound yet.**  `solve` recurses until reduction
+hits a ground value; for a *non-terminating* narrowing it diverges
+on that branch (LogicT gives fair interleaving across branches but
+does not bound a single branch's depth).  Fine for terminating
+functions (the corpus); a fuel/depth limit is a later add.  Note this
+is the *finite-witness* recursion — it does **not** close
+`∀`-over-recursive-data (the `add`/`add'` boundary above), which needs
+induction / cycle detection, not deeper unfolding.
 
 ---
 

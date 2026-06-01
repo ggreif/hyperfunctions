@@ -514,6 +514,23 @@ tests =
       \let rt = W T"
       ["isS", "rt"]
 
+  -- Phase D-rec: *nested* narrowing through recursive case-of.
+  -- 'isSS n' is true iff n = S (S _).  'W T' forces 'isSS ?n ≡ T'.
+  -- Level-1 narrows '?n := S ?k' (outer arm); reduction is then stuck
+  -- on the inner 'case ?k { S m -> T }', so narrowing splits '?k := S
+  -- ?m' from *that* case's arms and re-reduces — 'isSS (S (S ?m)) = T'
+  -- ground.  Refinement '?n := S (S ?m)'.  This finite solution is
+  -- unreachable by one-level narrowing (the inner case on a free '?k'
+  -- just goes stuck); the stuck-term-driven LogicT loop reaches it.
+  , acceptsBridgedWithCtors
+      "Phase D-rec: nested 'isSS' narrows ?n := S (S ?m) via stuck-term recursion"
+      "data Nat\8942 { Z\8942; S Nat\8942 };\
+      \data Bool\8942 { T\8942; F\8942 };\
+      \let isSS = \\n -> case n { S k -> case k { S m -> T } };\
+      \data Wit (n : Nat) : *0 { W : isSS n -> Wit n };\
+      \let rt = W T"
+      ["isSS", "rt"]
+
   -- "Decay via 1-parameter GADT" demonstration: a length-indexed
   -- 'List a n' (Vec-shape).  A value 'Cons True (Cons False Nil)'
   -- gets the singleton type 'List Bool (S (S Z))' from the

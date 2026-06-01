@@ -311,16 +311,25 @@ valueToExpr v = case v of
 reduceDeferred
   :: Globals -> Map Name Path -> KindEnv -> Subst
   -> Name -> [TyView] -> Maybe TyView
-reduceDeferred gs cps kEnv subst fname argViews = do
+reduceDeferred gs cps kEnv subst fname argViews =
+  case reduceToValue gs kEnv subst fname argViews of
+    Just v@VCon{} -> promote cps v
+    _             -> Nothing
+
+-- | The demote → interpret half of the bridge: run the deferred
+--   function on its (slidable) args and return the raw 'Value' —
+--   ground ('VCon') or stuck ('VStuck').  'reduceDeferred' keeps only
+--   ground results; Phase-D narrowing ('narrowOnce') inspects stuck
+--   ones to drive further case-splits.  'Nothing' means the args
+--   failed the slidability gate or didn't demote.
+reduceToValue
+  :: Globals -> KindEnv -> Subst -> Name -> [TyView] -> Maybe Value
+reduceToValue gs kEnv subst fname argViews = do
   guardSlidable (all (isSlidable kEnv subst) argViews)
   body     <- Map.lookup fname gs
   argVals  <- traverse (demote subst) argViews
   argExprs <- traverse valueToExpr argVals
-  let applied = foldl EApp body argExprs
-      result  = interp gs Map.empty applied
-  case result of
-    VCon{} -> promote cps result
-    _      -> Nothing
+  pure (interp gs Map.empty (foldl EApp body argExprs))
   where
     guardSlidable True  = Just ()
     guardSlidable False = Nothing
@@ -382,15 +391,38 @@ narrowOnce
   -> Name -> [TyView]                    -- ^ deferred function + arg views
   -> Logic (Subst, TyView)               -- ^ candidate (refined-subst, result) stream
 narrowOnce gs cps kEnv subst fname argViews = do
-  -- For each arg position, decide: concrete (pass through) or a free
-  -- meta to narrow against the function's arm patterns at that
-  -- position.  Each yields a (Subst-extension, refined arg view).
+  -- Level 1: split each free meta arg against the function's
+  -- top-level arm patterns (gets the args past the slidability gate).
   refinements <- mapM (uncurry narrowArg) (zip [0 ..] argViews)
   let combinedSubst = foldr (\(s, _) acc -> Map.union s acc) subst refinements
       refinedArgs   = map snd refinements
-  reduced <- maybeL (reduceDeferred gs cps kEnv combinedSubst fname refinedArgs)
-  pure (combinedSubst, reduced)
+  -- Then reduce-and-recurse: a ground result succeeds; a result stuck
+  -- on `case ?m { … }` (an inner pattern-match on a still-free
+  -- sub-meta) splits `?m` against *that* case's arms and re-reduces,
+  -- one ctor deeper, until it bottoms out at a ground value.
+  solve combinedSubst refinedArgs
   where
+    -- | Reduce under `sub`; recurse on a sub-meta the reduction got
+    --   stuck matching on.
+    solve :: Subst -> [TyView] -> Logic (Subst, TyView)
+    solve sub args = do
+      val <- maybeL (reduceToValue gs kEnv sub fname args)
+      case val of
+        VCon{} -> do
+          r <- maybeL (promote cps val)
+          pure (sub, r)
+        VStuck (SCase (VStuck (SMeta m@(MetaId bp up))) arms) -> do
+          (cname, arity) <- asum (map pure [ (c, length ps)
+                                           | Arm (PCtor c ps) _ <- arms ])
+          ctorPath       <- maybeL (Map.lookup cname cps)
+          let subMetas = [ TyMetaV (MetaId (extendPath (PsCtorAppArg i) bp)
+                                           (extendPath (PsCtorAppArg i) up))
+                         | i <- [0 .. arity - 1] ]
+              cView = foldl (\h a -> TyAppV (hPure h) (hPure a))
+                            (TyConV cname ctorPath Z) subMetas
+          solve (Map.insert m cView sub) args
+        _ -> empty
+
     -- | Per-arg narrowing decision, by argument position.
     narrowArg :: Int -> TyView -> Logic (Subst, TyView)
     narrowArg argIdx argView =
