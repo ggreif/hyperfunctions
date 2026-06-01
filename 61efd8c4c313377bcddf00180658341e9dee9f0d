@@ -116,3 +116,39 @@ on end-to-end.
 
 Estimated effort for R1: 2-3 hours.  Once R1 lands, R3 + R4 are
 each ~2 hours.  v0.5.0 could be three commits beyond v0.4.0.
+
+---
+
+## Update: R1 landed (dfb616c)
+
+HypTwr's 'tyKindMeta' override is in:
+
+  tyKindMeta _ann path = HypTwr $ \env ->
+    Right (HypTwrExpr (leafTower env (TyMetaV (MetaId path path))), env)
+
+Kind metas now flow through HypTwr's 'Subst' machinery.  The
+2-3-hour estimate was generous — it was a 15-line override on
+top of the foundation Phases 0-4 already laid.  All tests pass.
+
+Open caveat: un-resolved kind metas don't yet receive a
+default-to-'Classical' treatment at end-of-elaboration, so
+materialise-time errors are possible for parametric data with
+no use site that pins the param's kind.  Existing test corpus
+doesn't trip this; user-written programs might.  Defer the
+defaulting to **R3**.
+
+## Status board (post-R1)
+
+| Residual | Status | Notes |
+|---|---|---|
+| R1. HypTwr 'tyKindMeta' override | ✅ landed | dfb616c |
+| R2. KindEnv tracks ctor kinds | open | unlocks true kind-level slidability |
+| R3. Use-site resolution + end-of-elab default | next | needed to materialise un-pinned param kinds |
+| R4. kEnv self-applied entries for iso-tower data | open | activates Phase 2's parametric self-loop |
+| R5. Per-slot iso-tower-ness | deferred to v0.6.0+ | mixed-shape data |
+| R6. TyCaseV multi-fire policy refinement | deferred to v0.6.0+ | smallest-meet-winner |
+| R7. Codegen catch-up | independent | --hs let-gen, --scott constant-family |
+
+R3 + R4 are the next two pieces.  R3 closes the immediate
+"un-pinned param raises TyUnresolvedMeta" hazard; R4 makes the
+iso-tower path actually fire.
