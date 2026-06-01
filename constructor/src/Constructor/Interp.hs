@@ -30,7 +30,6 @@ module Constructor.Interp
   , fromDissect
   , extractGlobals
   , extractCtorPaths
-  , extractDataCtors
     -- * Bridge: demote / promote / reduce
   , demote
   , promote
@@ -230,49 +229,6 @@ extractCtorPaths (AST.Prog _ ds) = foldr collectProg Map.empty ds
     collectCtor dataPath (i, AST.CtorDecl _ name _) cps =
       Map.insert name (extendPath (PsDeclIdx i) dataPath) cps
     collectCtor _ _ cps = cps
-
--- | Harvest the ctor list (with arity) per data type from the
---   program's tree.  For 'Nat⋮ { Z⋮; S Nat⋮ }' produces
---   @{ "Nat" |-> [("Z", 0), ("S", 1)], "Z" |-> [("Z", 0)] }@:
---   the data type itself maps to its ctors, plus each nullary
---   ctor gets a singleton-entry mapping its own name to itself
---   (the ⋮-sugar makes Z : Z, so a meta of type Z is inhabited
---   only by Z itself).  Arity is computed by counting arrows in
---   the ctor's type signature.
-extractDataCtors :: forall (a :: Sort -> Type). Tree a 'SProg -> Map Name [(Name, Int)]
-extractDataCtors (AST.Prog _ ds) =
-  let -- Each ctor is also its own iso-tower singleton "data": the
-      -- type 'C'-headed has sole ctor-shape 'C' at its own arity.
-      -- Nullary 'Z' → 'Z' ↦ [(Z,0)]; unary 'S' → 'S' ↦ [(S,1)].
-      -- Narrowing (Phase D) enumerates these when an arg's expected
-      -- type heads on a ctor (e.g. a single-arm 'case n { S m -> … }'
-      -- pins the parameter to the 'S'-headed singleton).
-      baseMap     = foldr collectProg Map.empty ds
-      singletons  = Map.fromList
-        [ (cname, [(cname, ar)])
-        | (_, ctors) <- Map.toList baseMap
-        , (cname, ar) <- ctors
-        ]
-  in Map.union baseMap singletons
-  where
-    collectProg :: Tree a 'SDecl -> Map Name [(Name, Int)] -> Map Name [(Name, Int)]
-    collectProg (AST.DataDecl _ _ dname _ _ ctors) acc =
-      let ctorInfo = [ (cname, countArrows ty)
-                     | AST.CtorDecl _ cname ty <- ctors
-                     ]
-      in Map.insert dname ctorInfo acc
-    collectProg _ acc = acc
-
-    -- | Count arrows in a type expression to derive ctor arity.
-    --   'Nat' alone (no arrow) → 0; 'Nat -> Nat' → 1; 'Nat -> Nat ->
-    --   Nat' → 2.  Also peels '∀'-binders introduced by the ctor
-    --   '⋮' sugar; those carry no arity weight (they're binder
-    --   intro, not function arrows).
-    countArrows :: Tree a 'SExpr -> Int
-    countArrows e = case e of
-      AST.Arr _ _ b      -> 1 + countArrows b
-      AST.ForallLv _ _ _ b -> countArrows b
-      _                  -> 0
 
 -- ---------------------------------------------------------------------
 -- Bridge: TyView ↔ Value via the ⋮-iso

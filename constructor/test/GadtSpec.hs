@@ -44,9 +44,8 @@ import Constructor.HypTwr
   , hypTwrCtorTypes
   , hypTwrProgram
   , hypTwrProgramWith
-  , hypTwrProgramWithCtors
   )
-import Constructor.Interp (extractCtorPaths, extractDataCtors, extractGlobals)
+import Constructor.Interp (extractCtorPaths, extractGlobals)
 import Constructor.LevelInfer (LvErr (..))
 import Constructor.Parser (parseProgram)
 import Constructor.Path (Path (..), PathStep (..))
@@ -791,10 +790,9 @@ acceptsBridgedWithCtors name src wantLets = (name, go)
       Right tree ->
         let gs     = extractGlobals tree
             cps    = extractCtorPaths tree
-            dctors = extractDataCtors tree
         in case parseProgram @HypTwr @(Const ()) name src of
           Left e -> fail_ $ "parse error: " <> errorBundlePretty e
-          Right pTwr -> case hypTwrProgramWithCtors gs cps dctors pTwr of
+          Right pTwr -> case hypTwrProgramWith gs cps pTwr of
             Left ty -> fail_ $ "HypTwr rejected: " <> show ty
             Right r ->
               let got  = Map.keys (hypTwrValVars r)

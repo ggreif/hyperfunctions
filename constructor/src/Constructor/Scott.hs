@@ -26,7 +26,6 @@ module Constructor.Scott
   , renderScott
   ) where
 
-import Constructor.Path (Path)
 import Constructor.Sort (Sort (..))
 import Constructor.Syntax (Lang (..), Name)
 import Control.Monad.State (State, evalState, get, gets, modify)

@@ -40,7 +40,6 @@ module Constructor.HypTwr
   , HypTwrResult (..)
   , hypTwrProgram
   , hypTwrProgramWith
-  , hypTwrProgramWithCtors
   , hypTwrCtorTypes
   , CtorSig (..)
   , extractCtorSig
@@ -49,8 +48,8 @@ module Constructor.HypTwr
 import Constructor.HyperLite (hPure, hRun)
 import Constructor.Interp (Globals, narrowOnce, normaliseDeferred)
 import Constructor.Level (Lv (..), starLevel)
-import Constructor.Path (Path, PathStep (..), emptyPath, extendPath)
-import Constructor.Sort (Mode (..), Sort (..))
+import Constructor.Path (Path, emptyPath)
+import Constructor.Sort (Sort (..))
 import Constructor.Syntax (Lang (..), Name)
 import Constructor.Tinf (TyErr (..))
 import Constructor.Tower
@@ -152,11 +151,6 @@ data HypTwrEnv = HypTwrEnv
     -- ^ Ctor → decl-path map, also pre-computed from the Tree.
     --   Used by 'Interp.promote' to reconstruct 'TyConV' shapes
     --   from Values when 'reduceDeferred' succeeds.
-  , hypTwrEnvDataCtors :: !(Map Name [(Name, Int)])
-    -- ^ Per-data-type ctor list (with arity), pre-computed from
-    --   the Tree.  Used by 'Interp.narrowOnce' (Phase D) to
-    --   enumerate ctor possibilities for a meta argument of a
-    --   given data type.
   , hypTwrEnvMode      :: !ElabMode
     -- ^ Runtime mode: 'ElabBuild' (the default) flips to
     --   'ElabDissect' while elaborating an arm's pattern, and
@@ -174,7 +168,7 @@ data HypTwrEnv = HypTwrEnv
 
 emptyHypTwrEnv :: HypTwrEnv
 emptyHypTwrEnv = HypTwrEnv Map.empty Map.empty Map.empty emptySubst Nothing
-                            Map.empty Map.empty Map.empty Map.empty Map.empty
+                            Map.empty Map.empty Map.empty Map.empty
                             ElabBuild Nothing
 
 data HypTwrResult = HypTwrResult
@@ -203,26 +197,19 @@ hypTwrProgram = hypTwrProgramWith Map.empty Map.empty
 
 -- | Run HypTwr elaboration with pre-populated 'Globals' (value-level
 --   bodies of top-level let-bindings) and ctor-paths.  Used by
---   callers that want demote-interpret-promote bridging for
---   'TyDeferV' applications (the Phase C wiring).  When both maps
---   are empty, behaves identically to 'hypTwrProgram' (no
---   reductions fire because 'normaliseDeferred' has nothing to look
---   up).
+--   callers that want demote-interpret-promote bridging plus Phase-D
+--   narrowing for 'TyDeferV' applications.  When both maps are empty,
+--   behaves identically to 'hypTwrProgram' (no reductions fire
+--   because 'normaliseDeferred' / 'narrowOnce' have nothing to look
+--   up).  Narrowing reads candidate ctors from each deferred
+--   function's own @case@ arms (via 'Globals'), so no per-data ctor
+--   table is threaded.
 hypTwrProgramWith
   :: Globals -> Map Name Path -> HypTwr a 'SProg -> Either TyErr HypTwrResult
-hypTwrProgramWith gs cps = hypTwrProgramWithCtors gs cps Map.empty
-
--- | Full Phase C+D entry point: also takes 'dataCtors' (per-data
---   ctor list with arities) so narrowing (Phase D) can enumerate
---   ctor possibilities for meta arguments.
-hypTwrProgramWithCtors
-  :: Globals -> Map Name Path -> Map Name [(Name, Int)]
-  -> HypTwr a 'SProg -> Either TyErr HypTwrResult
-hypTwrProgramWithCtors gs cps dctors p = do
+hypTwrProgramWith gs cps p = do
   let env0 = emptyHypTwrEnv
         { hypTwrEnvGlobals   = gs
         , hypTwrEnvCtorPaths = cps
-        , hypTwrEnvDataCtors = dctors
         }
   (_, env) <- runHypTwr p env0
   pure (HypTwrResult

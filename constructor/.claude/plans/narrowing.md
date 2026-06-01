@@ -96,10 +96,10 @@ argument's *declared type*, which a two-arm function leaves as an
 unresolved meta (per-arm Subst-fork commits no agreed parameter
 refinement — git-note `0aa6e9d`).  Reading the arms instead sidesteps
 that entirely: a function that matches on `S` *tells us* to try `S`,
-regardless of how its parameter's type inferred.  The type-sourced
-path (`narrowOnce`'s old `dataCtors`/`fnTypes` args, `extractDataCtors`,
-`hypTwrEnvDataCtors`) is now vestigial — removal is a follow-up
-cleanup commit.
+regardless of how its parameter's type inferred.  The old type-sourced
+path (`narrowOnce`'s `dataCtors`/`fnTypes` args, `extractDataCtors`,
+`hypTwrEnvDataCtors`, `hypTwrProgramWithCtors`) has been removed —
+`hypTwrProgramWith` is now the sole Phase-C/D entry point.
 
 ---
 
