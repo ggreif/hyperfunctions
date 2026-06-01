@@ -20,3 +20,89 @@ Candidate scope, roughly ordered by tractability:
 Source of truth: narrowing.md status table.  Each piece that lands
 updates that table inline (per the convention in the v0.6.0 note on
 `224b699`).
+
+---
+
+## Independent review (v0.7.0 planning) — 2026-06-02
+
+An independent Haskell/logic-programming reviewer audited the Phase-D
+narrowing code (built clean, full suite green). Verdict distilled,
+prioritized; line refs are at review time.
+
+### [unsound, latent — fix first] Refinements bypass the occurs-check
+Narrowing commits bindings with raw `Map.singleton`/`Map.insert`/
+`Map.union` (`Interp.hs` narrowArg+solve; `HypTwr.hs:516` meetNorm),
+never through `bind` (`TyProc.hs:274`), so the occurs-check at
+`TyProc.hs:275` never runs on a narrowing refinement. The per-insert
+"only mentions path-derived sub-metas of `m`" argument holds in
+isolation but NOT under the two-sided union `sub2 ∪ sub1 ∪ s`
+(`HypTwr.hs:516`): two independently-searched sides can union
+`?a := S ?b` with `?b := …?a…` into a cycle, and `resolveView`
+(`TyProc.hs:193`) has no cycle guard → non-terminating checker.
+Not triggerable on today's corpus (all tests single-obligation /
+single-scrutinee) so **latent, not demonstrated** — but it's exactly
+the `add a b ≡ add' a b` shape (shared parameter, deferred on both
+sides). Fix before any two-sided narrowing: route refinements through
+`bind`/`occurs`, or occurs-sweep `s''` before `meet`; replace
+`Map.union` with a conflict-detecting union (`unionWith` + eq, or
+`meet`) so a silent wrong-commit becomes an honest failure.
+
+### [search] LogicT is currently `[]`-with-extra-imports
+narrowOnce/meetNorm sequence with `>>=`/`mapM` and branch with
+`asum (map pure …)` — pure DFS; no `interleave`/`>>-` anywhere. So the
+substrate swap (`60f0f90`) is behaviour-identical, as its message
+says. Concretely incomplete: a function with arms ordered `{S, Z}`
+whose witness is down the spine (`f = \n -> case n {S k -> f k; Z ->
+T}`, `W T`) makes `solve` dive the `S` branch forever under DFS and
+never reach `Z`; fair interleaving would dovetail it in. So
+**narrowing.md:140's "LogicT gives fair interleaving across branches"
+is wrong as written** — we adopted the type, not the operators. Fix:
+use `interleave`/`>>-` at the branch points, *then* `observeMany 1` is
+a fair first-solution; OR drop `logict` until interleaving is actually
+wired (it's dead weight as-is).
+
+### [confirmed sound]
+- Free sub-meta through `interp` is correctly conservative: a result
+  that uses the bound sub-meta (`S k -> k`, `S k -> S k`) is dropped —
+  `promote` returns `Nothing` on any `VStuck` arg (`Interp.hs:281`).
+- The level-1→solve depth chain encodes depth in the path
+  (`…[PsCtorAppArg 0]`, `…[PsCtorAppArg 0, PsCtorAppArg 0]`), so the
+  linear D-rec refinement never self-aliases.
+
+### [cleanup]
+- `narrowArg` and `solve` duplicate the sub-meta-minting / `cView`
+  spine verbatim → factor `mkCtorRefinement`. The level-1/recursive
+  split is NOT fundamental: `narrowArg` is `solve`'s first iteration
+  with candidates from `armCtors` instead of the stuck `SCase` arms —
+  unify by parameterising the candidate source.
+- `tryArms … [] = VStuck (SCase (VCon "<unreached>" []) [])`
+  (`Interp.hs:157`) is an in-band sentinel landmine; `solve` matches
+  on `SCase` scrutinees, so prefer a distinct `Stuck` ctor
+  (`SNoMatch …`) or carry the real scrutinee.
+- `guardSlidable` reinvents `Control.Monad.guard`. Dead binds
+  `sArmTower`/`sArmSubst` (`HypTwr.hs:449,453`).
+
+### Next, prioritized
+1. Close the occurs/cycle hole (small; prerequisite for two-sided
+   narrowing / all of add/add').
+2. Fair search + fuel/depth bound together: `interleave`/`>>-` makes a
+   shallow solution findable; fuel turns "diverge on infinite spine"
+   into "fail". Fuel without fairness just fails faster on the wrong
+   branch.
+3. Correct narrowing.md:140 (or implement the property it claims).
+4. Unify narrowArg/solve (do it with #2's combinator rewrite).
+5. **Key lever for the ∀ frontier:** cycle detection (subgoal = instance
+   of an ancestor goal) is the SAME machinery as the divergence guard
+   in #2 — IH-stop is a *coinductive* loop-cut, divergence-guard a
+   *failing* loop-cut. Build one ancestor-goal stack, share it. Better
+   than treating depth-bound (Layer 2.5) and IH-reuse (Layer 4) as
+   separate efforts.
+6. Hyper-LogicT swap is premature — stock `interleave`/`>>-` already
+   fixes the demonstrated incompleteness. Defer until a concrete search
+   needs more than stock fair operators (e.g. committed choice / cut).
+
+### Open
+Reviewer could not construct a program that *triggers* the occurs hole
+on the current corpus (single-obligation tests) — real in the code
+(check provably skipped), undemonstrated in practice. A hand-crafted
+two-deferred-side test sharing a refined meta would confirm or refute.
