@@ -231,3 +231,80 @@ data as v0.5.0+ scope.  The sugar still delivers the user-
 visible win (`data List a = Nil | Cons a (List a)` syntax
 works, `length` works, etc.) — just without the singleton-
 precision the iso-tower form would provide.
+
+---
+
+## Update: functional dependency, slide-time framing (design refinement)
+
+Per discussion on this commit: the design simplifies considerably
+when iso-tower-ness is treated as a **slide-time concern**, not a
+data-declaration-time one.
+
+### Functional dependency: param kinds determine data kind
+
+```
+data X (p₁ : K₁) (p₂ : K₂) … (pₙ : Kₙ) = …
+   ⇒   kindEnv[X] = K₁ → K₂ → … → Kₙ → R(K₁, …, Kₙ)
+```
+
+where the result kind `R` is determined functionally by the
+param kinds:
+
+| Param spec | Kind `K` | Resulting data kind |
+|---|---|---|
+| `(a : *0)` | `*0` sticky | `*0 → *0` — classical |
+| `(a : *l)` declared `l` | `*l` sticky | `*l → *l` — classical at `l` |
+| `(a : Bool⋮)` | `Bool` iso-tower | `Bool → List Bool` — iso-tower-parametric |
+| `a` bare (sugar default) | `?κ_a` kind meta | `?κ_a → R(?κ_a)` — contextual |
+
+The fourth row is the v0.5.0+ target: param kind defaults to a
+*meta* (not `*0`), resolved at each use site.  Level-inference
+at the kind dimension.  The level spectrum of `List` is the level
+spectrum of its params — a functional dependency, exposed
+declaratively.
+
+### Slide is the *only* consumer
+
+Iso-tower-ness only matters when the slide (demote-interp-promote)
+fires.  Sticky params block the slide regardless of how the data
+was declared.  So the data's iso-tower-ness emerges *contextually*
+at use sites where all args are slidable — not at the declaration
+boundary.
+
+This shrinks the v0.5.0+ arc from "kind inference + covering-space
+pattern matching" to **three localised pieces**:
+
+1. **Param-kind metas in `collectParams`** — instead of defaulting
+   un-annotated params to `*0`, allocate fresh kind metas.
+2. **Parametric self-loop in `kindOf`** — generalise the nullary
+   `TyConV self → TyConV self @offset+1` rule to handle
+   `TyAppV (TyConV self) arg → TyAppV (TyConV self @offset+1) arg`
+   when the head matches the parent.  Straightforward extension.
+3. **`reduceDeferred` slidability gate** — when all args resolve to
+   slidable kinds (iso-tower or covering-aware), iso-tower behaviour
+   engages and the slide produces TyCaseV-shaped refinements as
+   today.  When any arg is sticky, slide blocks and classical
+   behaviour applies (already the case).
+
+No checkSaturation relaxation needed in this framing — the head-
+match check sees `List`'s kind as `List`-headed at the parametric
+position too, and classical-shaped data still flows through the
+existing path.
+
+### LvAnnot extension (open)
+
+`LvAnnot` today carries only `Lv` (Nat-shaped level).  To
+propagate iso-tower-ness through the level inference pass, either:
+
+- extend `LvAnnot` with a Shape field (`Classical | IsoTower !Name
+  | IsoTowerMeta`), or
+- run a sibling `KindAnnot` pass alongside Tc / HypLinf.
+
+The first is lighter-weight; LvAnnot's data already lives in the
+right plumbing.
+
+### v0.4.0 timing
+
+No customers, no rush.  Treat this as design-staging for v0.5.0
+rather than a release blocker.  The note's earlier "must resolve
+before v0.4.0" framing was too tight.
