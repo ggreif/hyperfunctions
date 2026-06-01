@@ -196,6 +196,10 @@ kindOf s env v0 = case resolveView s v0 of
                                        -- as a placeholder until Phase B+C
                                        -- (interpreter + meet hook) compute
                                        -- the actual kind from the binding.
+  TyCaseV _ ((_, bodyV):_) -> kindOf s env bodyV   -- assume all arms have
+                                                    -- the same kind; pick
+                                                    -- the first.
+  TyCaseV _ []   -> TyUnivV (S (S Z))               -- vacuous case-of
 
 -- | Lift a 'TyProc' to a Tower under a given 'Subst' and 'KindEnv'.
 --   The horizontal is the proc's TyView; the vertical is generated
@@ -377,4 +381,5 @@ compareTowers = go
       (TyAppV{},        TyAppV{})        -> True
       (TyArrV{},        TyArrV{})        -> True
       (TyDeferV n1 p1,  TyDeferV n2 p2)  -> n1 == n2 && p1 == p2
+      (TyCaseV{},       TyCaseV{})       -> True  -- coarse: arms not compared here
       _                                  -> False

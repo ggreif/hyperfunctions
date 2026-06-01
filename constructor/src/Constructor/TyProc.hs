@@ -77,6 +77,22 @@ data TyView
                                --   evaluator hook is wired in (Phase B+C);
                                --   future phases will reduce 'TyAppV (deferred
                                --   f) args' via demote-interpret-promote.
+  | TyCaseV  !TyView ![(TyView, TyView)]
+                               -- ^ type-level case-of: scrutinee's type +
+                               --   per-arm @(scrutBinding, bodyType)@ pairs.
+                               --   Emitted by 'case_' when reachable arms'
+                               --   body towers diverge (e.g. iso-tower-
+                               --   singleton arms like 'Z' and 'S Z').
+                               --   The "arm as function" framing made
+                               --   literal: each arm contributes
+                               --   '(refinement, body)' and the case-of's
+                               --   result is the refinement-indexed family.
+                               --   Ωmega's theta-types / Agda's dependent
+                               --   pattern matching / Haskell's type
+                               --   families.  Meets reduce by picking the
+                               --   unique firing arm given the scrutinee's
+                               --   current resolution; an under-determined
+                               --   scrutinee leaves the case-of opaque.
 
 -- | Identity of a metavariable allocated at a parametric tycon
 --   use-site.  The first 'Path' is the parameter binder's def-path
@@ -145,6 +161,7 @@ viewToTy (TyAppV f x)  = TyApp (procToTy f) (procToTy x)
 viewToTy (TyArrV a b)  = TyArr (procToTy a) (procToTy b)
 viewToTy (TyUnivV l)   = TyUniv l
 viewToTy (TyDeferV n pa) = TyDefer n pa
+viewToTy (TyCaseV _ _) = TyVar "?case" emptyPath  -- sentinel; case-of has no TyExpr form
 viewToTy (TyMetaV _)   =
   error "Constructor.TyProc.viewToTy: unresolved metavariable; \
         \use 'materialize' with the carrier's 'Subst' instead"
@@ -163,6 +180,7 @@ viewToTySoft s v = case resolveView s v of
   TyArrV a b   -> TyArr (procToTySoft s a) (procToTySoft s b)
   TyUnivV l    -> TyUniv l
   TyDeferV n pa -> TyDefer n pa
+  TyCaseV _ _  -> TyVar "?case" emptyPath
   TyMetaV _    -> TyVar "?meta" emptyPath
 
 procToTySoft :: Subst -> TyProc -> TyExpr
@@ -216,11 +234,44 @@ meet s p1 p2 = meetView s (resolveView s (hRun p1)) (resolveView s (hRun p2))
         | l1 == l2 -> Right s'
       (TyDeferV n1 p1', TyDeferV n2 p2')
         | n1 == n2 && p1' == p2' -> Right s'
+      -- TyCaseV: reduce by picking the unique firing arm at the
+      -- current Subst, then meet that arm's body against 'other'.
+      -- The arm's '(scrutBinding, body)' carries refinement +
+      -- result; when the scrutinee resolves to a concrete shape
+      -- compatible with exactly one arm's binding, we commit to
+      -- that arm.  Polymorphic / ambiguous cases stay opaque.
+      (TyCaseV scrut arms, other) ->
+        meetTyCase s' scrut arms other
+      (other, TyCaseV scrut arms) ->
+        meetTyCase s' scrut arms other
       _ -> Left (TyMismatch (viewToTySoft s' v1) (viewToTySoft s' v2))
 
     bind s' m@(MetaId bp up) v
       | occurs s' m v = Left (TyOccursCheck bp up)
       | otherwise     = Right (Map.insert m v s')
+
+    -- Project a 'TyCaseV' by finding the arm whose pattern-binding
+    -- unifies with the scrutinee under the current Subst AND whose
+    -- body unifies with 'other'.  Exactly one such arm: commit its
+    -- bindings.  Zero arms or more than one: leave the case-of
+    -- opaque (return a TyMismatch — callers that want softer
+    -- behaviour can wrap).
+    meetTyCase s' scrut arms other =
+      let scrutR = resolveView s' scrut
+          otherR = resolveView s' other
+          tryArm (armPat, armBody) = do
+            sScrut <- meetView s' scrutR (resolveView s' armPat)
+            meetView sScrut (resolveView sScrut armBody)
+                            (resolveView sScrut otherR)
+          firings = [s'' | armResult <- map tryArm arms
+                         , Right s'' <- [armResult]]
+      in case firings of
+           [s'']  -> Right s''
+           []     -> Left (TyMismatch
+                            (viewToTySoft s' (TyCaseV scrut arms))
+                            (viewToTySoft s' other))
+           (s'':_)-> Right s''  -- multiple fire: pick first (deferred
+                                -- refinement of policy; see note)
 
 -- | Structural occurs check: does 'MetaId' @m@ appear anywhere in @v@
 --   (or transitively through 'Subst' chasing and recursion into
@@ -234,6 +285,9 @@ occurs s m v0 = case resolveView s v0 of
   TyVarV{}    -> False
   TyUnivV{}   -> False
   TyDeferV{}  -> False
+  TyCaseV scrut arms ->
+    occurs s m scrut
+      || any (\(p, b) -> occurs s m p || occurs s m b) arms
 
 -- | Walk a 'TyProc' web under a 'Subst', producing a syntactic
 --   'TyExpr'.  Bound metavariables are followed through the
@@ -247,4 +301,10 @@ materialize s p = materializeView (resolveView s (hRun p))
     materializeView (TyArrV a b)  = TyArr <$> materialize s a <*> materialize s b
     materializeView (TyUnivV l)   = Right (TyUniv l)
     materializeView (TyDeferV n pa) = Right (TyDefer n pa)
+    -- A TyCaseV at materialisation must have been reduced by a
+    -- prior meet: if it's still here, the scrutinee never resolved
+    -- enough to pick an arm.  Report as an ambiguous case-of
+    -- (re-use the 'unresolved' channel since callers don't yet
+    -- distinguish the source).
+    materializeView (TyCaseV _ _) = Left (TyUnresolvedMeta emptyPath emptyPath)
     materializeView (TyMetaV (MetaId bp up)) = Left (TyUnresolvedMeta bp up)

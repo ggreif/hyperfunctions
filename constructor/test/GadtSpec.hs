@@ -523,6 +523,30 @@ tests =
       \  };\
       \let isCons = \\xs -> case xs { Nil -> Z; Cons h r -> S Z }"
       ["isCons"]
+
+  -- Iso-tower singleton case-of with divergent arm body types:
+  -- 'Z⋮' makes each Nat-ctor its own singleton type ('Z : Z', 'S : ∀a. a -> S a').
+  -- So the case-of's arms have body types 'Z' and 'S Z' that don't unify
+  -- horizontally.  With per-arm Subst-fork (this commit's predecessor), both
+  -- arms reach symmetrically and 'meetAllTowers' fails honestly on the
+  -- divergent bodies.
+  --
+  -- The disciplined fix: type-level case-of (Ωmega's theta-types / Agda's
+  -- dependent pattern matching / Haskell's type families).  Each arm
+  -- contributes '(refinement, bodyType)'; the case-of's result is a
+  -- refinement-indexed family that projects per scrutinee shape:
+  --
+  --     p : forall n. case n of { Z -> Z; S k -> S Z }
+  --
+  -- At application, 'p Z' projects to 'Z'; 'p (S k)' projects to 'S Z'.
+  -- The per-arm Subst-fork already *collects* the (refinement, body) pairs
+  -- — the type-level case-of would *retain* them as the result instead of
+  -- meet-then-collapse.  Phase C will pass as a side-effect of this fix.
+  , acceptsValByHypTwr
+      "Type-level case-of: polymorphic-scrutinee iso-tower-singleton with divergent arm bodies"
+      "data Nat\8942 { Z\8942; S Nat\8942 };\
+      \let p = \\n -> case n { Z -> Z; S k -> S Z }"
+      ["p"]
   ]
 
 -- | Helper: parse + elaborate end-to-end via HypLinf → HypTwr; assert

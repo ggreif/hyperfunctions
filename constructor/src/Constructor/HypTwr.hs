@@ -252,6 +252,9 @@ deepResolveView :: Subst -> TyView -> TyView
 deepResolveView s v = case resolveView s v of
   TyAppV f x -> TyAppV (deepResolveProc s f) (deepResolveProc s x)
   TyArrV a b -> TyArrV (deepResolveProc s a) (deepResolveProc s b)
+  TyCaseV scrut arms ->
+    TyCaseV (deepResolveView s scrut)
+            [(deepResolveView s p, deepResolveView s b) | (p, b) <- arms]
   other      -> other
 
 deepResolveProc :: Subst -> TyProc -> TyProc
@@ -274,6 +277,11 @@ eqView v1 v2 = case (v1, v2) of
   (TyUnivV l1, TyUnivV l2)           -> l1 == l2
   (TyMetaV m1, TyMetaV m2)           -> m1 == m2
   (TyDeferV n1 p1, TyDeferV n2 p2)   -> n1 == n2 && p1 == p2
+  (TyCaseV s1 as1, TyCaseV s2 as2)   ->
+    eqView s1 s2
+      && length as1 == length as2
+      && and [eqView p1 p2 && eqView b1 b2
+             | ((p1, b1), (p2, b2)) <- zip as1 as2]
   _                                  -> False
 
 -- | Intersect per-arm 'Subst' diffs against a common parent: keep
@@ -630,6 +638,9 @@ substTyVarsInView m v = case v of
   TyMetaV {}  -> v
   TyUnivV {}  -> v
   TyDeferV {} -> v  -- deferred refs are opaque to type-var subst
+  TyCaseV scrut arms ->
+    TyCaseV (substTyVarsInView m scrut)
+            [(substTyVarsInView m p, substTyVarsInView m b) | (p, b) <- arms]
 
 substTyVarsInProc :: Map (Name, Path) TyProc -> TyProc -> TyProc
 substTyVarsInProc m p = hPure (substTyVarsInView m (hRun p))
@@ -850,18 +861,43 @@ instance Lang HypTwr where
     let baseSubst  = hypTwrEnvSubst env3
         agreedDiff = intersectArmDiffs baseSubst armSubsts
         mergedSubst = Map.union agreedDiff baseSubst
-    -- Pairwise-meet the reachable arms' body towers so the case
-    -- agrees on a common result type.  If no arm is reachable,
-    -- the case is vacuous — we emit a fresh meta at the case's
-    -- own position (not strictly correct as a coverage check,
-    -- but harmless until exhaustiveness lands).
-    finalSubst <- meetAllTowers mergedSubst reachable
-    let env4 = env3 { hypTwrEnvSubst = finalSubst }
-        resultTower = case reachable of
-          (t:_) -> t
-          []    -> leafTower env4
-                     (TyMetaV (MetaId emptyPath emptyPath))
-    Right (HypTwrSVal resultTower, env4)
+    -- Try pairwise-meeting the reachable arms' body towers.  When
+    -- they agree (parametric ADT case-of, single reachable arm, etc.)
+    -- the case-of has a single concrete result type.  When they
+    -- DIVERGE *and* the scrutinee is still polymorphic (a meta), fall
+    -- back to a TyCaseV: a deferred refinement-indexed family
+    -- '(scrutBinding, bodyType)' per arm.  At meet sites, the
+    -- TyCaseV reduces by picking the unique firing arm given the
+    -- scrutinee's then-current resolution.
+    --
+    -- Heterogeneous arms over a CONCRETE scrutinee (e.g. 'case T
+    -- { T -> T; F -> Z }' with Bool's 'T' and Nat's 'Z' arms) stay
+    -- a genuine type error — TyCaseV's reduction can't disambiguate
+    -- without indexed family structure, and there's no polymorphism
+    -- to defer.
+    let scrutView   = resolveView mergedSubst (horizontalView scrutTower)
+        scrutIsPoly = case scrutView of
+          TyMetaV{} -> True
+          _         -> False
+        armBindings =
+          [ ( resolveView armSubst (horizontalView scrutTower)
+            , horizontalView body)
+          | (body, armSubst) <- reachableP ]
+    case meetAllTowers mergedSubst reachable of
+      Right finalSubst ->
+        let env4 = env3 { hypTwrEnvSubst = finalSubst }
+            resultTower = case reachable of
+              (t:_) -> t
+              []    -> leafTower env4
+                         (TyMetaV (MetaId emptyPath emptyPath))
+        in Right (HypTwrSVal resultTower, env4)
+      Left err
+        | scrutIsPoly ->
+            let env4 = env3 { hypTwrEnvSubst = mergedSubst }
+                caseView = TyCaseV scrutView armBindings
+                caseTower = leafTower env4 caseView
+            in Right (HypTwrSVal caseTower, env4)
+        | otherwise -> Left err
 
   arm _ann pat body = HypTwr $ \env -> do
     let savedVars  = hypTwrEnvValVars env
