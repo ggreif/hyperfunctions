@@ -1991,3 +1991,75 @@ Includes the concrete starting plan (10 steps) and connects the
   10 concrete steps from `Pt` choice through `br_table`-collapse
   and `return_call`.  Subsumes the 5 still-ahead bullets above
   by re-framing each as an algebraic move on `Γ Pt Pt`.
+
+## Post-0.2.0 arcs (pointer index)
+
+Status snapshots for the 0.3.x and 0.4.0 cycles live in **focused
+notes / plans** rather than inline in this document.  This section
+indexes them so future readers can find the design context for any
+post-0.2.0 commit.
+
+### v0.3.0 — Narrowing arc (Phases A–D)
+
+`Slide-down TyDeferV → value-level interpreter → demote/interp/
+promote bridge → narrowing on stuck meta args`.  All four phases
+landed 2026-06-01.
+
+- Plan + status table:
+  [`.claude/plans/narrowing.md`](.claude/plans/narrowing.md)
+  (kept current; lists D-full / D-disj / Hyper-LogicT as pending).
+- Commits: `04eef5c` → `f89dd6f` → `df54e4a` → `5194a31`.
+
+### v0.3.1 — Per-arm Subst-fork + TyCaseV
+
+GADT pattern matching for polymorphic scrutinees.  Each arm runs
+with parent's `Subst`, restoring on exit; body towers are baked
+under arm-local Subst before drop; arm-Subst intersection at
+case-of exit propagates only agreed refinements.  Type-level
+case-of (`TyCaseV`) shipped alongside for divergent-arm body
+types — Ωmega's theta-types / Agda's dependent pattern matching
+/ Haskell's type families.
+
+- Design + landed addendum: **git-note on `0aa6e9d`** (per-arm
+  Subst-fork — making GADT pattern matching work for polymorphic
+  binders).  Tag: `v0.3.1` on `0a5c48c`.
+- Tests landed: "Polymorphic-scrutinee GADT: isCons on indexed
+  List", "Type-level case-of: polymorphic-scrutinee iso-tower-
+  singleton with divergent arm bodies", "length on indexed
+  List".
+
+### v0.4.0 — Haskell-style sugar + iso-tower-parametric foundation
+
+`data List a = Nil | Cons a (List a)` parses as a five-phase
+plumbing arc for use-site-driven iso-tower-parametric data.
+Foundation only; carrier overrides land in v0.5.0+.
+
+- Plan:
+  [`.claude/plans/lvannot-shape.md`](.claude/plans/lvannot-shape.md)
+  (kept current; Status section at top tracks phase commits).
+- Design + residuals: **git-note on `2d42e8a`** (Haskell-style
+  sugar with iso-tower for parametric data — design discussion
+  + functional dependency framing + LvAnnot decision).
+- v0.4.0 release residuals: **git-note on `61efd8c`** (R1
+  landed; R2-R7 status board).
+- Tag: `v0.4.0` on `61efd8c`.
+
+### v0.5.0-dev — Carrier overrides for the iso-tower arc
+
+In progress.  R1 (HypTwr's `tyKindMeta` override) landed in
+`dfb616c`.  R3 (use-site resolution + EOE default) and R4 (kEnv
+self-applied entries for iso-tower data) are the next two
+pieces.  Status board on the `61efd8c` git-note.
+
+### Cross-cutting residuals
+
+- **Scott codegen multi-param show + classical Show emission**:
+  git-note on `52b78eb` (covers `--hs Data.Kind` import fix,
+  `--scott` multi-param show-wrapper, plus 5 deferred items
+  including the constant-family encoding for `length`-on-Vec).
+  Independent of the iso-tower arc.
+
+The intent is to keep this section a **pointer index**, not a
+narrative.  When the v0.5.0+ work concludes, add a one-line
+release entry here and link to its git-note / plan; let the
+detailed status live in those focused docs.
