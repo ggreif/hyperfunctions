@@ -348,3 +348,73 @@ matching," concerning the type checker's `arm`-scoping behaviour.
 Once landed, it lifts a whole class of pattern-matching functions
 (length, map, foldr on Vec; well-typed eval on indexed Expr; etc.)
 from "fails today" to "works."
+
+---
+
+## Update: landed (2026-06-01)
+
+The two-step plan in this note has shipped.  Both commits land on
+top of `0aa6e9d` (this commit) and tagged as `v0.3.1`.
+
+### Step 1 — `543417c` (`per-arm Subst-fork — polymorphic-scrutinee GADT case-of`)
+
+Operational fix as described above, with two refinements beyond
+the 3-line sketch:
+
+- **Body tower baked under arm-local Subst** before exit
+  (`deepResolveView`), so pattern-binder refinements
+  (e.g. `?m := Z` from `FS m` against `Fin 2`) survive the
+  Subst-drop without leaking outer-meta bindings.
+- **`HypTwrSArm` carries `(Tower, Subst)`** so `case_` can run an
+  agreed-Subst intersection at exit: entries common to *all*
+  reachable arms (structurally equal under `eqView`) propagate;
+  per-arm pattern-binder metas and conflicting outer-meta
+  refinements drop.  This is option (2) from the "Trade-off"
+  section — chosen over option (1) because a single-arm case-of
+  needs its refinements to propagate (e.g. `pickZ`'s
+  `?n := Nat` lambda-binder refinement).
+
+Enabled: polymorphic-scrutinee GADT pattern matching with body-
+type-agreed arms (`isCons : forall a n. List a n -> Nat`).
+
+Surfaced (and deferred): iso-tower-singleton arms with divergent
+body types (e.g. `pickZ`'s `Z` and `S Z`) — handled by Step 2.
+
+### Step 2 — `0a5c48c` (`type-level case-of (TyCaseV)`)
+
+The "arm as function" framing made literal.  When `meetAllTowers`
+on reachable arms' body towers fails AND the scrutinee is still
+polymorphic, `case_` emits a `TyCaseV !TyView ![(TyView, TyView)]`
+— a deferred refinement-indexed family `(scrutBinding, bodyType)`
+per arm.  At meet sites, `TyCaseV` reduces by picking the unique
+firing arm given the scrutinee's then-current resolution
+(Ωmega's `theta`-types / Agda's dependent pattern matching /
+Haskell's type families).
+
+Concrete-scrutinee heterogeneous arms (e.g. `case T { T -> T; F
+-> Z }` over Bool's `T` and Nat's `Z`) still fail honestly —
+without polymorphism there's no projection signal to disambiguate.
+
+Resolved (as a side-effect): the Phase C demote-interp-promote
+test, whose two-arm `pickZ` had been "passing accidentally" via
+ordering-dependent reachability filtering in the old threading.
+
+### Tests landed
+
+- `Polymorphic-scrutinee GADT: isCons on indexed List` —
+  `\xs -> case xs { Nil -> Z; Cons h r -> S Z }` over indexed
+  `List a n`.  Was the load-bearing failing case the note's
+  minimal example targets.
+- `Type-level case-of: polymorphic-scrutinee iso-tower-singleton
+  with divergent arm bodies` — `\n -> case n { Z -> Z; S k -> S
+  Z }` over `Nat⋮`.  Pinned as `acceptsPendingFix` initially,
+  flipped to `acceptsValByHypTwr` once `TyCaseV` shipped.
+
+### Residual
+
+- **Multiple-firing-arms policy** in `meetTyCase`: currently picks
+  the first succeeding arm.  Principled alternatives include
+  ambiguity-error or smallest-meet-winner; deferred.
+- **`length` on `Vec`** — the bigger downstream payoff.  Needs
+  recursion through the `let`-bound name, which may surface
+  separate scope-resolver plumbing.  Queued.
