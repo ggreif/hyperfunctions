@@ -477,6 +477,32 @@ tests =
       \data Wit (n : Nat) : *0 { W : pickZ n -> Wit n };\
       \let rt = W Z"
       ["pickZ", "rt"]
+
+  -- "Decay via 1-parameter GADT" demonstration: a length-indexed
+  -- 'List a n' (Vec-shape).  A value 'Cons True (Cons False Nil)'
+  -- gets the singleton type 'List Bool (S (S Z))' from the
+  -- refinement-tracked GADT machinery.  A 'case'-of with concrete
+  -- scrutinee then works: the 'Nil' arm is unreachable (its
+  -- pattern type 'List a Z' doesn't meet 'List Bool (S (S Z))');
+  -- the 'Cons' arm refines a := Bool, n := S Z; body returns 'S
+  -- Z'.  This is the existing decay story — no new mechanism
+  -- needed for concrete-scrutinee case-of on indexed types.
+  --
+  -- (Note: making it a polymorphic 'length : List a n -> Nat'
+  -- via lambda + recursive case fails currently — the arm-Subst
+  -- threading causes the Nil arm to refine the binder's meta and
+  -- the Cons arm then can't get its own refinement.  Per-arm
+  -- Subst-forking is a separate change in HypTwr's arm rule.)
+  , acceptsValByHypTwr
+      "1-param GADT decay: case of indexed List on singleton-typed input"
+      "data Nat : *0 { Z : Nat; S : Nat -> Nat };\
+      \data Bool : *0 { True : Bool; False : Bool };\
+      \data List (a : *0) (n : Nat) : *0\
+      \  { Nil : List a Z\
+      \  ; Cons : a -> List a n -> List a (S n)\
+      \  };\
+      \let rt = case Cons True (Cons False Nil) { Nil -> Z; Cons head rest -> S Z }"
+      ["rt"]
   ]
 
 -- | Helper: parse + elaborate end-to-end via HypLinf → HypTwr; assert
