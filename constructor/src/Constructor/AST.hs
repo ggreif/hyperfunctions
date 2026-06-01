@@ -30,6 +30,7 @@ data Tree (a :: Sort -> Type) (s :: Sort) where
   App      :: a 'SExpr -> Path -> Tree a 'SExpr -> Tree a 'SExpr -> Tree a 'SExpr
   TyParamRef :: a 'SExpr -> Name -> Path -> Tree a 'SExpr
   TyConRef   :: a 'SExpr -> Name -> Path -> Tree a 'SExpr
+  TyKindMeta :: a 'SExpr -> Path -> Tree a 'SExpr
   -- value-level / pattern-match constructors
   ValDecl    :: a 'SDecl -> Path -> Name -> Tree a ('SVal 'Build) -> Tree a 'SDecl
   ValVar     :: a ('SVal m) -> Name -> Path -> Tree a ('SVal m)
@@ -58,6 +59,7 @@ instance Lang Tree where
   app        = App
   tyParamRef = TyParamRef
   tyConRef   = TyConRef
+  tyKindMeta = TyKindMeta
   valDecl    = ValDecl
   valVar     = ValVar
   valWild    = ValWild

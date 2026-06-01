@@ -178,10 +178,11 @@ cases =
   , ( "parametric data — data List a : *0 { Nil : List a }"
     , "data List a : *0 { Nil : List a }"
     , let pa    = Path [PsProgDecl 0, PsDataParam 0]
+          paK   = Path [PsProgDecl 0, PsDataParamKind 0]
           listP = Path [PsProgDecl 0]
           ap    = Path [PsProgDecl 0, PsDeclIdx 0, PsCtorTy, PsArrL]
       in Prog u
-        [ DataDecl u listP "List" [("a", Nothing)] (Star u 0)
+        [ DataDecl u listP "List" [("a", Just (TyKindMeta u paK))] (Star u 0)
             [ CtorDecl u "Nil"
                 (App u ap (TyConRef u "List" listP) (TyParamRef u "a" pa))
             ]
@@ -190,11 +191,12 @@ cases =
   , ( "parametric data with arrow ctor — data List a : *0 { Cons : a -> List a -> List a }"
     , "data List a : *0 { Cons : a -> List a -> List a }"
     , let pa     = Path [PsProgDecl 0, PsDataParam 0]
+          paK    = Path [PsProgDecl 0, PsDataParamKind 0]
           listP  = Path [PsProgDecl 0]
           appL   = Path [PsProgDecl 0, PsDeclIdx 0, PsCtorTy, PsArrR, PsArrL]
           appR   = Path [PsProgDecl 0, PsDeclIdx 0, PsCtorTy, PsArrR, PsArrR, PsArrL]
       in Prog u
-        [ DataDecl u listP "List" [("a", Nothing)] (Star u 0)
+        [ DataDecl u listP "List" [("a", Just (TyKindMeta u paK))] (Star u 0)
             [ CtorDecl u "Cons"
                 (Arr u (TyParamRef u "a" pa)
                   (Arr u (App u appL (TyConRef u "List" listP) (TyParamRef u "a" pa))

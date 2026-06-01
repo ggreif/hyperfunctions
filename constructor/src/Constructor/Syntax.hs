@@ -104,6 +104,23 @@ class Lang (r :: (Sort -> Type) -> Sort -> Type) where
   starVar  :: a 'SExpr -> Name -> Path -> Word -> r a 'SExpr
   starVar  = error "Lang.starVar: level polymorphism not supported by this carrier"
 
+  -- | A kind-meta placeholder: an un-annotated parameter's kind is
+  --   emitted as 'tyKindMeta' so downstream carriers can resolve it
+  --   at use sites (Phase 1 of the v0.5.0+ iso-tower-parametric arc;
+  --   see .claude/plans/lvannot-shape.md).
+  --
+  --   The 'Path' is the kind-meta's allocation site (typically the
+  --   parameter's def-path extended with a kind-meta marker); used
+  --   downstream as the meta's identity.
+  --
+  --   The default implementation falls through to @star ann 0@ (a
+  --   classical @*0@ placeholder) so carriers that don't yet handle
+  --   kind metas degrade gracefully to the pre-Phase-1 behaviour.
+  --   Carriers that DO handle kind metas (HypTwr, HypLinf, Tc)
+  --   override this to track the meta properly.
+  tyKindMeta :: a 'SExpr -> Path -> r a 'SExpr
+  tyKindMeta ann _path = star ann 0
+
   -- | Existential type-variable binder: @∃ m. T@.  Introduces a
   --   fresh type variable @m@ at the ctor's scope; @T@ is parsed
   --   with @m@ in 'tyBinders'.  The 'Path' is the binder's identity

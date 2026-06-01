@@ -154,11 +154,18 @@ collectParams dataPath bs = go
         Nothing -> pure []
         Just p  -> (p :) <$> go (i + 1)
 
-    paramSpec i = bareParam <|> kindedParam i
+    paramSpec i = kindedParam i <|> bareParam i
 
-    bareParam = do
+    bareParam i = do
       n <- identifier
-      pure (n, Nothing)
+      -- Emit a kind-meta marker at the param's def-position.  The
+      -- 'tyKindMeta' default falls through to '*0', preserving
+      -- pre-Phase-1 semantics for carriers that don't override it.
+      -- HypLinf / Tc override to track 'IsoTowerMeta' shape; HypTwr
+      -- will (Phase 2/3) emit a TyMetaV in the kind-meta path slot.
+      let kindPath = extendPath (PsDataParamKind i) dataPath
+      kindAnn <- freshExprAnn
+      pure (n, Just (tyKindMeta kindAnn kindPath))
 
     kindedParam i = try $ between (symbol "(") (symbol ")") $ do
       n <- identifier
