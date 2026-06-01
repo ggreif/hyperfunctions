@@ -477,16 +477,15 @@ meetNorm env p1 p2 =
       gs      = hypTwrEnvGlobals env
       cps     = hypTwrEnvCtorPaths env
       dctors  = hypTwrEnvDataCtors env
-      kEnv    = hypTwrEnvKindEnv env
       fnTypes = Map.map (hRun . horizontal) (hypTwrEnvValVars env)
-      v1      = normaliseDeferred gs cps kEnv s (hRun p1)
-      v2      = normaliseDeferred gs cps kEnv s (hRun p2)
+      v1      = normaliseDeferred gs cps s (hRun p1)
+      v2      = normaliseDeferred gs cps s (hRun p2)
   in case meet s (hPure v1) (hPure v2) of
        Right s' -> Right s'
        Left err ->
          -- Phase D: try narrowing on either side's TyDeferV chain.
-         let cands1 = candidatesFor gs cps dctors fnTypes kEnv s v1
-             cands2 = candidatesFor gs cps dctors fnTypes kEnv s v2
+         let cands1 = candidatesFor gs cps dctors fnTypes s v1
+             cands2 = candidatesFor gs cps dctors fnTypes s v2
              attempts =
                [ meet s'' (hPure v1') (hPure v2')
                | (sub1, v1') <- cands1
@@ -502,23 +501,23 @@ meetNorm env p1 p2 =
     --   return the narrow-once enumeration; otherwise recurse
     --   into TyAppV / TyArrV children so nested deferred-chains
     --   (e.g., the @pickZ ?n@ inside @Eq Z (pickZ ?n)@) surface.
-    candidatesFor gs cps dctors fnTypes kEnv s v = case resolveView s v of
+    candidatesFor gs cps dctors fnTypes s v = case resolveView s v of
       TyAppV f x ->
         case peelDeferredHead s (TyAppV f x) of
           Just (fname, argViews) ->
-            let opts = narrowOnce gs cps dctors fnTypes kEnv s fname argViews
+            let opts = narrowOnce gs cps dctors fnTypes s fname argViews
             in if null opts
                  then [(Map.empty, TyAppV f x)]   -- no narrow available
                  else opts
           Nothing ->
             -- Not deferred at this level — recurse into children
             -- so a nested deferred-chain can still be discovered.
-            do (sf, vf) <- candidatesFor gs cps dctors fnTypes kEnv s (hRun f)
-               (sx, vx) <- candidatesFor gs cps dctors fnTypes kEnv s (hRun x)
+            do (sf, vf) <- candidatesFor gs cps dctors fnTypes s (hRun f)
+               (sx, vx) <- candidatesFor gs cps dctors fnTypes s (hRun x)
                pure (sf `Map.union` sx, TyAppV (hPure vf) (hPure vx))
       TyArrV a b ->
-        do (sa, va) <- candidatesFor gs cps dctors fnTypes kEnv s (hRun a)
-           (sb, vb) <- candidatesFor gs cps dctors fnTypes kEnv s (hRun b)
+        do (sa, va) <- candidatesFor gs cps dctors fnTypes s (hRun a)
+           (sb, vb) <- candidatesFor gs cps dctors fnTypes s (hRun b)
            pure (sa `Map.union` sb, TyArrV (hPure va) (hPure vb))
       other -> [(Map.empty, other)]
 

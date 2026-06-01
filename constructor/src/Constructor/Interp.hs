@@ -48,7 +48,6 @@ import Constructor.Level (Lv (..))
 import Constructor.Path (Path, PathStep (..), extendPath)
 import Constructor.Sort (Mode (..), Sort (..))
 import Constructor.Syntax (Name)
-import Constructor.Tower (KindEnv, kindOf)
 import Constructor.TyProc (Subst, TyProc, TyView (..), resolveView)
 import Data.Kind (Type)
 import Data.Map.Strict (Map)
@@ -317,18 +316,19 @@ valueToExpr v = case v of
 --   'Nothing' if any step fails:
 --
 --     * Args fail the slidability gate (Phase 3 of the iso-tower-
---       parametric arc): every arg's kind must be self-referential
---       (iso-tower).  Sticky-classical args ('*l' kind) block here,
---       even if they would structurally demote.
+--       parametric arc): every arg must be a ctor application
+--       (head registered in 'ctorPaths').  Non-ctor tycons (e.g.
+--       a bare classical type 'Bool') block the slide here, even
+--       though they would structurally demote to a 'VCon'.
 --     * Args don't fully demote (some still have metas / deferred).
 --     * Function name not in 'Globals'.
 --     * Interpreter produces a stuck/closure value (incomplete or
 --       inapplicable).
 --     * Result Value can't promote (ctor path unknown).
 reduceDeferred
-  :: Globals -> Map Name Path -> KindEnv -> Subst
+  :: Globals -> Map Name Path -> Subst
   -> Name -> [TyView] -> Maybe TyView
-reduceDeferred gs cps _kEnv subst fname argViews = do
+reduceDeferred gs cps subst fname argViews = do
   guardSlidable (all (isSlidable cps subst) argViews)
   body     <- Map.lookup fname gs
   argVals  <- traverse (demote subst) argViews
@@ -380,11 +380,10 @@ narrowOnce
   -> Map Name [(Name, Int)]              -- ^ data → [(ctor, arity)]
   -> Map Name TyView                     -- ^ function → its declared TyView shape
                                           --   (used to find each arg's expected type)
-  -> KindEnv                             -- ^ tycon → kind tower (for slidability)
   -> Subst
   -> Name -> [TyView]                    -- ^ deferred function + arg views
   -> [(Subst, TyView)]                   -- ^ candidate (refined-subst, result) pairs
-narrowOnce gs cps dataCtors fnTypes kEnv subst fname argViews = do
+narrowOnce gs cps dataCtors fnTypes subst fname argViews = do
   -- Peel the function's signature to get expected arg types.
   fnSig    <- maybeToList (Map.lookup fname fnTypes)
   let argTypes = peelArrTypes fnSig
@@ -401,7 +400,7 @@ narrowOnce gs cps dataCtors fnTypes kEnv subst fname argViews = do
       refinedArgs   = map snd refinements
   -- Now run the bridge with refined args.  The args should all be
   -- concrete now.
-  reduced <- maybeToList (reduceDeferred gs cps kEnv combinedSubst fname refinedArgs)
+  reduced <- maybeToList (reduceDeferred gs cps combinedSubst fname refinedArgs)
   pure (combinedSubst, reduced)
   where
     -- | Per-arg narrowing decision.
@@ -469,13 +468,13 @@ narrowOnce gs cps dataCtors fnTypes kEnv subst fname argViews = do
 --   (in 'meet') so 'TyDeferV' applications either resolve to their
 --   computed value or stay deferred for Phase D narrowing.
 normaliseDeferred
-  :: Globals -> Map Name Path -> KindEnv -> Subst -> TyView -> TyView
-normaliseDeferred gs cps kEnv subst = go
+  :: Globals -> Map Name Path -> Subst -> TyView -> TyView
+normaliseDeferred gs cps subst = go
   where
     go v = case resolveView subst v of
       TyAppV f x -> case peelDeferredHead (TyAppV f x) of
         Just (fname, argViews) ->
-          case reduceDeferred gs cps kEnv subst fname argViews of
+          case reduceDeferred gs cps subst fname argViews of
             Just reduced -> reduced
             Nothing -> TyAppV (mapProc f) (mapProc x)
         Nothing -> TyAppV (mapProc f) (mapProc x)
