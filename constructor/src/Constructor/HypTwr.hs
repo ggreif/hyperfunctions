@@ -67,6 +67,7 @@ import Constructor.TyProc
   , TyProc
   , TyView (..)
   , emptySubst
+  , eqView
   , materialize
   , meet
   , mkMeta
@@ -259,30 +260,6 @@ deepResolveView s v = case resolveView s v of
 
 deepResolveProc :: Subst -> TyProc -> TyProc
 deepResolveProc s p = hPure (deepResolveView s (hRun p))
-
--- | Syntactic equality on 'TyView'.  'TyView' itself can't derive
---   'Eq' because its 'TyAppV' / 'TyArrV' children are 'TyProc'
---   (a 'Hyper', i.e. a function), but we can compare structurally
---   by self-applying through 'hRun' at each level.  Used by the
---   per-arm Subst-intersection at 'case_' exit: two arms agree on
---   a binding iff their bound views compare structurally equal.
-eqView :: TyView -> TyView -> Bool
-eqView v1 v2 = case (v1, v2) of
-  (TyConV n1 p1 o1, TyConV n2 p2 o2) -> n1 == n2 && p1 == p2 && o1 == o2
-  (TyVarV n1 p1, TyVarV n2 p2)       -> n1 == n2 && p1 == p2
-  (TyAppV f1 x1, TyAppV f2 x2)       -> eqView (hRun f1) (hRun f2)
-                                     && eqView (hRun x1) (hRun x2)
-  (TyArrV a1 b1, TyArrV a2 b2)       -> eqView (hRun a1) (hRun a2)
-                                     && eqView (hRun b1) (hRun b2)
-  (TyUnivV l1, TyUnivV l2)           -> l1 == l2
-  (TyMetaV m1, TyMetaV m2)           -> m1 == m2
-  (TyDeferV n1 p1, TyDeferV n2 p2)   -> n1 == n2 && p1 == p2
-  (TyCaseV s1 as1, TyCaseV s2 as2)   ->
-    eqView s1 s2
-      && length as1 == length as2
-      && and [eqView p1 p2 && eqView b1 b2
-             | ((p1, b1), (p2, b2)) <- zip as1 as2]
-  _                                  -> False
 
 -- | Intersect per-arm 'Subst' diffs against a common parent: keep
 --   only entries that all reachable arms agree on (same key, same

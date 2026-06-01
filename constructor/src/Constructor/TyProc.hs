@@ -37,6 +37,7 @@ module Constructor.TyProc
   , occurs
   , materialize
   , resolveView
+  , eqView
   ) where
 
 import Constructor.HyperLite (Hyper, hPure, hRun)
@@ -195,6 +196,30 @@ resolveView s v0 = case v0 of
     | Just v <- Map.lookup mid s -> resolveView s v
   _ -> v0
 
+-- | Syntactic equality on 'TyView'.  'TyView' itself can't derive
+--   'Eq' because its 'TyAppV' / 'TyArrV' children are 'TyProc'
+--   (a 'Hyper', i.e. a function), but we can compare structurally
+--   by self-applying through 'hRun' at each level.  Used by the
+--   per-arm Subst-intersection at 'case_' exit and by 'meetTyCase'
+--   to decide when two firing arms agree on a refinement.
+eqView :: TyView -> TyView -> Bool
+eqView v1 v2 = case (v1, v2) of
+  (TyConV n1 p1 o1, TyConV n2 p2 o2) -> n1 == n2 && p1 == p2 && o1 == o2
+  (TyVarV n1 p1, TyVarV n2 p2)       -> n1 == n2 && p1 == p2
+  (TyAppV f1 x1, TyAppV f2 x2)       -> eqView (hRun f1) (hRun f2)
+                                     && eqView (hRun x1) (hRun x2)
+  (TyArrV a1 b1, TyArrV a2 b2)       -> eqView (hRun a1) (hRun a2)
+                                     && eqView (hRun b1) (hRun b2)
+  (TyUnivV l1, TyUnivV l2)           -> l1 == l2
+  (TyMetaV m1, TyMetaV m2)           -> m1 == m2
+  (TyDeferV n1 p1, TyDeferV n2 p2)   -> n1 == n2 && p1 == p2
+  (TyCaseV s1 as1, TyCaseV s2 as2)   ->
+    eqView s1 s2
+      && length as1 == length as2
+      && and [eqView p1 p2 && eqView b1 b2
+             | ((p1, b1), (p2, b2)) <- zip as1 as2]
+  _                                  -> False
+
 -- | Structural unification on type-processes, threaded through a
 --   'Subst' of metavariable bindings.
 --
@@ -250,12 +275,17 @@ meet s p1 p2 = meetView s (resolveView s (hRun p1)) (resolveView s (hRun p2))
       | occurs s' m v = Left (TyOccursCheck bp up)
       | otherwise     = Right (Map.insert m v s')
 
-    -- Project a 'TyCaseV' by finding the arm whose pattern-binding
-    -- unifies with the scrutinee under the current Subst AND whose
-    -- body unifies with 'other'.  Exactly one such arm: commit its
-    -- bindings.  Zero arms or more than one: leave the case-of
-    -- opaque (return a TyMismatch — callers that want softer
-    -- behaviour can wrap).
+    -- Project a 'TyCaseV' by finding the arm(s) whose pattern-
+    -- binding unifies with the scrutinee under the current Subst
+    -- AND whose body unifies with 'other'.
+    --
+    -- - Exactly one arm fires: commit its bindings.
+    -- - Zero arms fire: 'TyMismatch' — no arm matches.
+    -- - Multiple arms fire: commit only the refinements ALL firing
+    --   arms agree on structurally (over keys NOT in the input
+    --   Subst).  Premature commitment to a single arm's scrutinee
+    --   binding would be unsound — a later meet that ruled it out
+    --   would inherit the wrong shape.
     meetTyCase s' scrut arms other =
       let scrutR = resolveView s' scrut
           otherR = resolveView s' other
@@ -266,12 +296,23 @@ meet s p1 p2 = meetView s (resolveView s (hRun p1)) (resolveView s (hRun p2))
           firings = [s'' | armResult <- map tryArm arms
                          , Right s'' <- [armResult]]
       in case firings of
-           [s'']  -> Right s''
-           []     -> Left (TyMismatch
-                            (viewToTySoft s' (TyCaseV scrut arms))
-                            (viewToTySoft s' other))
-           (s'':_)-> Right s''  -- multiple fire: pick first (deferred
-                                -- refinement of policy; see note)
+           [s'']     -> Right s''
+           []        -> Left (TyMismatch
+                               (viewToTySoft s' (TyCaseV scrut arms))
+                               (viewToTySoft s' other))
+           (f1:rest) ->
+             let agreed = foldr (intersectViewMap eqView)
+                                (Map.difference f1 s')
+                                (map (`Map.difference` s') rest)
+             in Right (Map.union agreed s')
+
+    -- Map.intersectionWith, but with a custom equality test and
+    -- dropping entries whose values disagree.  Used to compute the
+    -- agreed-refinements across firing arms of a TyCaseV meet.
+    intersectViewMap eq a b = Map.mapMaybeWithKey
+      (\k v -> case Map.lookup k b of
+                 Just v' | eq v v' -> Just v
+                 _                 -> Nothing) a
 
 -- | Structural occurs check: does 'MetaId' @m@ appear anywhere in @v@
 --   (or transitively through 'Subst' chasing and recursion into
