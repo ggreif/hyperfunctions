@@ -503,6 +503,26 @@ tests =
       \  };\
       \let rt = case Cons True (Cons False Nil) { Nil -> Z; Cons head rest -> S Z }"
       ["rt"]
+
+  -- Polymorphic-scrutinee GADT pattern match (the per-arm Subst-fork
+  -- payoff): 'isCons' takes any 'List a n' (regardless of length
+  -- index) and discriminates by ctor.  Before the fork this failed
+  -- with 'TyMismatch (S n ~ Z)' because the Nil arm bound the
+  -- lambda binder's meta '?xs := List a Z', poisoning the Cons
+  -- arm's meet.  With per-arm Subst-fork + agreed-Subst
+  -- intersection at case-of exit, each arm starts from the
+  -- pre-arm Subst, refines its own copy of '?xs', and disagrees
+  -- on the refinement — so the binding doesn't propagate
+  -- outward.  Body types ('Nat' in both arms) meet cleanly.
+  , acceptsValByHypTwr
+      "Polymorphic-scrutinee GADT: isCons on indexed List"
+      "data Nat : *0 { Z : Nat; S : Nat -> Nat };\
+      \data List (a : *0) (n : Nat) : *0\
+      \  { Nil : List a Z\
+      \  ; Cons : a -> List a n -> List a (S n)\
+      \  };\
+      \let isCons = \\xs -> case xs { Nil -> Z; Cons h r -> S Z }"
+      ["isCons"]
   ]
 
 -- | Helper: parse + elaborate end-to-end via HypLinf → HypTwr; assert

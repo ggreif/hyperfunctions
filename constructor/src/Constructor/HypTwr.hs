@@ -58,6 +58,7 @@ import Constructor.Tower
   , Gamma (..)
   , meetTowers
   , towerOfView
+  , horizontalView
   )
 import Constructor.TyExpr (TyExpr)
 import Constructor.TyProc
@@ -97,7 +98,14 @@ data HypTwrVal (s :: Sort) where
   HypTwrDecl  :: !(Maybe (Name, Tower))       -> HypTwrVal 'SDecl
   HypTwrProg  ::                                  HypTwrVal 'SProg
   HypTwrSVal  :: !Tower                       -> HypTwrVal ('SVal m)
-  HypTwrSArm  :: !(Maybe Tower)               -> HypTwrVal 'SArm
+  -- ^ Arm carrier: 'Nothing' = unreachable (pattern clashed with
+  --   scrutinee); 'Just (bakedTower, armSubst)' for reachable arms,
+  --   where 'armSubst' is the post-body arm-local 'Subst' before
+  --   any per-arm restoration.  'case_' intersects arm Substs at
+  --   exit (entries agreed by all reachable arms propagate; per-arm
+  --   pattern-binder metas and conflicting outer-meta refinements
+  --   drop) — see note on commit 0aa6e9d for the design.
+  HypTwrSArm  :: !(Maybe (Tower, Subst))      -> HypTwrVal 'SArm
 
 -- | Elaboration mode for value-level constructs.  The 'Lang' typeclass's
 --   'SVal' phantom (a type-level 'Mode') tracks Build / Dissect
@@ -227,6 +235,63 @@ hypTwrProgramWithCtors gs cps dctors p = do
 leafTower :: HypTwrEnv -> TyView -> Tower
 leafTower env v = towerOfView (hypTwrEnvSubst env) (hypTwrEnvKindEnv env) v
 
+-- | Deep-resolve a 'TyView' under a 'Subst', threading
+--   'resolveView' through 'TyAppV' / 'TyArrV' children so that
+--   bindings at any depth are inlined into the returned view.
+--
+--   Used by the per-arm Subst-fork at 'arm' exit: an arm's body
+--   tower has its meta references baked against the arm-local
+--   Subst, so that pattern-binder refinements (e.g. @?m := S Z@
+--   from a 'FS m' pattern against a 'Fin 2' scrutinee) survive the
+--   subsequent drop of the arm-local Subst.  Outer-meta refinements
+--   (the lambda-binder's @?xs := List a Z@ in the polymorphic-
+--   scrutinee case) are typically not referenced by the body tower
+--   and so are harmlessly forgotten — exactly what the "arm as
+--   function" framing prescribes.
+deepResolveView :: Subst -> TyView -> TyView
+deepResolveView s v = case resolveView s v of
+  TyAppV f x -> TyAppV (deepResolveProc s f) (deepResolveProc s x)
+  TyArrV a b -> TyArrV (deepResolveProc s a) (deepResolveProc s b)
+  other      -> other
+
+deepResolveProc :: Subst -> TyProc -> TyProc
+deepResolveProc s p = hPure (deepResolveView s (hRun p))
+
+-- | Syntactic equality on 'TyView'.  'TyView' itself can't derive
+--   'Eq' because its 'TyAppV' / 'TyArrV' children are 'TyProc'
+--   (a 'Hyper', i.e. a function), but we can compare structurally
+--   by self-applying through 'hRun' at each level.  Used by the
+--   per-arm Subst-intersection at 'case_' exit: two arms agree on
+--   a binding iff their bound views compare structurally equal.
+eqView :: TyView -> TyView -> Bool
+eqView v1 v2 = case (v1, v2) of
+  (TyConV n1 p1 o1, TyConV n2 p2 o2) -> n1 == n2 && p1 == p2 && o1 == o2
+  (TyVarV n1 p1, TyVarV n2 p2)       -> n1 == n2 && p1 == p2
+  (TyAppV f1 x1, TyAppV f2 x2)       -> eqView (hRun f1) (hRun f2)
+                                     && eqView (hRun x1) (hRun x2)
+  (TyArrV a1 b1, TyArrV a2 b2)       -> eqView (hRun a1) (hRun a2)
+                                     && eqView (hRun b1) (hRun b2)
+  (TyUnivV l1, TyUnivV l2)           -> l1 == l2
+  (TyMetaV m1, TyMetaV m2)           -> m1 == m2
+  (TyDeferV n1 p1, TyDeferV n2 p2)   -> n1 == n2 && p1 == p2
+  _                                  -> False
+
+-- | Intersect per-arm 'Subst' diffs against a common parent: keep
+--   only entries that all reachable arms agree on (same key, same
+--   value modulo 'eqView') AND whose key isn't already bound in the
+--   parent.  Empty arm-list yields the empty diff (case-of with no
+--   reachable arms doesn't refine outer scope).
+intersectArmDiffs :: Subst -> [Subst] -> Subst
+intersectArmDiffs _      []       = Map.empty
+intersectArmDiffs parent (s : ss) =
+  let diff0 = Map.difference s parent
+      meet a b = Map.mapMaybeWithKey
+                   (\k v -> case Map.lookup k b of
+                              Just v' | eqView v v' -> Just v
+                              _                     -> Nothing)
+                   a
+  in foldr meet diff0 (map (`Map.difference` parent) ss)
+
 exprTower :: HypTwrVal 'SExpr -> Tower
 exprTower (HypTwrExpr t) = t
 
@@ -348,11 +413,11 @@ threadVals (x:xs) env = do
 --   restores the env's val-binders to the outer scope, so the
 --   accumulator only grows with the threaded 'Subst'.
 threadArmsCarrying
-  :: [HypTwr a 'SArm] -> HypTwrEnv -> Either TyErr ([Maybe Tower], HypTwrEnv)
+  :: [HypTwr a 'SArm] -> HypTwrEnv -> Either TyErr ([Maybe (Tower, Subst)], HypTwrEnv)
 threadArmsCarrying []     env = Right ([], env)
 threadArmsCarrying (a:as) env = do
   (armVal, env1) <- runHypTwr a env
-  let armRes = sArmTower armVal
+  let armRes = case armVal of HypTwrSArm m -> m
   (rest, env2) <- threadArmsCarrying as env1
   pure (armRes : rest, env2)
 
@@ -375,7 +440,11 @@ sValTower (HypTwrSVal t) = t
 --   carrier.  'Just t' if the arm reached (body type @t@);
 --   'Nothing' if its pattern clashed with the scrutinee.
 sArmTower :: HypTwrVal 'SArm -> Maybe Tower
-sArmTower (HypTwrSArm t) = t
+sArmTower (HypTwrSArm m) = fst <$> m
+
+-- | Extract the arm-local 'Subst' from a reachable arm carrier.
+sArmSubst :: HypTwrVal 'SArm -> Maybe Subst
+sArmSubst (HypTwrSArm m) = snd <$> m
 
 -- | Build a 'TyView'-app chain: @head[arg0, arg1, ...]@.  Used by
 --   value-level ctor application to construct the result type
@@ -766,13 +835,27 @@ instance Lang HypTwr where
     -- marks itself unreachable ('Nothing').
     (armResults, env2) <- threadArmsCarrying arms env1'
     let env3       = env2 { hypTwrEnvScrutTy = savedScrut }
-        reachable  = [t | Just t <- armResults]
+        reachableP = [(t, s) | Just (t, s) <- armResults]
+        reachable  = map fst reachableP
+        armSubsts  = map snd reachableP
+    -- Intersect arm-local Substs over outer-meta bindings: keep
+    -- only entries agreed-upon by all reachable arms (the "all arms
+    -- agree" lattice rule from the design note).  For a 1-arm case
+    -- this is trivially the arm's full diff; for multi-arm cases
+    -- with conflicting refinements of an outer meta (e.g. Nil-arm
+    -- '?xs := List a Z' vs Cons-arm '?xs := List a (S n)' in
+    -- polymorphic-scrutinee 'case xs { Nil -> ...; Cons _ _ -> ...
+    -- }'), the disagreement drops the binding so siblings/outer
+    -- scope don't get poisoned.
+    let baseSubst  = hypTwrEnvSubst env3
+        agreedDiff = intersectArmDiffs baseSubst armSubsts
+        mergedSubst = Map.union agreedDiff baseSubst
     -- Pairwise-meet the reachable arms' body towers so the case
     -- agrees on a common result type.  If no arm is reachable,
     -- the case is vacuous — we emit a fresh meta at the case's
     -- own position (not strictly correct as a coverage check,
     -- but harmless until exhaustiveness lands).
-    finalSubst <- meetAllTowers (hypTwrEnvSubst env3) reachable
+    finalSubst <- meetAllTowers mergedSubst reachable
     let env4 = env3 { hypTwrEnvSubst = finalSubst }
         resultTower = case reachable of
           (t:_) -> t
@@ -811,20 +894,46 @@ instance Lang HypTwr where
                   , hypTwrEnvSubst   = hypTwrEnvSubst env  -- pre-pat
                   }
             in Right (HypTwrSArm Nothing, env2)
+              -- (Nothing, no arm-local Subst to ship; outer code
+              -- treats this arm as not contributing to the
+              -- intersection.)
           Right subst' -> do
-            -- Reachable arm: continue with the meet's
-            -- bindings, elaborate the body in Build mode.
+            -- Reachable arm: elaborate the body under the arm-local
+            -- Subst, bake refinements into the body tower, then
+            -- drop arm-local refinements on exit (per-arm Subst-
+            -- fork).  Sibling arms thus see the pre-arm Subst —
+            -- their own pattern-side meets refine the scrutinee
+            -- meta independently, so the Nil arm's '?α := List a Z'
+            -- no longer poisons the Cons arm's '?α := List a (S n)'.
+            -- Baking via 'deepResolveView' inlines pattern-binder
+            -- refinements (e.g. '?m := S Z' from 'FS m' against
+            -- 'Fin 2') into the body tower so they survive the
+            -- Subst drop; outer-meta refinements are typically not
+            -- referenced by the body tower and are harmlessly
+            -- forgotten.  See note on this commit's ancestor for
+            -- the "arm as function" framing.
             let env1' = env1
                   { hypTwrEnvSubst = subst'
                   , hypTwrEnvMode  = ElabBuild
                   }
             (bodyVal, env2) <- runHypTwr body env1'
             let bodyTower = sValTower bodyVal
+                -- Bake under the FULL post-body Subst (not just the
+                -- pattern-meet Subst), so refinements the body
+                -- elaboration added — e.g. instantiating FS's 'n'
+                -- to 'Z' inside 'FS m : Fin (S n)' — also survive
+                -- the drop.
+                bakedView = deepResolveView (hypTwrEnvSubst env2)
+                                            (horizontalView bodyTower)
+                bakedTower = towerOfView (hypTwrEnvSubst env)
+                                         (hypTwrEnvKindEnv env2)
+                                         bakedView
                 env3 = env2
                   { hypTwrEnvValVars = savedVars
                   , hypTwrEnvMode    = savedMode
+                  , hypTwrEnvSubst   = hypTwrEnvSubst env  -- pre-pat
                   }
-            Right (HypTwrSArm (Just bodyTower), env3)
+            Right (HypTwrSArm (Just (bakedTower, hypTwrEnvSubst env2)), env3)
 
   -- @-binder in Dissect: bind 'name' at the inner pattern's
   -- matched type, leave the at-binder's outward type to be the
