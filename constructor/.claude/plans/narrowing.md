@@ -142,6 +142,43 @@ This is the territory of dependent type checking with general
 recursion at the type level.  Doable, but requires three distinct
 mechanisms.
 
+### Why narrowing alone does NOT close this (2026-06-01)
+
+Take the concrete-`b` instance `Refl : Eq (add a (S Z)) (add' a (S Z))`.
+Phase-D narrowing (now arm-sourced, D-disj) gets the base case and
+*only* the base case:
+
+- `a := Z` — `add Z (S Z) = S Z`, `add' Z (S Z) = S Z`; meet ✓.
+- `a := S ?n` — reduce one step each:
+  `add (S ?n) (S Z) = S (add ?n (S Z))` vs
+  `add' (S ?n) (S Z) = add' ?n (S (S Z))`.  Heads don't unify
+  (`S …` vs a stuck `add' …`); discharging it needs the **induction
+  hypothesis** `add ?n _ ≡ add' ?n _`.  Narrowing has no IH, so it
+  just splits `?n` again — peeling `S` forever, proving an infinite
+  family of true ground instances but never closing `∀a`.  With a
+  depth bound it fails; without one it diverges.
+
+Two observations this nails down:
+
+1. **Narrowing's boundary.**  It decides *concrete* instances and
+   finds *witnesses* (∃-shaped goals); `∀`-over-recursive-data is a
+   different inference principle (induction).  Recursive narrowing is
+   *necessary* (case-split + reduce) but nowhere near *sufficient*.
+2. **`add`/`add'` needs more than plain IH reuse.**  The accumulator
+   in `add'` grows (`S Z → S (S Z) → …`) while `add`'s second arg
+   stays put, so the usable IH is the *generalized* `∀m. add n m ≡
+   add' n m` plus a push-lemma `add' n (S m) ≡ S (add' n m)` — a
+   two-induction proof with **auto-generalization** of the
+   accumulator.  Fixing `b = S Z` at the top does not avoid it.
+
+The missing capability is **cycle detection**: recognising that the
+step-case subgoal is an *instance of an ancestor goal* (= the IH) and
+closing the branch by coinduction instead of unfolding.  That
+recurring-shape recognition — not "deeper narrowing" — is where the
+hyperfunction / coinductive machinery is expected to earn its keep
+(Layer 4-Full and beyond).  See the Status table: `add`/`add'`-class
+`∀` proofs are explicitly out of scope for D-min..D-disj.
+
 ## Layer 1 — Demote / Interpret / Promote via `⋮`
 
 **Status: ✅ landed (commits A `04eef5c`, B `f89dd6f`, C `df54e4a`).**
