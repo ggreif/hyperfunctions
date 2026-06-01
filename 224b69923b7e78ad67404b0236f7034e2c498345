@@ -1,0 +1,49 @@
+# v0.6.0 — narrowing matures + first principled search substrate
+
+Phase-D narrowing grows from nullary-only (v0.3.0 D-min) to
+unary/multi-arg, disjunctive, and recursive — on a real search monad.
+
+## What's new
+
+- **D-full** (`951bfdf`) — narrow a stuck meta against unary/multi-arg
+  ctors; fresh **path-derived** sub-metas (no gensym); free sub-metas
+  ride the demote/interp/promote bridge as `SMeta`/`EMeta`.
+- **D-disj** (`36eeae3`) — candidates come from the deferred function's
+  own `case` arms, not the argument's type.  Disjunctive (one branch
+  per arm); dissolved the two-arm-parameter constraint.
+- **LogicT substrate** (`60f0f90`) — search on stock
+  `Control.Monad.Logic`; `meetNorm` takes the first meet-success via
+  `observeMany 1`.  Behaviour-preserving swap from the `[]` bag.
+- **D-rec** (`224b699`) — stuck-term-driven recursion: a result stuck
+  on `case ?m { … }` splits `?m` against that case's arms and
+  re-reduces, one ctor deeper, to a ground value.  Reaches finite
+  witnesses one-level narrowing can't (nested `isSS`: `?n := S (S ?m)`).
+- cleanup (`b2ca9bd`) — removed the dead type-sourced enumeration
+  plumbing (`extractDataCtors` / `hypTwrEnvDataCtors` /
+  `hypTwrProgramWithCtors`) + unused imports.
+
+Tests: `pickZ` (D-min) → `sT` (D-full) → two-arm `isS` (D-disj) →
+nested `isSS` (D-rec), all green in GadtSpec.
+
+## Residuals (next cycle)
+
+### Hyper-LogicT — efficiency drop-in
+Stock LogicT works; the Kidney/Wu hyperfunction LogicT is a drop-in
+for `narrowOnce :: … -> Logic …` if/when available.  Asked the
+authors; no reply yet.
+
+### Per-branch depth bound
+`solve` recurses until a ground value; a *non-terminating* narrowing
+diverges on that branch (LogicT interleaves across branches but does
+not bound a single branch's depth).  Add a fuel/depth limit.
+
+### Layer 3 / Layer 4 — beyond narrowing
+`∀`-over-recursive-data (the `add`/`add'` commutativity `Refl`) is NOT
+reachable by narrowing — it needs induction / cycle detection
+(recognise a subgoal as an instance of an ancestor = the IH, closed
+coinductively).  The genuine frontier; see narrowing.md's boundary
+analysis under the motivating example.  Layer 3 (user equational
+lemmas) and Layer 4 (Presburger / IH reuse) remain pending.
+
+Detail + worked examples: narrowing.md (D-full / D-disj / D-rec
+sections, status table, and the add/add' boundary).
