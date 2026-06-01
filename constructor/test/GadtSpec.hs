@@ -581,6 +581,20 @@ tests =
       \data List a = Nil | Cons a (List a);\
       \let length = \\xs -> case xs { Nil -> Z; Cons h rest -> S (length rest) }"
       ["length"]
+
+  -- v0.5.0 R4 end-to-end demo: the Haskell-style sugar now desugars
+  -- to iso-tower form (each ctor produces its own singleton type).
+  -- 'Cons T Nil' has type 'Cons T Nil' (singleton), not 'List T'
+  -- (classical).  Each application carries singleton precision —
+  -- the covering-space framing made concrete.  Requires the
+  -- 'h == ctorName' checkSaturation bypass to accept the
+  -- non-parent-headed ctor result for parametric data.
+  , acceptsValByHypTwr
+      "Iso-tower-parametric List via Haskell-style sugar"
+      "data Bool\8942 { T\8942; F\8942 };\
+      \data List a = Nil | Cons a (List a);\
+      \let lst = Cons T Nil"
+      ["lst"]
   ]
 
 -- | Helper: parse + elaborate end-to-end via HypLinf → HypTwr; assert

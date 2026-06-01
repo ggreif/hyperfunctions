@@ -374,6 +374,14 @@ checkSaturation env ctorName tower = case hypTwrEnvParent env of
                  then Right ()
                  else Left (TyCtorWrongArity ctorName parentName parentArity nargs)
            | parentArity == 0 -> Right ()
+           -- R4 of v0.5.0 (.claude/plans/lvannot-shape.md): iso-tower
+           -- singleton ctor whose result head is the CTOR itself
+           -- ('Cons : ∀x y. x → y → Cons x y' shape from buildCtorSugar).
+           -- This is the covering-space form for parametric iso-tower
+           -- data; the parent's covering-space relationship is
+           -- structural (ctor singletons collectively cover the parent
+           -- type), not a head-identity match.
+           | h == ctorName    -> Right ()
            | otherwise        -> Left (TyCtorWrongHead ctorName parentName h)
          _ -> Left (TyCtorBadResult ctorName)
 

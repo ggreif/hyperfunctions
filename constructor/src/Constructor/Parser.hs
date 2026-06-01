@@ -790,10 +790,11 @@ decl path binders = dataD <|> letD <|> ctorD
             { lvBinders = Map.empty
             , tyBinders = tyBinders annBinders <> Map.fromList paramPaths
             }
-      -- Build the data-applied-to-its-params expression — reused as
-      -- every ctor's result type ('DataName p1 … pk').
-      dataApplied <- buildDataApplied n path params
-      ctorEntries <- haskellCtorLoop n path bodyBinders dataApplied 0
+      -- Iso-tower form (R4): ctors emit singleton types via
+      -- 'buildCtorSugar' inside 'haskellCtorLoop'.  No
+      -- 'dataApplied' needed — the ctor's result is itself
+      -- (singleton), not 'DataName p1 … pk'.
+      ctorEntries <- haskellCtorLoop n path bodyBinders 0
       -- Default kind annotation: a kind-meta at the data's own
       -- declaration path (Phase 4 of the iso-tower-parametric arc;
       -- .claude/plans/lvannot-shape.md).  The 'tyKindMeta' default
@@ -819,43 +820,27 @@ decl path binders = dataD <|> letD <|> ctorD
                               siblingDecls
       pure (dataDecl ann path n params e ds, nextBinders)
 
-    -- Build @D p1 p2 … pk@ as the data-name applied to its params.
-    buildDataApplied dn dpath params = do
-      headAnn <- freshExprAnn
-      let headTree = tyConRef headAnn dn dpath
-      foldM
-        (\acc (pn, _) -> do
-           paramRefAnn <- freshExprAnn
-           let pIdx = length [() | (qn, _) <- params, qn == pn] - 1
-               pPath = extendPath (PsDataParam pIdx) dpath
-           appAnn <- freshExprAnn
-           pure (app appAnn dpath acc (tyParamRef paramRefAnn pn pPath)))
-        headTree
-        params
-
     -- Parse one Haskell-style ctor: @CName arg1 arg2 …@.  Args are
-    -- atom-level type expressions.  The ctor's type is built as
-    -- @arg1 → arg2 → … → DataApplied@.
-    haskellCtorLoop dn dpath bs dataApplied i = do
+    -- atom-level type expressions.  The ctor's type is built via
+    -- 'buildCtorSugar' (iso-tower form).
+    haskellCtorLoop dn dpath bs i = do
       let cpath = extendPath (PsDeclIdx i) dpath
       cname    <- identifier
       args     <- many (atom (extendPath PsCtorTy cpath) bs)
-      ctorTy   <- buildClassicalCtorTy args dataApplied
+      -- R4 of v0.5.0 (.claude/plans/lvannot-shape.md): iso-tower
+      -- form via 'buildCtorSugar' — each ctor produces its own
+      -- singleton type ('Nil : Nil', 'Cons : ∀x y. x → y → Cons x y').
+      -- The covering-space ('List a' = parent) is structural; the
+      -- elaborator's 'checkSaturation' accepts this shape via the
+      -- 'h == ctorName' bypass.
+      ctorTy   <- buildCtorSugar cname cpath bs args
       cdAnn    <- freshDeclAnn
       let entry = (cname, cpath, ctorDecl cdAnn cname ctorTy)
       moreBar <- optional (try (symbol "|"))
       case moreBar of
-        Just _  -> (entry :) <$> haskellCtorLoop dn dpath bs dataApplied (i + 1)
+        Just _  -> (entry :) <$> haskellCtorLoop dn dpath bs (i + 1)
         Nothing -> pure [entry]
 
-    -- Build @arg1 → arg2 → … → result@ as an arrow chain.
-    buildClassicalCtorTy args result =
-      foldrM
-        (\a acc -> do
-           arrAnn <- freshExprAnn
-           pure (arr arrAnn a acc))
-        result
-        args
 
     -- Existing path: ': K' or 'args⋮' followed by '{ ctors }'.
     classicalBody n path params annBinders = do
