@@ -1,11 +1,50 @@
 # Narrowing — type-level computation via Hyper/LogicT search
 
+**Status:** **Phases A–D landed 2026-06-01.**  Original sketch
+2026-05-31; implementation in commits `04eef5c` (slide-down) →
+`f89dd6f` (interpreter) → `df54e4a` (bridge) → `5194a31`
+(narrowing).  This document records the original vision and now
+also tracks what's done vs what's still ahead.
+
+## Implementation status — at a glance
+
+| Phase | Mechanism | Status | Commit | Tests |
+|---|---|---|---|---|
+| **A** | Slide-down `TyDeferV` on `TyUnbound` | ✅ done | `04eef5c` | 2 in GadtSpec |
+| **B** | Value-level interpreter (`Constructor.Interp`) | ✅ done | `f89dd6f` | 11 in InterpSpec |
+| **C** | Demote / interp / promote bridge at meet sites | ✅ done | `df54e4a` | 1 end-to-end in GadtSpec |
+| **D-min** | Narrowing on stuck meta args (nullary ctors) | ✅ done | `5194a31` | 1 end-to-end in GadtSpec |
+| D-full | Multi-arg / unary-ctor narrowing (fresh sub-meta) | pending | — | — |
+| D-disj | All-branches disjunctive search (vs first-wins) | pending | — | — |
+| **Hyper-LogicT** | Replace `[]`-list bag with Kidney/Wu's substrate | pending | — | — |
+| Layer 3 | User-supplied equational theorems as rewrites | pending | — | — |
+| Layer 4-Lite | Homogeneous-type essence + Presburger decision | pending | — | — |
+| Layer 4-Full | Automatic IH reuse via structural recursion | pending | — | — |
+
+**End-to-end demonstration** (commit `5194a31`):
+
+```
+data Nat⋮ { Z⋮; S Nat⋮ };
+let pickZ = \n -> case n { Z -> Z };
+data Wit (n : Nat) : *0 { W : pickZ n -> Wit n };
+let rt = W Z
+```
+
+`W Z`'s elaboration requires `pickZ ?n ≡ Z` where `?n` is fresh.
+Standard meet fails (TyMismatch).  Phase D's narrowing fallback
+case-splits `?n` on the singleton type `Z`'s only inhabitant
+(`Z` itself), reduces `pickZ Z = Z` via the bridge, meets cleanly.
+Refinement `?n := Z`.
+
+---
+
+## Original 2026-05-31 sketch (preserved below for context)
+
 **Status:** vision / architecture sketch.  Captures the discussion arc
 2026-05-31 around type-level reasoning beyond pure refinement.  The
 trigger was `Refl on Eq (add a b) (add' a b)` — a propositional
 equality requiring type-level evaluation of value-level definitions
-with stuck metavariables.  Not yet implemented; this document
-records the shape so it's there when we land it.
+with stuck metavariables.
 
 ## The motivating example
 
@@ -39,6 +78,8 @@ recursion at the type level.  Doable, but requires three distinct
 mechanisms.
 
 ## Layer 1 — Demote / Interpret / Promote via `⋮`
+
+**Status: ✅ landed (commits A `04eef5c`, B `f89dd6f`, C `df54e4a`).**
 
 The `⋮` self-tower annotation is the bridge.  Whenever a function's
 signature has all-`⋮`-typed slots (both args and result), the
@@ -79,6 +120,11 @@ fragment of type equalities reachable by pure normalisation of
 concrete-arg expressions.
 
 ## Layer 2 — Narrowing
+
+**Status: ✅ minimal subset landed (commit `5194a31`).**
+**Remaining: multi-arg / unary-ctor cases (fresh sub-meta gen);
+disjunctive all-branches search (currently first-wins); Hyper-
+LogicT substrate (currently plain `[]` list-monad bag).**
 
 When Layer 1's interpreter is stuck on a meta, **case-split the
 meta** and recurse on each ctor case.  This is the Ωmega narrowing
@@ -128,6 +174,10 @@ new case-split is one bounded action on the search column.
 
 ## Layer 3 — Equational theorems (Ωmega style)
 
+**Status: ⏳ pending.**  No user-supplied theorem mechanism yet;
+theorem-driven rewriting awaits demand from a concrete proof
+obligation.
+
 When Layer 2 hits an infinite case-split tree, **the user supplies a
 theorem** that the narrowing engine uses as a rewrite rule.
 
@@ -159,6 +209,11 @@ For our example with both theorems registered:
 Scope: ~1-2 weeks.  Self-contained extension on top of Layer 2.
 
 ## Layer 4 — Automatic induction-hypothesis reuse
+
+**Status: ⏳ pending.**  Requires termination order + active-goal
+tracking + IH-equation matcher — the technically deepest piece.
+Most-distant-future of the plan; possibly subsumed by Layer 4-Lite
+on the homogeneous fragment.
 
 The killer feature: detect when a recursive subgoal is "the same
 equation at a structurally smaller meta" and close it by IH-fiat.
@@ -197,6 +252,11 @@ needed — but the engine can still try (and fail) automatically.
 Scope: 2-4 weeks.  The technically interesting one.
 
 ## Layer 4-Lite — Homogeneous types and Presburger reduction
+
+**Status: ⏳ pending.**  Essence-extraction + Cooper's-algorithm
+port not yet implemented.  Conjectured to be ~2 weeks of work and
+to cover an enormous practical fragment (commutativity,
+associativity, identity, monus, min/max).
 
 A substantial subset of Layer 4's work is unnecessary when the data
 type is **one-dimensional homogeneous** in the sense of Nat.  For
@@ -503,46 +563,68 @@ What's already in place:
 - **CtorSig extraction** (existing): tells us which ctors are
   inhabitants when narrowing a meta.
 
-What's missing:
+What's missing (still ahead):
 
-- **Interpreter** (Layer 1): walks the IR, applies β-reduction.
-- **LogicT integration** (Layer 2): the search engine.  Choice:
-  use `logict` from Hackage, or roll a Hyper-based equivalent.
+- **Multi-arg / unary-ctor narrowing**: current Phase D only
+  enumerates nullary ctors at meta-arg positions.  Unary ctors
+  (`S _`, `Cons _ _`) need fresh sub-meta generation.
+- **Disjunctive search**: current implementation takes first-wins;
+  full narrowing should track all branches (disjunctive
+  refinements).
+- **`Hyper`-LogicT substrate**: replace the plain `[]`-list bag
+  used for candidates with Kidney/Wu's hyperfunction-based monad.
+  Gives proper interleaving + backtracking + cuts.
 - **Theorem registry** (Layer 3): parser + AST + env + rewrite.
-- **Termination / IH apparatus** (Layer 4): structural-recursion
-  check + active-goal stack + IH-matcher.
+- **Homogeneous-type Presburger** (Layer 4-Lite): essence
+  extraction + Cooper's algorithm port.
+- **Termination / IH apparatus** (Layer 4-Full): structural-
+  recursion check + active-goal stack + IH-matcher.
 
-## Implementation order
+## Implementation history and ordering
 
-Path-of-least-resistance (revised to put 4-Lite ahead of Layer 3,
-since 4-Lite gets automatic decidability on the most-common fragment
-without requiring user theorems):
+**Originally planned** (path-of-least-resistance, 2026-05-31):
+1 → 2 → 4-Lite → 3 → 4-Full, with each step ~1-4 weeks.
 
-1. **Build the interpreter** (Layer 1).  Standalone; useful for
-   testing, also for `--types` output enrichment (could show
-   evaluated normal forms of `let rt = ...`).  ~1 week.
-2. **Hook LogicT into `meet`** (Layer 2).  Replace
-   `Either TyErr Subst` with a LogicT-monadic version.  Add
-   `caseSplit` for stuck metas.  ~1 week, mostly invasive but
-   structural.
-3. **Add Layer 4-Lite** — homogeneity detection + essence
+**Actually executed** (2026-06-01):
+
+1. ✅ **Layer 1 split into A+B+C.**  Three discrete commits rather
+   than one Layer-1 land:
+   - **A.** Slide-down `var` → `TyDeferV` on `TyUnbound`
+     (`04eef5c`).  The "lookup-then-defer" reflex that makes
+     value-level bindings reachable from type position.
+   - **B.** Value-level interpreter `Constructor.Interp`
+     (`f89dd6f`).  Standalone module; tests via hand-built Exprs.
+   - **C.** Bridge — demote/interp/promote in HypTwr's `meetNorm`
+     wrapper (`df54e4a`).  Wires A's TyDeferV into B's interp.
+2. ✅ **Layer 2 minimal** (`5194a31`).  Narrowing on stuck meta
+   args; nullary ctors only.  Uses plain `[]`-list bag for
+   candidates (Hyper-LogicT deferred).
+
+**Still ahead**, in expected order:
+
+3. **Layer 2 expansion** — unary-ctor narrowing (fresh sub-meta
+   generation), disjunctive all-branches search.  ~1 week.
+4. **Hyper-LogicT substrate** — replace `[]` bag with Kidney/Wu's
+   construction.  ~1-2 weeks.
+5. **Add Layer 4-Lite** — homogeneity detection + essence
    extraction + Cooper's algorithm.  ~2 weeks.  Decides the
    one-dimensional homogeneous fragment (commutativity,
    associativity, identity laws, monus, min/max — anything in
    Presburger arithmetic).  Self-contained.
-4. **Add theorem signature** (Layer 3).  Parser, AST node,
-   env entry, rewrite step in narrowing.  Trusted axioms only at
+6. **Add theorem signature** (Layer 3).  Parser, AST node, env
+   entry, rewrite step in narrowing.  Trusted axioms only at
    first.  ~1 week.  Covers the nonlinear / multi-type fragment
    that 4-Lite doesn't reach.
-5. **Add IH-stop** (Layer 4-Full).  Termination order, active-goal
-   tracking, IH-matcher.  ~2-4 weeks.  Real automation for the
-   branching / mixed-type cases.
+7. **Add IH-stop** (Layer 4-Full).  Termination order,
+   active-goal tracking, IH-matcher.  ~2-4 weeks.  Real
+   automation for the branching / mixed-type cases.
 
-(1)+(2)+(4-Lite) is the practical first milestone: automatic
-decidability for the most-common equations on `Nat⋮`-style types
-without any user input.  (3) adds user-asserted theorems for the
-rest; (4-Full) is the technically-deepest piece that subsumes
-much of (3) automatically.
+What landed (1+2-min) is the practical first milestone: automatic
+demote-interp-promote for concrete-arg cases, with case-split
+narrowing on nullary metas as fallback.  This covers the original
+"is `Refl on Eq Z (pickZ Z)` typeable?" question — yes, with the
+right declarations.  The remaining Layers/upgrades enrich the
+decidable fragment toward Ωmega and Agda-style automation.
 
 ## The Rise pay-off, restated
 
@@ -586,17 +668,24 @@ Layer 2 and Layer 3 in the implementation order because it gets
 automatic decidability on the practical homogeneous fragment without
 user input:
 
-| Layer | Mechanism | Unlocks |
-|---|---|---|
-| 1 | Demote-interpret-promote across `⋮`-iso | Closed-term type-level evaluation |
-| 2 | Narrowing (LogicT case-split on stuck metas) | Decidable case-split trees |
-| 4-Lite | Essence extraction + Presburger decision | One-dimensional homogeneous types; +, -, min/max identities — automatically |
-| 3 | Equational theorems as rewrites | User-supplied lemmas; nonlinear / multi-type fragment |
-| 4-Full | Automatic IH reuse via structural recursion | Agda-style; branching types |
+| Layer | Mechanism | Status | Unlocks |
+|---|---|---|---|
+| 1 | Demote-interpret-promote across `⋮`-iso | ✅ landed | Closed-term type-level evaluation |
+| 2 | Narrowing (case-split on stuck metas) | ✅ minimal landed | Decidable case-split trees (nullary ctors so far) |
+| 4-Lite | Essence extraction + Presburger decision | ⏳ pending | One-dimensional homogeneous types; +, -, min/max identities — automatically |
+| 3 | Equational theorems as rewrites | ⏳ pending | User-supplied lemmas; nonlinear / multi-type fragment |
+| 4-Full | Automatic IH reuse via structural recursion | ⏳ pending | Agda-style; branching types |
+| Hyper-LogicT substrate | Replace `[]`-bag with Kidney/Wu's monad | ⏳ pending | Proper interleaving + cuts |
 
 Each layer maps to suspension primitives on a Hyper/LogicT-based
 search column.  The homogeneous fragment (Layer 4-Lite) covers
 commutativity, associativity, identity laws, monus, min/max —
-essentially Presburger arithmetic on lengths.  Path: 1 → 2 →
-4-Lite → 3 → 4-Full, ~1-4 weeks each.  The first three pieces
-give automatic decidability on a substantial practical fragment.
+essentially Presburger arithmetic on lengths.
+
+**Done so far** (2026-06-01): Layers 1 + 2-minimal.  The bridge
+demote-interp-promote works end-to-end; case-split narrowing fires
+on nullary metas; the test `data Wit (n : Nat) { W : pickZ n ->
+Wit n }; let rt = W Z` typechecks with `?n := Z` refinement.
+
+**Path ahead**: expand Layer 2 (unary ctors, disjunctive), then
+Hyper-LogicT, then Layer 4-Lite, then Layer 3, then Layer 4-Full.
