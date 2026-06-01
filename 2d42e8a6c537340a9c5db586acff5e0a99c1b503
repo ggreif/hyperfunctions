@@ -308,3 +308,46 @@ right plumbing.
 No customers, no rush.  Treat this as design-staging for v0.5.0
 rather than a release blocker.  The note's earlier "must resolve
 before v0.4.0" framing was too tight.
+
+---
+
+## Decision (2026-06-01): LvAnnot extension — option 1 locked in
+
+Per discussion: extend `LvAnnot` with a `Shape` field rather than
+introducing a sibling `KindAnnot` pass.
+
+```haskell
+data LvAnnot (s :: Sort) where
+  LvAExpr :: !Lv -> !Shape -> LvAnnot 'SExpr
+  LvADecl :: !Lv -> !Shape -> LvAnnot 'SDecl
+  LvAProg ::                  LvAnnot 'SProg
+
+data Shape = Classical
+           | IsoTower !Name        -- self-referential to this tycon
+           | IsoTowerMeta !MetaId  -- unresolved kind meta
+           deriving (Eq, Show)
+```
+
+**Rationale**
+
+- LvAnnot's plumbing already exists across Tc / HypLinf / downstream
+  carriers; extending it carries no new traversal overhead.
+- Level and shape co-evolve at each elaboration step (the resolution
+  of a kind meta resolves both the level and the shape together),
+  so co-locating them in one annotation matches the natural
+  inference flow.
+- A sibling KindAnnot would force two passes or two parallel
+  threads; LvAnnot's single-pass model handles both with one extra
+  field.
+
+Drawback: `LvAnnot`'s `deriving Eq` and `deriving Show` instances
+need `Shape` to derive both (trivial since `Name` and `MetaId`
+already do).
+
+The Shape field defaults to `Classical` for legacy nodes (every
+existing test case parses with this default, preserving today's
+semantics).  `IsoTowerMeta` is the new dimension that drives
+the "param-kind defaults to a meta" rule.
+
+This decision pins the carrier shape for the v0.5.0+ arc's piece
+(1) (param-kind metas in `collectParams`).
