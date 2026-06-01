@@ -30,12 +30,15 @@ module Constructor.Interp
   , fromDissect
   , extractGlobals
   , extractCtorPaths
+  , extractDataCtors
     -- * Bridge: demote / promote / reduce
   , demote
   , promote
   , valueToExpr
   , reduceDeferred
   , normaliseDeferred
+    -- * Narrowing
+  , narrowOnce
   ) where
 
 import qualified Constructor.AST as AST
@@ -216,6 +219,43 @@ extractCtorPaths (AST.Prog _ ds) = foldr collectProg Map.empty ds
       Map.insert name (extendPath (PsDeclIdx i) dataPath) cps
     collectCtor _ _ cps = cps
 
+-- | Harvest the ctor list (with arity) per data type from the
+--   program's tree.  For 'Nat⋮ { Z⋮; S Nat⋮ }' produces
+--   @{ "Nat" |-> [("Z", 0), ("S", 1)], "Z" |-> [("Z", 0)] }@:
+--   the data type itself maps to its ctors, plus each nullary
+--   ctor gets a singleton-entry mapping its own name to itself
+--   (the ⋮-sugar makes Z : Z, so a meta of type Z is inhabited
+--   only by Z itself).  Arity is computed by counting arrows in
+--   the ctor's type signature.
+extractDataCtors :: forall (a :: Sort -> Type). Tree a 'SProg -> Map Name [(Name, Int)]
+extractDataCtors (AST.Prog _ ds) =
+  let baseMap     = foldr collectProg Map.empty ds
+      singletons  = Map.fromList
+        [ (cname, [(cname, 0)])
+        | (_, ctors) <- Map.toList baseMap
+        , (cname, 0) <- ctors
+        ]
+  in Map.union baseMap singletons
+  where
+    collectProg :: Tree a 'SDecl -> Map Name [(Name, Int)] -> Map Name [(Name, Int)]
+    collectProg (AST.DataDecl _ _ dname _ _ ctors) acc =
+      let ctorInfo = [ (cname, countArrows ty)
+                     | AST.CtorDecl _ cname ty <- ctors
+                     ]
+      in Map.insert dname ctorInfo acc
+    collectProg _ acc = acc
+
+    -- | Count arrows in a type expression to derive ctor arity.
+    --   'Nat' alone (no arrow) → 0; 'Nat -> Nat' → 1; 'Nat -> Nat ->
+    --   Nat' → 2.  Also peels '∀'-binders introduced by the ctor
+    --   '⋮' sugar; those carry no arity weight (they're binder
+    --   intro, not function arrows).
+    countArrows :: Tree a 'SExpr -> Int
+    countArrows e = case e of
+      AST.Arr _ _ b      -> 1 + countArrows b
+      AST.ForallLv _ _ _ b -> countArrows b
+      _                  -> 0
+
 -- ---------------------------------------------------------------------
 -- Bridge: TyView ↔ Value via the ⋮-iso
 -- ---------------------------------------------------------------------
@@ -292,6 +332,104 @@ reduceDeferred gs cps subst fname argViews = do
   case result of
     VCon{} -> promote cps result
     _      -> Nothing
+
+-- | One level of narrowing on a 'TyAppV' chain rooted at a
+--   'TyDeferV' head: enumerate ctor possibilities for each meta
+--   argument and return all (refined-subst, reduced-result) pairs.
+--
+--   Phase D simple form: handles only nullary ctors of the meta's
+--   expected type (no fresh sub-meta generation yet).  Multi-meta
+--   args and unary ctors are queued for the 'Hyper'-LogicT upgrade
+--   (Kidney/Wu) — for now, the plain list-monad serves as the
+--   disjunctive bag of branches.
+--
+--   The caller (HypTwr's 'meetNorm') uses this when standard
+--   normalisation fails to reduce: try each candidate refinement,
+--   pick the first whose result unifies with the other side.
+narrowOnce
+  :: Globals
+  -> Map Name Path                       -- ^ ctor → decl-path
+  -> Map Name [(Name, Int)]              -- ^ data → [(ctor, arity)]
+  -> Map Name TyView                     -- ^ function → its declared TyView shape
+                                          --   (used to find each arg's expected type)
+  -> Subst
+  -> Name -> [TyView]                    -- ^ deferred function + arg views
+  -> [(Subst, TyView)]                   -- ^ candidate (refined-subst, result) pairs
+narrowOnce gs cps dataCtors fnTypes subst fname argViews = do
+  -- Peel the function's signature to get expected arg types.
+  fnSig    <- maybeToList (Map.lookup fname fnTypes)
+  let argTypes = peelArrTypes fnSig
+  -- Pair each arg view with its expected type.  Only proceed if we
+  -- have at least as many expected slots as actual args.
+  args' <- maybeToList (zipArgs argViews argTypes)
+  -- For each (argView, argType) pair, decide: concrete (no narrow)
+  -- or meta + narrow.  Yields a list of (Subst-extension, ctor view
+  -- to use in place of the meta) per combination.
+  refinements <- mapM (narrowArg dataCtors cps subst) args'
+  -- Combine: merge all refinements; reconstruct ctor-views as the
+  -- new arg views.
+  let combinedSubst = foldr (\(s, _) acc -> Map.union s acc) subst refinements
+      refinedArgs   = map snd refinements
+  -- Now run the bridge with refined args.  The args should all be
+  -- concrete now.
+  reduced <- maybeToList (reduceDeferred gs cps combinedSubst fname refinedArgs)
+  pure (combinedSubst, reduced)
+  where
+    -- | Per-arg narrowing decision.
+    narrowArg
+      :: Map Name [(Name, Int)]
+      -> Map Name Path
+      -> Subst
+      -> (TyView, TyView)
+      -> [(Subst, TyView)]
+    narrowArg dctors cps' s (argView, argType) =
+      case resolveView s argView of
+        -- If the arg is already concrete (TyConV-headed or TyAppV
+        -- chain), no narrow needed; pass through with identity subst.
+        v@TyConV{} -> [(Map.empty, v)]
+        v@TyAppV{} -> [(Map.empty, v)]
+        -- A free meta: try each ctor of the meta's expected data type.
+        TyMetaV mid -> do
+          dataName    <- maybeToList (headDataName (resolveView s argType))
+          ctorsOfData <- maybeToList (Map.lookup dataName dctors)
+          (cname, arity) <- ctorsOfData
+          guard (arity == 0)               -- nullary-only for now
+          ctorPath    <- maybeToList (Map.lookup cname cps')
+          let ctorView = TyConV cname ctorPath Z
+              substExt = Map.singleton mid ctorView
+          pure (substExt, ctorView)
+        -- Other shapes (TyArrV, TyUnivV, TyVarV, TyDeferV): skip.
+        _ -> []
+
+    -- | Peel a 'TyView' arrow chain into its arg-type list.
+    --   'Nat -> Nat -> Bool' → ['Nat', 'Nat'].  Returns the empty
+    --   list for non-arrow types.
+    peelArrTypes :: TyView -> [TyView]
+    peelArrTypes (TyArrV a b) = hRun a : peelArrTypes (hRun b)
+    peelArrTypes _            = []
+
+    -- | Zip args with their expected types; fail if args outnumber
+    --   types (over-application).
+    zipArgs :: [TyView] -> [TyView] -> Maybe [(TyView, TyView)]
+    zipArgs []     _      = Just []
+    zipArgs (_:_)  []     = Nothing
+    zipArgs (a:as) (t:ts) = ((a, t) :) <$> zipArgs as ts
+
+    -- | Extract the head data-type name from a TyView (e.g., 'Nat'
+    --   from 'Nat', or 'Maybe' from 'Maybe a').
+    headDataName :: TyView -> Maybe Name
+    headDataName v = case v of
+      TyConV n _ _ -> Just n
+      TyAppV f _   -> headDataName (hRun f)
+      _            -> Nothing
+
+    maybeToList :: Maybe a -> [a]
+    maybeToList Nothing  = []
+    maybeToList (Just x) = [x]
+
+    guard :: Bool -> [()]
+    guard True  = [()]
+    guard False = []
 
 -- | Walk a 'TyView' recursively, attempting to reduce any
 --   'TyAppV'-chain rooted at a 'TyDeferV' head.  Successful

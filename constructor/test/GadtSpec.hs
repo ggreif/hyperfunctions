@@ -44,8 +44,9 @@ import Constructor.HypTwr
   , hypTwrCtorTypes
   , hypTwrProgram
   , hypTwrProgramWith
+  , hypTwrProgramWithCtors
   )
-import Constructor.Interp (extractCtorPaths, extractGlobals)
+import Constructor.Interp (extractCtorPaths, extractDataCtors, extractGlobals)
 import Constructor.LevelInfer (LvErr (..))
 import Constructor.Parser (parseProgram)
 import Constructor.Path (Path (..), PathStep (..))
@@ -454,6 +455,28 @@ tests =
       \data Wit : *0 { W : pickZ Z -> Wit };\
       \let rt = W Z"
       ["pickZ", "rt"]
+
+  -- Phase D: narrowing.  Uses ⋮-sugar so each ctor value IS its
+  -- own type (Z : Z, S : ∀a. a→ S a).  This is the iso-preserving
+  -- form required for value-of-let-in-type-position to mean
+  -- anything coherent — Z's type is Z (not Nat), so promote(VCon Z)
+  -- meets cleanly with Z's type.
+  --
+  -- W's expected arg type is 'pickZ n' where n is Wit's Nat-kinded
+  -- parameter.  At use site, n becomes a fresh meta ?n.
+  -- Normalisation can't reduce pickZ ?n (meta arg); standard meet
+  -- fails.  The narrowing fallback case-splits ?n on Nat's ctors;
+  -- the Z branch yields pickZ Z = Z which matches the LHS;
+  -- ?n := Z refinement.  (S branch is currently filtered — Phase
+  -- D minimal scope only enumerates nullary ctors; unary needs
+  -- fresh sub-meta gen.)
+  , acceptsBridgedWithCtors
+      "Phase D: 'W Z' with W : pickZ n -> Wit n forces n := Z via narrowing"
+      "data Nat\8942 { Z\8942; S Nat\8942 };\
+      \let pickZ = \\n -> case n { Z -> Z };\
+      \data Wit (n : Nat) : *0 { W : pickZ n -> Wit n };\
+      \let rt = W Z"
+      ["pickZ", "rt"]
   ]
 
 -- | Helper: parse + elaborate end-to-end via HypLinf → HypTwr; assert
@@ -575,6 +598,30 @@ acceptsBridged name src wantLets = (name, go)
         in case parseProgram @HypTwr @(Const ()) name src of
           Left e -> fail_ $ "parse error: " <> errorBundlePretty e
           Right pTwr -> case hypTwrProgramWith gs cps pTwr of
+            Left ty -> fail_ $ "HypTwr rejected: " <> show ty
+            Right r ->
+              let got  = Map.keys (hypTwrValVars r)
+                  want = wantLets
+              in if got == want
+                   then pure True
+                   else fail_ $
+                     "let-binder set mismatch:\n  want: " <> show want
+                     <> "\n  got:  " <> show got
+
+-- | Phase D variant: also injects 'dataCtors' so narrowing can
+--   enumerate ctor possibilities for meta arguments.
+acceptsBridgedWithCtors :: String -> Text -> [Name] -> (String, IO Bool)
+acceptsBridgedWithCtors name src wantLets = (name, go)
+  where
+    go = case parseProgram @Tree @(Const ()) name src of
+      Left e -> fail_ $ "parse error: " <> errorBundlePretty e
+      Right tree ->
+        let gs     = extractGlobals tree
+            cps    = extractCtorPaths tree
+            dctors = extractDataCtors tree
+        in case parseProgram @HypTwr @(Const ()) name src of
+          Left e -> fail_ $ "parse error: " <> errorBundlePretty e
+          Right pTwr -> case hypTwrProgramWithCtors gs cps dctors pTwr of
             Left ty -> fail_ $ "HypTwr rejected: " <> show ty
             Right r ->
               let got  = Map.keys (hypTwrValVars r)

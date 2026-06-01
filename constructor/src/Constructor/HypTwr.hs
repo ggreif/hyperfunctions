@@ -40,13 +40,14 @@ module Constructor.HypTwr
   , HypTwrResult (..)
   , hypTwrProgram
   , hypTwrProgramWith
+  , hypTwrProgramWithCtors
   , hypTwrCtorTypes
   , CtorSig (..)
   , extractCtorSig
   ) where
 
 import Constructor.HyperLite (hPure, hRun)
-import Constructor.Interp (Globals, normaliseDeferred)
+import Constructor.Interp (Globals, narrowOnce, normaliseDeferred)
 import Constructor.Level (Lv (..), starLevel)
 import Constructor.Path (Path, PathStep (..), emptyPath, extendPath)
 import Constructor.Sort (Mode (..), Sort (..))
@@ -141,6 +142,11 @@ data HypTwrEnv = HypTwrEnv
     -- ^ Ctor → decl-path map, also pre-computed from the Tree.
     --   Used by 'Interp.promote' to reconstruct 'TyConV' shapes
     --   from Values when 'reduceDeferred' succeeds.
+  , hypTwrEnvDataCtors :: !(Map Name [(Name, Int)])
+    -- ^ Per-data-type ctor list (with arity), pre-computed from
+    --   the Tree.  Used by 'Interp.narrowOnce' (Phase D) to
+    --   enumerate ctor possibilities for a meta argument of a
+    --   given data type.
   , hypTwrEnvMode      :: !ElabMode
     -- ^ Runtime mode: 'ElabBuild' (the default) flips to
     --   'ElabDissect' while elaborating an arm's pattern, and
@@ -158,7 +164,7 @@ data HypTwrEnv = HypTwrEnv
 
 emptyHypTwrEnv :: HypTwrEnv
 emptyHypTwrEnv = HypTwrEnv Map.empty Map.empty Map.empty emptySubst Nothing
-                            Map.empty Map.empty Map.empty Map.empty
+                            Map.empty Map.empty Map.empty Map.empty Map.empty
                             ElabBuild Nothing
 
 data HypTwrResult = HypTwrResult
@@ -194,10 +200,19 @@ hypTwrProgram = hypTwrProgramWith Map.empty Map.empty
 --   up).
 hypTwrProgramWith
   :: Globals -> Map Name Path -> HypTwr a 'SProg -> Either TyErr HypTwrResult
-hypTwrProgramWith gs cps p = do
+hypTwrProgramWith gs cps = hypTwrProgramWithCtors gs cps Map.empty
+
+-- | Full Phase C+D entry point: also takes 'dataCtors' (per-data
+--   ctor list with arities) so narrowing (Phase D) can enumerate
+--   ctor possibilities for meta arguments.
+hypTwrProgramWithCtors
+  :: Globals -> Map Name Path -> Map Name [(Name, Int)]
+  -> HypTwr a 'SProg -> Either TyErr HypTwrResult
+hypTwrProgramWithCtors gs cps dctors p = do
   let env0 = emptyHypTwrEnv
         { hypTwrEnvGlobals   = gs
         , hypTwrEnvCtorPaths = cps
+        , hypTwrEnvDataCtors = dctors
         }
   (_, env) <- runHypTwr p env0
   pure (HypTwrResult
@@ -387,19 +402,77 @@ checkValArg env (arg, input) = do
 
 -- | Normalising 'meet': pre-reduce any 'TyDeferV' applications via
 --   the bridge (demote-interpret-promote) before structural
---   unification.  Phase C hook — wires the slide-detected
---   'TyDeferV' from Phase A through Phase B's interpreter.
---   Stuck cases (metas in args, partial reduction) leave the
---   'TyDeferV' intact and the standard 'meet' surfaces a
---   'TyMismatch' (which Phase D narrowing will later refine).
+--   unification.  Phase C hook for the concrete-arg case; Phase D
+--   fallback when reduction is stuck on a meta.
+--
+--   Algorithm:
+--
+--     1. Apply 'normaliseDeferred' to both sides — reduces any
+--        'TyAppV' chain rooted at 'TyDeferV' with fully-concrete
+--        args.
+--     2. Try standard 'meet' on the normalised views.  If it
+--        succeeds, done.
+--     3. On TyMismatch, attempt Phase D narrowing: walk both views
+--        looking for 'TyDeferV'-headed 'TyAppV' chains with meta
+--        args; enumerate ctor refinements via 'narrowOnce' for each
+--        meta; for each candidate refinement, re-attempt the meet.
+--        First successful branch wins.
 meetNorm :: HypTwrEnv -> TyProc -> TyProc -> Either TyErr Subst
 meetNorm env p1 p2 =
-  let s   = hypTwrEnvSubst env
-      gs  = hypTwrEnvGlobals env
-      cps = hypTwrEnvCtorPaths env
-      v1  = normaliseDeferred gs cps s (hRun p1)
-      v2  = normaliseDeferred gs cps s (hRun p2)
-  in meet s (hPure v1) (hPure v2)
+  let s       = hypTwrEnvSubst env
+      gs      = hypTwrEnvGlobals env
+      cps     = hypTwrEnvCtorPaths env
+      dctors  = hypTwrEnvDataCtors env
+      fnTypes = Map.map (hRun . horizontal) (hypTwrEnvValVars env)
+      v1      = normaliseDeferred gs cps s (hRun p1)
+      v2      = normaliseDeferred gs cps s (hRun p2)
+  in case meet s (hPure v1) (hPure v2) of
+       Right s' -> Right s'
+       Left err ->
+         -- Phase D: try narrowing on either side's TyDeferV chain.
+         let cands1 = candidatesFor gs cps dctors fnTypes s v1
+             cands2 = candidatesFor gs cps dctors fnTypes s v2
+             attempts =
+               [ meet s'' (hPure v1') (hPure v2')
+               | (sub1, v1') <- cands1
+               , (sub2, v2') <- cands2
+               , let s'' = sub2 `Map.union` sub1 `Map.union` s
+               ]
+         in case [ s' | Right s' <- attempts ] of
+              (s' : _) -> Right s'
+              []       -> Left err
+  where
+    -- | Narrowing candidates for a single TyView, with recursion
+    --   into children.  For a TyAppV chain rooted at TyDeferV,
+    --   return the narrow-once enumeration; otherwise recurse
+    --   into TyAppV / TyArrV children so nested deferred-chains
+    --   (e.g., the @pickZ ?n@ inside @Eq Z (pickZ ?n)@) surface.
+    candidatesFor gs cps dctors fnTypes s v = case resolveView s v of
+      TyAppV f x ->
+        case peelDeferredHead s (TyAppV f x) of
+          Just (fname, argViews) ->
+            let opts = narrowOnce gs cps dctors fnTypes s fname argViews
+            in if null opts
+                 then [(Map.empty, TyAppV f x)]   -- no narrow available
+                 else opts
+          Nothing ->
+            -- Not deferred at this level — recurse into children
+            -- so a nested deferred-chain can still be discovered.
+            do (sf, vf) <- candidatesFor gs cps dctors fnTypes s (hRun f)
+               (sx, vx) <- candidatesFor gs cps dctors fnTypes s (hRun x)
+               pure (sf `Map.union` sx, TyAppV (hPure vf) (hPure vx))
+      TyArrV a b ->
+        do (sa, va) <- candidatesFor gs cps dctors fnTypes s (hRun a)
+           (sb, vb) <- candidatesFor gs cps dctors fnTypes s (hRun b)
+           pure (sa `Map.union` sb, TyArrV (hPure va) (hPure vb))
+      other -> [(Map.empty, other)]
+
+    peelDeferredHead s = peel []
+      where
+        peel acc t = case resolveView s t of
+          TyDeferV n _    -> Just (n, acc)
+          TyAppV f x      -> peel (hRun x : acc) (hRun f)
+          _               -> Nothing
 
 -- | Shared elaboration of a value-level constructor application,
 --   used by 'valCtor' in both modes:
