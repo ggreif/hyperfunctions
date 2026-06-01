@@ -376,6 +376,18 @@ checkSaturation env ctorName tower = case hypTwrEnvParent env of
            | otherwise        -> Left (TyCtorWrongHead ctorName parentName h)
          _ -> Left (TyCtorBadResult ctorName)
 
+-- | Elaborate a single data-parameter's kind expression (if present)
+--   for its side-effect of allocating a kind-meta in HypTwr's
+--   machinery.  The resulting tower is discarded — the meta lives
+--   on via its 'MetaId' allocation path, accessible at use sites
+--   via the parser-determined path.  R3 (v0.5.0) — see
+--   '.claude/plans/lvannot-shape.md'.
+elabParamKind :: HypTwrEnv -> (Name, Maybe (HypTwr a 'SExpr)) -> Either TyErr HypTwrEnv
+elabParamKind env (_n, Nothing)        = Right env
+elabParamKind env (_n, Just kindExpr)  = do
+  (_, env') <- runHypTwr kindExpr env
+  pure env'
+
 threadDecls :: [HypTwr a 'SDecl] -> HypTwrEnv -> Either TyErr HypTwrEnv
 threadDecls []     env = Right env
 threadDecls (d:ds) env = do
@@ -631,7 +643,16 @@ instance Lang HypTwr where
     case Map.lookup name (hypTwrEnvDataTypes env) of
       Just _  -> Left (TyDuplicateType name)
       Nothing -> do
-        (eVal, env0) <- runHypTwr e env
+        -- R3 (v0.5.0): elaborate each param's kind expression so
+        -- kind metas (emitted by 'collectParams' via Phase 1)
+        -- reach HypTwr's machinery.  We discard the resulting
+        -- tower; the meta is allocated through the leaf-tower's
+        -- 'TyMetaV' (via R1's 'tyKindMeta' override) and persists
+        -- via its 'MetaId'.  Use-site resolution (R3 follow-on)
+        -- meets these against actual arg kinds at ctor application
+        -- sites.
+        envInit <- foldM elabParamKind env params
+        (eVal, env0) <- runHypTwr e envInit
         -- The kind-annotation's tower; its rung-0 horizontal is the
         -- TyView we'll cache in kindEnv (so 'kindOf' for this tycon
         -- returns its kind annotation).

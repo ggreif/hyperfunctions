@@ -42,7 +42,7 @@ module Constructor.TyProc
 
 import Constructor.HyperLite (Hyper, hPure, hRun)
 import Constructor.Level (Lv (..))
-import Constructor.Path (Path, emptyPath)
+import Constructor.Path (Path (..), PathStep (..), emptyPath)
 import Constructor.Syntax (Name)
 import Constructor.Tinf (TyErr (..))
 import Constructor.TyExpr (TyExpr (..))
@@ -348,4 +348,21 @@ materialize s p = materializeView (resolveView s (hRun p))
     -- (re-use the 'unresolved' channel since callers don't yet
     -- distinguish the source).
     materializeView (TyCaseV _ _) = Left (TyUnresolvedMeta emptyPath emptyPath)
-    materializeView (TyMetaV (MetaId bp up)) = Left (TyUnresolvedMeta bp up)
+    materializeView (TyMetaV (MetaId bp up))
+      -- R3 EOE default (v0.5.0, .claude/plans/lvannot-shape.md):
+      -- an unresolved kind-meta defaults to '*0' (classical) at
+      -- materialisation.  Detected structurally via the binder
+      -- path's last step: kind metas are allocated with
+      -- 'PsDataParamKind i' (param kinds) or 'PsDataAnn' (data
+      -- kind) as the final PathStep.
+      | isKindMetaPath bp = Right (TyUniv Z)
+      | otherwise         = Left (TyUnresolvedMeta bp up)
+
+-- | A 'Path' allocated as a kind-meta if its last 'PathStep' is
+--   'PsDataParamKind' or 'PsDataAnn'.  Used by 'materialize' to
+--   default unresolved kind-metas to '*0' at end of elaboration.
+isKindMetaPath :: Path -> Bool
+isKindMetaPath (Path steps) = case reverse steps of
+  (PsDataParamKind _ : _) -> True
+  (PsDataAnn         : _) -> True
+  _                       -> False
