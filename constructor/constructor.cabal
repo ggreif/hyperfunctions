@@ -1,6 +1,6 @@
 cabal-version:      3.0
 name:               constructor
-version:            0.7.0
+version:            0.8.0
 synopsis:           Nested-data constructor language with universe-level inference
 description:        A tiny finally-tagless language whose programs are nested
                     `data` declarations indexed by a universe ladder *0, *1, …
