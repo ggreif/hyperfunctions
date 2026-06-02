@@ -1,0 +1,30 @@
+# v0.8.0-dev scope
+
+Cycle opened by this commit (cabal bump after the v0.7.0 tag —
+backpressure + the occurs/cycle fix on a fair `LogicT (ST)` substrate).
+Candidate scope, roughly ordered by tractability:
+
+- **Per-arm Subst-forking in HypTwr** — unblocks polymorphic recursive
+  eliminators (`length : List a n -> Nat`): fork the Subst per case
+  arm so the `Nil` arm's refinement of the binder's meta doesn't
+  starve the `Cons` arm (`GadtSpec.hs:565-568`). Most concrete; do
+  first.
+- **Multi-arity backpressure coverage** (v0.7.0 R3) — a divergent
+  narrowing test with an arity-≥2 ctor, exercising the `−a·V(r+1)`
+  drain that today has no regression.
+- **Telescope + bifurcation cleverness** (v0.7.0 R1) — the bead-tree
+  lockstep dynamics + the radius-dependent bushy bet from
+  `backpressure.md`; prerequisite for the Phase-2 scheduler (R4).
+- **Induction frontier (begin)** — coinductive loop-cut for
+  ∀-over-recursive-data: recognise a step-case subgoal as an instance
+  of an ancestor goal (= the IH) and close it rather than unfolding.
+  The v0.7.0 review's key lever: IH-stop and the backpressure stall are
+  the *same* ancestor-goal machinery (coinductive vs failing loop-cut)
+  — build one stack, share it. Big; likely spans sub-cycles. The
+  `add a b ≡ add' a b` `Refl` is the litmus.
+- **Correct narrowing.md:140** — its LogicT-fairness claim is now true
+  (`04b9a2f`); fold the correction into the status table.
+
+Source of truth: `narrowing.md` status table. Each piece that lands
+updates that table inline (per the convention in the v0.6.0 note on
+`224b699`).
