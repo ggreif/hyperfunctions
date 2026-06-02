@@ -82,6 +82,16 @@ Each production, every existing bead slides `r → r+1`, releasing
 ΔE  =  Σ_{r=0}^{k-1} (V(r) − V(r+1))  =  V(0) − V(k)
 ```
 
+**Why it telescopes (the shift-register picture).**  The beads are a
+shift register: on each production every interior bead *takes the place
+the bead ahead of it just vacated*, so every interior place is occupied
+both before and after — its energy is unchanged and cancels.  Only the
+two ends change occupancy: the new bead entering at the centre (`V(0)`)
+and **the frontier** — the bead moving into the still-empty spot at
+radius `k` (`V(k)`).  Since `V(0)` is a constant baseline, per
+production you evaluate the hat **exactly once, at the frontier radius**
+(= the current depth).  No sum, no bead-cloud — one `V(·)` call.
+
 So a source is just **one scalar `E`** plus its depth `k`; producing
 the next constructor does
 
