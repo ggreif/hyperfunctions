@@ -51,7 +51,12 @@ rim.
 - A **source** = a narrowing path actively emitting constructors.  Many
   coexist (the `choose` alternatives / live branches).
 - A **bead** = one emitted constructor, carrying **weight**.  Born at
-  the epicentre.
+  the epicentre.  **Weight = 1 + constructor-children** (the node
+  itself, plus the `a` frontier slots it opens) — so a nullary `Z`
+  weighs `1`, a unary `S` weighs `2`, a binary `Cons` weighs `3`.  The
+  `1` is the node that has *arrived* at radius `r`; the `a` are the
+  children that still must be *pushed* to `r+1` — which is exactly the
+  split in the energy rule below.
 - **Radially rigid, vertically flexible**: a bead's *radius* is rigid —
   it equals the number of production-ticks since the bead was born; its
   *height* is whatever the hat says at that radius, `V(r)`.
@@ -119,11 +124,18 @@ E += V(r) − a·V(r+1)
 - `a = 1` (unary `S`):  `V(r) − V(r+1)` — the linear slide; the *only*
   arity whose per-event deltas chain up into the telescope above.
 - `a = 0` (nullary `Z`): `+V(r)` — the track **closes** (a sub-solution);
-  the bead's full height refunds.
+  the bead's whole weight is `1`, all of it the arrived node, so its
+  full height `V(r)` refunds and nothing is pushed.
 - `a ≥ 2` (`Cons`/`Pair`/`Node`): `V(r) − a·V(r+1)` — the **fork**: `a`
   beads to push.  The `a` multiplies the *child* term `V(r+1)`, so its
-  effect flips sign across the trough.  This is "beads carry weight"
-  made precise: **weight = arity**.
+  effect flips sign across the trough.
+
+The rule **is** the weight `1 + a` split across two radii: the `1` (the
+arrived node) settles at `r` and *releases* `+V(r)`; the `a` (its
+children) are *pushed* to `r+1` and *cost* `−a·V(r+1)`.  Gain for what
+slid into place, drain for what must be shoved outward — that sign
+asymmetry is the whole engine.  This is "beads carry weight" made
+precise: **weight = 1 + arity**.
 
 **Betting bushy is good on the slope, bad on the steep.**  The arity
 `a` scales `−V(r+1)`, the height the children land at — and `V`'s sign
@@ -222,8 +234,9 @@ max; no extra knob, it falls straight out of the hat.
 
 - **Hat shape** `V(r)`: default `r⁴ − c·r²`; `c` = well width.  Other
   shapes (Gaussian-bump, piecewise) are fair game.
-- **Bead weight**: uniform per constructor, or arity-weighted (a binary
-  ctor = 2 beads)?  Affects how fast multi-arg narrowing drains.
+- **Bead weight**: settled on `1 + arity` (node + children; binary ctor
+  = weight 3).  Uniform-per-constructor is the fallback if the `1 + a`
+  split ever proves too aggressive on wide narrowing.
 - **Where energy seeds**: per top-level meet, or shared across the whole
   elaboration?  (Phase 1: per `narrowOnce` call, `E₀ = 0`.)
 - **Interaction with the occurs/cycle guard** (the still-open `[unsound]`
