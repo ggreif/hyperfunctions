@@ -2051,6 +2051,29 @@ In progress.  R1 (HypTwr's `tyKindMeta` override) landed in
 self-applied entries for iso-tower data) are the next two
 pieces.  Status board on the `61efd8c` git-note.
 
+### v0.6.0 — Narrowing matures (D-full / D-disj / D-rec) on a LogicT substrate
+
+Phase-D grows from nullary-only to unary/multi-arg, disjunctive, and
+recursive narrowing — candidates read from the function's own `case`
+arms; stuck-term-driven recursion reaches finite witnesses one-level
+narrowing can't.
+
+- Release residuals + What's new: **git-note on `224b699`**.
+- Tag: `v0.6.0` on `224b699`.
+
+### v0.7.0 — Backpressure: fair, terminating narrowing search
+
+Fair `interleave`/`>>-` + a memory-footprint energy bound (the
+Mexican-hat reservoir) that self-extinguishes divergent spines, and the
+two-sided occurs/cycle hole closed (`unionSubst`).
+
+- Plan: [`.claude/plans/backpressure.md`](.claude/plans/backpressure.md).
+- Release residuals + status board: **git-note on `873c848`**.
+- v0.7.0-planning review + the now-closed `[unsound]` occurs/cycle item:
+  **git-note on `e80560d`** (scope-of-cycle; marked ✅ FIXED `873c848`).
+- v0.8.0-dev scope: **git-note on `fb3de1c`** (bump commit).
+- Tag: `v0.7.0` on `873c848`.
+
 ### Cross-cutting residuals
 
 - **Scott codegen multi-param show + classical Show emission**:
