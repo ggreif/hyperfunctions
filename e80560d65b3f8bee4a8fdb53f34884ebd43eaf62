@@ -29,7 +29,19 @@ An independent Haskell/logic-programming reviewer audited the Phase-D
 narrowing code (built clean, full suite green). Verdict distilled,
 prioritized; line refs are at review time.
 
-### [unsound, latent — fix first] Refinements bypass the occurs-check
+### [unsound, latent — fix first] Refinements bypass the occurs-check  ✅ FIXED `873c848`
+**Resolved (2026-06-02).** Added `TyProc.unionSubst` — an occurs-checked,
+conflict-detecting fold — and routed both combination points through it:
+`meetNorm`'s two-sided union (the actual hole) and `narrowOnce`'s
+per-arg `combinedSubst`. A would-be cycle is now an honest
+`TyOccursCheck` (the accumulating fold's `occurs` catches a cycle spread
+across bindings in any order); a same-key conflict `meet`s the two views
+(→ `TyMismatch` rather than a silent left-biased commit). `solve`'s
+per-recursion insert stays raw — its `cView` mentions only path-derived
+sub-metas of `m`, which provably can't alias `m`. Regression: three
+`TyProcSpec` unit tests (cycle → occurs **and terminates**; disjoint
+merge; conflict → mismatch). Original finding below.
+
 Narrowing commits bindings with raw `Map.singleton`/`Map.insert`/
 `Map.union` (`Interp.hs` narrowArg+solve; `HypTwr.hs:516` meetNorm),
 never through `bind` (`TyProc.hs:274`), so the occurs-check at
