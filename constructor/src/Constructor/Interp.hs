@@ -51,7 +51,10 @@ import Constructor.Tower (KindEnv, kindOf)
 import Constructor.TyProc (MetaId (..), Subst, TyView (..), resolveView)
 import Control.Applicative (Alternative (..))
 import Control.Monad (guard)
-import Control.Monad.Logic (Logic, interleave, (>>-))
+import Control.Monad.Logic (LogicT, interleave, (>>-))
+import Control.Monad.ST (ST)
+import Control.Monad.Trans.Class (lift)
+import Data.STRef (STRef, newSTRef, readSTRef, writeSTRef)
 import Data.Kind (Type)
 import Data.List (elemIndex)
 import Data.Map.Strict (Map)
@@ -389,42 +392,78 @@ narrowOnce
   -> KindEnv                             -- ^ for the kind-level slidability gate
   -> Subst
   -> Name -> [TyView]                    -- ^ deferred function + arg views
-  -> Logic (Subst, TyView)               -- ^ candidate (refined-subst, result) stream
+  -> LogicT (ST st) (Subst, TyView)      -- ^ candidate (refined-subst, result) stream
 narrowOnce gs cps kEnv subst fname argViews =
   -- Level 1: split each free meta arg against the function's top-level
   -- arm patterns (gets the args past the slidability gate).  The bind
   -- into 'solve' is the fair '>>-' (not '>>='): a branch that recurses
   -- deeply must not starve a sibling branch that has a shallow
-  -- solution.  (No depth bound yet: a branch with NO solution can
-  -- still diverge — fuel is a later add.)
+  -- solution.
   mapM (uncurry narrowArg) (zip [0 ..] argViews) >>- \refinements ->
     let combinedSubst = foldr (\(s, _) acc -> Map.union s acc) subst refinements
         refinedArgs   = map snd refinements
     -- Then reduce-and-recurse: a ground result succeeds; a result
     -- stuck on `case ?m { … }` (an inner match on a still-free
     -- sub-meta) splits `?m` against *that* case's arms and re-reduces,
-    -- one ctor deeper, until it bottoms out at a ground value.
-    in solve combinedSubst refinedArgs
+    -- one ctor deeper, until it bottoms out at a ground value.  Each
+    -- top-level refinement combination gets its own fresh energy
+    -- reservoir (allocated here, after the '>>-' bind), so sibling
+    -- branches don't drain one another — the no-rewind hazard of
+    -- mutating an 'STRef' across 'LogicT' backtracking.
+    in do root <- lift (newSTRef e0)
+          solve root 0 combinedSubst refinedArgs
   where
+    -- | Backpressure (`.claude/plans/backpressure.md`): a divergent
+    --   narrowing spine self-extinguishes by draining a Mexican-hat
+    --   energy reservoir.  This is the naïve realisation — one mutable
+    --   reservoir per *source* (per branch), 'STRef'-threaded, with the
+    --   per-resolution rule applied directly (no telescope collapse,
+    --   no bead-cloud; "telescope cleverness" is a later optimisation).
+    --
+    --   Every source starts at @e0 ≈ 0@ and *forks* per branch: at a
+    --   stuck-case split each chosen arm gets its own reservoir seeded
+    --   from the parent's energy at that point, so backtracking siblings
+    --   never see one another's mutations.
+
     -- | Reduce under `sub`; recurse (fairly) on a sub-meta the
-    --   reduction got stuck matching on.
-    solve :: Subst -> [TyView] -> Logic (Subst, TyView)
-    solve sub args = do
+    --   reduction got stuck matching on.  `ref` is the current source's
+    --   reservoir; `r` the radius (= ctor-nesting depth = recursion
+    --   depth of the spine).
+    solve :: STRef st Double -> Int -> Subst -> [TyView]
+          -> LogicT (ST st) (Subst, TyView)
+    solve ref r sub args = do
       val <- maybeL (reduceToValue gs kEnv sub fname args)
       case val of
         VCon{} -> do
-          r <- maybeL (promote cps val)
-          pure (sub, r)
+          res <- maybeL (promote cps val)
+          pure (sub, res)
         -- Stuck matching an inner `case ?m { … }`: split ?m against
-        -- those arms and re-reduce, one ctor deeper.
-        VStuck (SCase (VStuck (SMeta m)) arms) ->
-          choose [ (cn, length ps) | Arm (PCtor cn ps) _ <- arms ] >>- \c ->
-            ctorRefinement m c >>- \cView ->
-              solve (Map.insert m cView sub) args
+        -- those arms and re-reduce, one ctor deeper.  Fork the reservoir
+        -- per arm (siblings start from the same parent energy), charge
+        -- the production, and stall (→ 'empty') if it can't be funded.
+        VStuck (SCase (VStuck (SMeta m)) arms) -> do
+          parentE <- lift (readSTRef ref)
+          choose [ (cn, length ps) | Arm (PCtor cn ps) _ <- arms ] >>- \c@(_, a) -> do
+            fork <- lift (newSTRef parentE)
+            produce fork r a
+            cView <- ctorRefinement m c
+            solve fork (r + 1) (Map.insert m cView sub) args
         _ -> empty
 
+    -- | Charge one production into a source's reservoir and gate on it.
+    --   The per-resolution rule (the weight `1 + arity` split across two
+    --   radii): the arrived node releases @+V(r)@, its @a@ children cost
+    --   @−a·V(r+1)@.  Stall (`empty`) when the source can't fund the
+    --   push — i.e. the result would go negative.
+    produce :: STRef st Double -> Int -> Int -> LogicT (ST st) ()
+    produce ref r a = do
+      e <- lift (readSTRef ref)
+      let e' = e + vHat r - fromIntegral a * vHat (r + 1)
+      lift (writeSTRef ref e')
+      guard (e' >= 0)
+
     -- | Per-arg narrowing decision, by argument position.
-    narrowArg :: Int -> TyView -> Logic (Subst, TyView)
+    narrowArg :: Int -> TyView -> LogicT (ST st) (Subst, TyView)
     narrowArg argIdx argView =
       case resolveView subst argView of
         -- Already concrete: pass through with identity subst.
@@ -444,7 +483,7 @@ narrowOnce gs cps kEnv subst fname argViews =
     --   parent's paths with 'PsCtorAppArg' i).  'empty' if C's
     --   decl-path is unknown.  Shared by level-1 'narrowArg' and the
     --   recursive 'solve'.
-    ctorRefinement :: MetaId -> (Name, Int) -> Logic TyView
+    ctorRefinement :: MetaId -> (Name, Int) -> LogicT (ST st) TyView
     ctorRefinement (MetaId bp up) (cname, arity) = do
       ctorPath <- maybeL (Map.lookup cname cps)
       let subMetas = [ TyMetaV (MetaId (extendPath (PsCtorAppArg i) bp)
@@ -454,11 +493,28 @@ narrowOnce gs cps kEnv subst fname argViews =
                   (TyConV cname ctorPath Z) subMetas)
 
     -- Fair disjunction over the branch alternatives.
-    choose :: [a] -> Logic a
+    choose :: [a] -> LogicT (ST st) a
     choose = foldr (interleave . pure) empty
 
-    maybeL :: Maybe a -> Logic a
+    maybeL :: Maybe a -> LogicT (ST st) a
     maybeL = maybe empty pure
+
+-- | Initial energy of a freshly-born source.  Design: "every source
+--   starts at ≈ 0 and fills up" — early (down-slope) productions
+--   replenish it, later (rim) ones drain it.
+e0 :: Double
+e0 = 0
+
+-- | The Mexican-hat potential @V(r) = r⁴ − c·r²@ (radius is integer;
+--   `backpressureC` = the well width).  Trough at @r = √(c/2)@; on a
+--   linear (arity-1) spine the reservoir telescopes to @−V(r+1)@, so a
+--   source survives while @(r+1)² ≤ c@ and stalls just past @√c@.  With
+--   @c = 10@ a runaway spine self-extinguishes around depth 3.
+vHat :: Int -> Double
+vHat r = let x = fromIntegral r in x * x * x * x - backpressureC * x * x
+
+backpressureC :: Double
+backpressureC = 10
 
 -- | The constructors a function pattern-matches on at argument
 --   position @argIdx@ — read from its 'Expr' body in 'Globals'.

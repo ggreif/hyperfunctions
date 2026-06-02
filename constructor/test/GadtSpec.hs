@@ -531,6 +531,26 @@ tests =
       \let rt = W T"
       ["isSS", "rt"]
 
+  -- Phase D-div: *divergent* recursion, terminated by backpressure.
+  -- 'f' loops on the 'S'-spine ('S k -> f k') with a base case at 'Z'
+  -- ('Z -> T').  'W T' forces 'f ?n ≡ T'.  The 'Z' branch reduces
+  -- 'f Z = T' immediately; the 'S' branch recurses 'f (S ?k) = f ?k',
+  -- going stuck one ctor deeper every step — an *infinite*, non-
+  -- productive narrowing spine.  Fair interleaving alone cannot
+  -- preempt it (msplit dives the leftmost spine forever); the
+  -- backpressure energy reservoir does: each production drains the
+  -- Mexican-hat well, so the runaway spine stalls (→ empty) at finite
+  -- depth and the search reaches the shallow solution.  Without the
+  -- energy bound this test hangs.  (See '.claude/plans/backpressure.md'.)
+  , acceptsBridgedWithCtors
+      "Phase D-div: divergent 'f' is terminated by backpressure (spine stalls, Z found)"
+      "data Nat\8942 { Z\8942; S Nat\8942 };\
+      \data Bool\8942 { T\8942; F\8942 };\
+      \let f = \\n -> case n { S k -> f k; Z -> T };\
+      \data Wit (n : Nat) : *0 { W : f n -> Wit n };\
+      \let rt = W T"
+      ["f", "rt"]
+
   -- "Decay via 1-parameter GADT" demonstration: a length-indexed
   -- 'List a n' (Vec-shape).  A value 'Cons True (Cons False Nil)'
   -- gets the singleton type 'List Bool (S (S Z))' from the

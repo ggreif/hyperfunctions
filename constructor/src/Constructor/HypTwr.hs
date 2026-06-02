@@ -49,7 +49,8 @@ import Constructor.HyperLite (hPure, hRun)
 import Constructor.Interp (Globals, narrowOnce, normaliseDeferred)
 import Constructor.Level (Lv (..), starLevel)
 import Control.Applicative (empty)
-import Control.Monad.Logic (Logic, ifte, observeMany)
+import Control.Monad.Logic (LogicT, ifte, observeManyT)
+import Control.Monad.ST (ST, runST)
 import Constructor.Path (Path, emptyPath)
 import Constructor.Sort (Sort (..))
 import Constructor.Syntax (Lang (..), Name)
@@ -484,20 +485,20 @@ meetNorm env p1 p2 =
        Right s' -> Right s'
        Left err ->
          -- Phase D: try narrowing on either side's TyDeferV chain.
-         -- The candidate search is a 'Logic' stream; 'observeMany 1'
-         -- takes the first refinement whose meet succeeds (plain
-         -- '>>=' keeps DFS order, so this matches the previous
-         -- list-based first-wins behaviour).
-         let cands1 = candidatesFor gs cps kEnv s v1
-             cands2 = candidatesFor gs cps kEnv s v2
-             search = do
-               (sub1, v1') <- cands1
-               (sub2, v2') <- cands2
-               let s'' = sub2 `Map.union` sub1 `Map.union` s
-               case meet s'' (hPure v1') (hPure v2') of
-                 Right s' -> pure s'
-                 Left _   -> empty
-         in case observeMany 1 search of
+         -- The candidate search is a 'LogicT (ST s)' stream — the
+         -- backpressure energy reservoirs are 'STRef's, so the whole
+         -- search runs in 'ST' and is discharged here with 'runST'.
+         -- 'observeManyT 1' takes the first refinement whose meet
+         -- succeeds; the fair '>>-' inside 'narrowOnce' plus the
+         -- energy bound keep a divergent spine finite, so this
+         -- terminates where a plain 'Logic' DFS would not.
+         case runST (observeManyT 1 (do
+                  (sub1, v1') <- candidatesFor gs cps kEnv s v1
+                  (sub2, v2') <- candidatesFor gs cps kEnv s v2
+                  let s'' = sub2 `Map.union` sub1 `Map.union` s
+                  case meet s'' (hPure v1') (hPure v2') of
+                    Right s' -> pure s'
+                    Left _   -> empty)) of
               (s' : _) -> Right s'
               []       -> Left err
   where
@@ -507,7 +508,7 @@ meetNorm env p1 p2 =
     --   into TyAppV / TyArrV children so nested deferred-chains
     --   (e.g., the @pickZ ?n@ inside @Eq Z (pickZ ?n)@) surface.
     candidatesFor :: Globals -> Map Name Path -> Map Name TyProc
-                  -> Subst -> TyView -> Logic (Subst, TyView)
+                  -> Subst -> TyView -> LogicT (ST st) (Subst, TyView)
     candidatesFor gs cps kEnv s v = case resolveView s v of
       TyAppV f x ->
         case peelDeferredHead s (TyAppV f x) of
