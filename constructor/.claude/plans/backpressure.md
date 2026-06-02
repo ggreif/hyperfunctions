@@ -56,7 +56,12 @@ rim.
   weighs `1`, a unary `S` weighs `2`, a binary `Cons` weighs `3`.  The
   `1` is the node that has *arrived* at radius `r`; the `a` are the
   children that still must be *pushed* to `r+1` — which is exactly the
-  split in the energy rule below.
+  split in the energy rule below.  **`1 + arity` is just the node's
+  memory footprint**: one word for the tag/header plus one pointer per
+  child — the heap cell a constructor allocates.  So weight is no knob:
+  backpressure charges the search in proportion to the *memory* the
+  candidate term would cost to materialise.  Bigger terms cost more
+  energy to push out precisely because they cost more memory to build.
 - **Radially rigid, vertically flexible**: a bead's *radius* is rigid —
   it equals the number of production-ticks since the bead was born; its
   *height* is whatever the hat says at that radius, `V(r)`.
