@@ -51,8 +51,7 @@ import Constructor.Tower (KindEnv, kindOf)
 import Constructor.TyProc (MetaId (..), Subst, TyView (..), resolveView)
 import Control.Applicative (Alternative (..))
 import Control.Monad (guard)
-import Control.Monad.Logic (Logic)
-import Data.Foldable (asum)
+import Control.Monad.Logic (Logic, interleave, (>>-))
 import Data.Kind (Type)
 import Data.List (elemIndex)
 import Data.Map.Strict (Map)
@@ -391,20 +390,24 @@ narrowOnce
   -> Subst
   -> Name -> [TyView]                    -- ^ deferred function + arg views
   -> Logic (Subst, TyView)               -- ^ candidate (refined-subst, result) stream
-narrowOnce gs cps kEnv subst fname argViews = do
-  -- Level 1: split each free meta arg against the function's
-  -- top-level arm patterns (gets the args past the slidability gate).
-  refinements <- mapM (uncurry narrowArg) (zip [0 ..] argViews)
-  let combinedSubst = foldr (\(s, _) acc -> Map.union s acc) subst refinements
-      refinedArgs   = map snd refinements
-  -- Then reduce-and-recurse: a ground result succeeds; a result stuck
-  -- on `case ?m { … }` (an inner pattern-match on a still-free
-  -- sub-meta) splits `?m` against *that* case's arms and re-reduces,
-  -- one ctor deeper, until it bottoms out at a ground value.
-  solve combinedSubst refinedArgs
+narrowOnce gs cps kEnv subst fname argViews =
+  -- Level 1: split each free meta arg against the function's top-level
+  -- arm patterns (gets the args past the slidability gate).  The bind
+  -- into 'solve' is the fair '>>-' (not '>>='): a branch that recurses
+  -- deeply must not starve a sibling branch that has a shallow
+  -- solution.  (No depth bound yet: a branch with NO solution can
+  -- still diverge — fuel is a later add.)
+  mapM (uncurry narrowArg) (zip [0 ..] argViews) >>- \refinements ->
+    let combinedSubst = foldr (\(s, _) acc -> Map.union s acc) subst refinements
+        refinedArgs   = map snd refinements
+    -- Then reduce-and-recurse: a ground result succeeds; a result
+    -- stuck on `case ?m { … }` (an inner match on a still-free
+    -- sub-meta) splits `?m` against *that* case's arms and re-reduces,
+    -- one ctor deeper, until it bottoms out at a ground value.
+    in solve combinedSubst refinedArgs
   where
-    -- | Reduce under `sub`; recurse on a sub-meta the reduction got
-    --   stuck matching on.
+    -- | Reduce under `sub`; recurse (fairly) on a sub-meta the
+    --   reduction got stuck matching on.
     solve :: Subst -> [TyView] -> Logic (Subst, TyView)
     solve sub args = do
       val <- maybeL (reduceToValue gs kEnv sub fname args)
@@ -414,10 +417,10 @@ narrowOnce gs cps kEnv subst fname argViews = do
           pure (sub, r)
         -- Stuck matching an inner `case ?m { … }`: split ?m against
         -- those arms and re-reduce, one ctor deeper.
-        VStuck (SCase (VStuck (SMeta m)) arms) -> do
-          cView <- ctorRefinement m =<< choose [ (cn, length ps)
-                                               | Arm (PCtor cn ps) _ <- arms ]
-          solve (Map.insert m cView sub) args
+        VStuck (SCase (VStuck (SMeta m)) arms) ->
+          choose [ (cn, length ps) | Arm (PCtor cn ps) _ <- arms ] >>- \c ->
+            ctorRefinement m c >>- \cView ->
+              solve (Map.insert m cView sub) args
         _ -> empty
 
     -- | Per-arg narrowing decision, by argument position.
@@ -428,10 +431,11 @@ narrowOnce gs cps kEnv subst fname argViews = do
         v@TyConV{} -> pure (Map.empty, v)
         v@TyAppV{} -> pure (Map.empty, v)
         -- A free meta: enumerate the ctors the function matches on at
-        -- this position; one branch per arm.
-        TyMetaV mid -> do
-          cView <- ctorRefinement mid =<< choose (armCtors gs fname argIdx)
-          pure (Map.singleton mid cView, cView)
+        -- this position; one (fair) branch per arm.
+        TyMetaV mid ->
+          choose (armCtors gs fname argIdx) >>- \c ->
+            ctorRefinement mid c >>- \cView ->
+              pure (Map.singleton mid cView, cView)
         -- Other shapes (TyArrV, TyUnivV, TyVarV, TyDeferV): skip.
         _ -> empty
 
@@ -449,8 +453,9 @@ narrowOnce gs cps kEnv subst fname argViews = do
       pure (foldl (\h a -> TyAppV (hPure h) (hPure a))
                   (TyConV cname ctorPath Z) subMetas)
 
+    -- Fair disjunction over the branch alternatives.
     choose :: [a] -> Logic a
-    choose = asum . map pure
+    choose = foldr (interleave . pure) empty
 
     maybeL :: Maybe a -> Logic a
     maybeL = maybe empty pure
