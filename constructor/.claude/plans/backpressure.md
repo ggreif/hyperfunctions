@@ -211,14 +211,57 @@ This is a physics-derived **importance / best-first scheduler** —
 
 ## Implementation plan
 
-### Phase 1 — the energy *bound* (rides the existing `interleave`)
+### Phase 1 — the energy *bound* (rides the existing `interleave`) — DONE (`e0155bf`)
 
-Thread a scalar `E :: Double` + `depth :: Int` through `solve` (the
-runaway locus; level-1 `narrowArg` is already finite).  Each recursive
-split: `E' = E + (V(0) − V(depth+1))`; recurse iff `E' ≥ 0`, else
-`empty` (stall).  Deterministic; kills the hang; finds `?n := Z`.
-Regression test: the recursive-`S`-first `f` above.  `V(r) = r⁴ − c·r²`,
-one knob `c` (well width; depth bound emerges ≈ √c-ish).
+Shipped as the naïve realisation the model calls for — one mutable
+reservoir per *source*, no telescope collapse, no bead-cloud.
+
+- `narrowOnce` / `solve` / `narrowArg` now run in `LogicT (ST st)`
+  (`Interp.hs`); `meetNorm` discharges the search with
+  `runST (observeManyT 1 …)` (`HypTwr.hs`).
+- A **source** = a narrowing branch; its reservoir is an
+  `STRef st Double`.  `solve ref r` carries the reservoir and the
+  radius `r` (= ctor-nesting depth = spine recursion depth).
+- Each production calls `produce ref r a`, applying the per-resolution
+  rule `E += V(r) − a·V(r+1)` and `guard`ing `E ≥ 0` (stall → `empty`).
+- **Fork per branch.** At a stuck-case split, each chosen arm gets its
+  *own* fresh `STRef` seeded from the parent's energy at that point.
+  This is the key correctness move: `STRef` mutations are **not** rewound
+  on `LogicT` backtracking, so siblings must not share a cell — forking
+  gives each branch a private copy seeded from the common parent.  The
+  top-level refinement combos likewise each get a fresh root reservoir
+  (allocated after the `>>-`), so the `S`-spine draining can't starve the
+  sibling `Z`.
+- `V(r) = r⁴ − c·r²`, `backpressureC = 10`, `E₀ = 0`.  On the linear
+  (arity-1) spine the reservoir telescopes to `−V(r+1)`, so a source
+  survives while `(r+1)² ≤ c` and stalls just past `√c` — depth ≈ 3 for
+  `c = 10`.
+- Regression: **`Phase D-div`** in `GadtSpec.hs` — the self-recursive
+  `f = \n -> case n { S k -> f k; Z -> T }` forced by `W T`.  Hung under
+  fair-alone search (msplit dives the all-`S` spine forever); now stalls
+  the spine at finite depth and finds `?n := Z`.  All other Phase-D
+  tests stay green (migration is behaviour-preserving on convergent
+  cases).
+
+Accumulation *is* faithful: a forked child inherits the parent's energy,
+so a deepening spine fills-then-drains exactly as the telescope predicts
+(`E = −V(r+1)` after the radius-`r` push).  We apply the local
+per-resolution rule directly, so there is no bead-cloud to sum — the
+truly-naïve "re-slide every bead each tick" version was skipped in
+favour of the cheap local form from the start.
+
+**Simplified / deferred:**
+
+- **Top-level production uncharged.**  Only `solve`'s deepening splits
+  pay energy; the first (`narrowArg`) ctor is radius-`−1`, free.  A
+  harmless off-by-one in where the bound bites.
+- **Bifurcation isn't lockstep.**  A multi-arity split forks one source
+  per arm rather than one source carrying `a` co-marching frontier
+  beads.  Arity still enters correctly via the drain coefficient
+  `−a·V(r+1)`, but the bead-*tree* dynamics (all `a` children advancing
+  together, the radius-dependent bushy bet) aren't modelled yet.
+- **Phase 2 scheduler** (energy-share turn probability, the bushy bet)
+  needs the resumption substrate and is untouched.
 
 ### Phase 2 — the energy-*weighted* scheduler
 
