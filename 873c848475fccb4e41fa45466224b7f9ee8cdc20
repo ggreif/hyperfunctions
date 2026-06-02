@@ -1,0 +1,86 @@
+# v0.7.0 — backpressure: narrowing search gets a principled, terminating substrate
+
+Phase-D narrowing moves from a `[]`-with-extra-imports DFS to a real
+fair search with a physically-motivated termination bound — and the
+two-sided occurs/cycle hole the v0.7.0-planning review flagged is
+closed. This is the cycle that makes narrowing *safe to run on both
+sides of a meet* (the `add a b ≡ add' a b` shape).
+
+## What's new
+
+- **Fair search** (`04b9a2f`) — branch points use `interleave` / `>>-`
+  (not `>>=`/`asum`), so `observeMany 1` is a genuine fair
+  first-solution. Corrects the narrowing.md:140 claim, which described
+  fairness we hadn't actually wired.
+- **Backpressure energy bound** (`e0155bf`) — narrowing runs in
+  `LogicT (ST st)`; each source (branch) carries an `STRef` energy
+  reservoir charged `E += V(r) − a·V(r+1)` per production
+  (`V(r) = r⁴ − c·r²`, `c = 10`). A source stalls (→ `empty`) when it
+  can't fund the next push; reservoirs fork per branch, parent-seeded,
+  to dodge the `STRef` no-rewind hazard across backtracking. Weight
+  `1 + arity` is the constructor's heap footprint, so the bound is a
+  memory budget on speculative narrowing, not a fuel integer. A
+  divergent spine self-extinguishes at depth ≈ √c. New `Phase D-div`
+  test; validated by the `c=10` vs `c=1e12` A/B (wide trough ⇒ hang
+  returns). Design: `.claude/plans/backpressure.md`.
+- **Occurs/cycle hole closed** (`873c848`) — `TyProc.unionSubst`, an
+  occurs-checked + conflict-detecting fold, replaces the raw
+  `Map.union` that combined two sides' refinements. A would-be cycle is
+  an honest `TyOccursCheck` (and terminates); a same-key conflict is a
+  `TyMismatch` rather than a silent left-biased commit. Three
+  `TyProcSpec` regression tests.
+- Housekeeping: dropped the dead Sheet-based level inferencers
+  (`4397993`); cleared the review's cleanup bucket (`52194e5`).
+
+## Residuals (next cycle)
+
+### R1. Telescope + bifurcation cleverness
+Per-source accumulation is faithful, but the bead-*tree* dynamics — the
+`a` children co-marching in lockstep, the radius-dependent bushy bet —
+are described in `backpressure.md`, not implemented. Deferred
+deliberately.
+
+### R2. Top-level production uncharged
+Only `solve`'s deepening splits pay energy; the first (`narrowArg`)
+ctor is radius −1, free. Harmless off-by-one in where the bound bites.
+
+### R3. Multi-arity narrowing coverage
+Every narrowing test is an arity-1 `S`/`Z` spine; the `−a·V(r+1)` drain
+with `a ≥ 2` (`Cons`/`Pair`) has no regression. Add a multi-arity
+divergent test (pairs with R1).
+
+### R4. Phase 2 — energy-weighted scheduler
+Turn-share ∝ `E`, the bushy bet as a per-candidate score. Needs a
+resumption substrate (custom or Hyper-LogicT); gated on R1.
+
+## Carried forward (open from earlier cycles)
+
+- **Per-arm Subst-forking in HypTwr** — polymorphic recursive
+  `length : List a n -> Nat` (lambda + recursive case over an indexed
+  List) fails today: the `Nil` arm refines the binder's meta and the
+  `Cons` arm can't get its own (`GadtSpec.hs:565-568`). Most concrete,
+  motivated next feature.
+- **Induction frontier** — cycle detection for ∀-over-recursive-data:
+  recognise a step-case subgoal as an instance of an ancestor goal (the
+  IH) and close it coinductively. The `add/add'` commutativity `Refl`
+  is the litmus. The review's key lever: IH-stop is a *coinductive*
+  loop-cut, the backpressure stall a *failing* one — share one
+  ancestor-goal stack.
+- **Hyper-LogicT swap** — premature; stock `interleave`/`>>-` already
+  fixes the demonstrated incompleteness. Defer until a search needs
+  committed choice / cut.
+
+## Status board
+
+| Item | Status |
+| --- | --- |
+| Fair search (`interleave`/`>>-`) | ✅ `04b9a2f` |
+| Backpressure energy bound | ✅ `e0155bf` |
+| Occurs/cycle hole | ✅ `873c848` |
+| narrowing.md:140 fairness claim | ✅ now true (correct doc next cycle) |
+| R1 telescope/bifurcation | deferred |
+| R2 top-level production charge | deferred (cosmetic) |
+| R3 multi-arity coverage | open |
+| R4 Phase 2 scheduler | open (gated on R1) |
+| Per-arm Subst-forking | open (carried) |
+| Induction frontier | open (carried, big) |
