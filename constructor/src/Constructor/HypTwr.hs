@@ -75,6 +75,7 @@ import Constructor.TyProc
   , meet
   , mkMeta
   , resolveView
+  , unionSubst
   )
 import Control.Monad (foldM)
 import Data.Kind (Type)
@@ -495,8 +496,15 @@ meetNorm env p1 p2 =
          case runST (observeManyT 1 (do
                   (sub1, v1') <- candidatesFor gs cps kEnv s v1
                   (sub2, v2') <- candidatesFor gs cps kEnv s v2
-                  let s'' = sub2 `Map.union` sub1 `Map.union` s
-                  case meet s'' (hPure v1') (hPure v2') of
+                  -- Combine the two sides' refinements *safely*: raw
+                  -- 'Map.union' here would fuse e.g. ?a := S ?b with
+                  -- ?b := S ?a into a cycle that 'resolveView' loops
+                  -- on.  'unionSubst' occurs-checks each binding into
+                  -- the accumulator, so a would-be cycle is an honest
+                  -- 'TyOccursCheck' (→ this branch fails, not hangs).
+                  case unionSubst s sub1
+                         >>= flip unionSubst sub2
+                         >>= \s'' -> meet s'' (hPure v1') (hPure v2') of
                     Right s' -> pure s'
                     Left _   -> empty)) of
               (s' : _) -> Right s'

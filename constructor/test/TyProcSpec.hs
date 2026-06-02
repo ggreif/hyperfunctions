@@ -10,11 +10,13 @@
 module TyProcSpec (tests) where
 
 import Constructor.HyperLite (hPure)
+import Constructor.Level (Lv (..))
 import Constructor.Path (Path (..), PathStep (..))
 import Constructor.Tinf (TyErr (..))
 import Constructor.TyExpr (TyExpr (..))
 import Constructor.TyProc
-  ( Subst
+  ( MetaId (..)
+  , Subst
   , TyProc
   , TyView (..)
   , emptySubst
@@ -22,7 +24,9 @@ import Constructor.TyProc
   , meet
   , mkMeta
   , tyToProc
+  , unionSubst
   )
+import qualified Data.Map.Strict as Map
 
 -- | Stand-in def-paths for the named tycons under test.  Mirrors what
 --   the parser would emit if these were declared at the given
@@ -225,6 +229,50 @@ tests =
             "expected TyOccursCheck (transitive), got: " <> show err
           Right _ -> reportFail
             "expected TyOccursCheck (transitive), got success"
+    )
+
+    -- --- unionSubst: occurs-checked combination of refinements ------
+    -- The v0.7.0 soundness fix.  Narrowing combines two independently-
+    -- searched sides' refinements; raw 'Map.union' would fuse a cycle
+    -- that 'resolveView' loops on.  'unionSubst' must reject it.
+  , ( "unionSubst: two-side cycle ?a := S ?b ∪ ?b := S ?a → TyOccursCheck (no loop)"
+    , let bp1 = Path [PsProgDecl 0, PsDataParam 0]
+          bp2 = Path [PsProgDecl 1, PsDataParam 0]
+          a   = MetaId bp1 bp1
+          b   = MetaId bp2 bp2
+          sOf x = TyAppV (hPure (TyConV "S" natP Z)) (hPure x)
+          sub1 = Map.singleton a (sOf (TyMetaV b))
+          sub2 = Map.singleton b (sOf (TyMetaV a))
+      in case unionSubst emptySubst sub1 >>= flip unionSubst sub2 of
+           Left (TyOccursCheck _ _) -> pure True
+           Left err -> reportFail $
+             "expected TyOccursCheck, got: " <> show err
+           Right _ -> reportFail
+             "expected TyOccursCheck, got success (cycle accepted!)"
+    )
+  , ( "unionSubst: disjoint refinements ?a := Nat ∪ ?b := Bool merge cleanly"
+    , let a    = MetaId (Path [PsProgDecl 0, PsDataParam 0]) (Path [PsProgDecl 3])
+          b    = MetaId (Path [PsProgDecl 1, PsDataParam 0]) (Path [PsProgDecl 4])
+          sub1 = Map.singleton a (TyConV "Nat" natP Z)
+          sub2 = Map.singleton b (TyConV "Bool" boolP Z)
+      in case unionSubst emptySubst sub1 >>= flip unionSubst sub2 of
+           Right s ->
+             case ( materialize s (hPure (TyMetaV a))
+                  , materialize s (hPure (TyMetaV b)) ) of
+               (Right (TyCon "Nat" _), Right (TyCon "Bool" _)) -> pure True
+               other -> reportFail $ "unexpected materialize: " <> show other
+           Left err -> reportFail $ "expected success, got: " <> show err
+    )
+  , ( "unionSubst: same-key conflict ?a := Nat vs ?a := Bool → honest TyMismatch"
+    , let a    = MetaId (Path [PsProgDecl 0, PsDataParam 0]) (Path [PsProgDecl 3])
+          sub1 = Map.singleton a (TyConV "Nat" natP Z)
+          sub2 = Map.singleton a (TyConV "Bool" boolP Z)
+      in case unionSubst emptySubst sub1 >>= flip unionSubst sub2 of
+           Left (TyMismatch _ _) -> pure True
+           Left err -> reportFail $
+             "expected TyMismatch, got: " <> show err
+           Right _ -> reportFail
+             "expected TyMismatch, got success (silent wrong-commit!)"
     )
   ]
 

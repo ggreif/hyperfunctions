@@ -35,6 +35,7 @@ module Constructor.TyProc
   , mkMeta
   , meet
   , occurs
+  , unionSubst
   , materialize
   , resolveView
   , eqView
@@ -329,6 +330,34 @@ occurs s m v0 = case resolveView s v0 of
   TyCaseV scrut arms ->
     occurs s m scrut
       || any (\(p, b) -> occurs s m p || occurs s m b) arms
+
+-- | Occurs-checked, conflict-detecting union of a refinement 'Subst'
+--   into a base.  Plain 'Map.union' is unsound for *narrowing*
+--   refinements: two independently-searched sides can union
+--   @?a := S ?b@ with @?b := S ?a@ into a cycle, and 'resolveView'
+--   has no cycle guard — the checker would then diverge.  This folds
+--   each incoming binding into the base under the same discipline
+--   'bind' uses for a fresh meet-bind:
+--
+--     * fresh key — reject if the value transitively mentions the key
+--       under the accumulator ('occurs' is the cycle guard).  Because
+--       the fold accumulates, a cycle spread across several bindings is
+--       caught by whichever insert closes it, in any key order.
+--     * clashing key — already-consistent (resolved 'eqView') is a
+--       no-op; otherwise 'meet' the two candidate views, so a silent
+--       wrong-commit becomes an honest 'TyMismatch' (and any sub-metas
+--       are reconciled rather than dropped).
+unionSubst :: Subst -> Subst -> Either TyErr Subst
+unionSubst base incoming = Map.foldrWithKey step (Right base) incoming
+  where
+    step _ _ (Left e) = Left e
+    step m@(MetaId bp up) v (Right acc) = case Map.lookup m acc of
+      Nothing
+        | occurs acc m v -> Left (TyOccursCheck bp up)
+        | otherwise      -> Right (Map.insert m v acc)
+      Just v'
+        | eqView (resolveView acc v) (resolveView acc v') -> Right acc
+        | otherwise -> meet acc (hPure v) (hPure v')
 
 -- | Walk a 'TyProc' web under a 'Subst', producing a syntactic
 --   'TyExpr'.  Bound metavariables are followed through the

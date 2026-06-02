@@ -48,9 +48,9 @@ import Constructor.Path (Path, PathStep (..), extendPath)
 import Constructor.Sort (Mode (..), Sort (..))
 import Constructor.Syntax (Name)
 import Constructor.Tower (KindEnv, kindOf)
-import Constructor.TyProc (MetaId (..), Subst, TyView (..), resolveView)
+import Constructor.TyProc (MetaId (..), Subst, TyView (..), resolveView, unionSubst)
 import Control.Applicative (Alternative (..))
-import Control.Monad (guard)
+import Control.Monad (foldM, guard)
 import Control.Monad.Logic (LogicT, interleave, (>>-))
 import Control.Monad.ST (ST)
 import Control.Monad.Trans.Class (lift)
@@ -399,9 +399,14 @@ narrowOnce gs cps kEnv subst fname argViews =
   -- into 'solve' is the fair '>>-' (not '>>='): a branch that recurses
   -- deeply must not starve a sibling branch that has a shallow
   -- solution.
-  mapM (uncurry narrowArg) (zip [0 ..] argViews) >>- \refinements ->
-    let combinedSubst = foldr (\(s, _) acc -> Map.union s acc) subst refinements
-        refinedArgs   = map snd refinements
+  mapM (uncurry narrowArg) (zip [0 ..] argViews) >>- \refinements -> do
+    -- Combine the per-arg refinements into the base subst through the
+    -- occurs-checked 'unionSubst' (not raw 'Map.union'): a refinement
+    -- that would alias a meta into a cycle fails the branch instead of
+    -- producing a substitution 'resolveView' loops on.
+    combinedSubst <- either (const empty) pure
+                       (foldM (\acc (sm, _) -> unionSubst acc sm) subst refinements)
+    let refinedArgs = map snd refinements
     -- Then reduce-and-recurse: a ground result succeeds; a result
     -- stuck on `case ?m { … }` (an inner match on a still-free
     -- sub-meta) splits `?m` against *that* case's arms and re-reduces,
@@ -410,8 +415,8 @@ narrowOnce gs cps kEnv subst fname argViews =
     -- reservoir (allocated here, after the '>>-' bind), so sibling
     -- branches don't drain one another — the no-rewind hazard of
     -- mutating an 'STRef' across 'LogicT' backtracking.
-    in do root <- lift (newSTRef e0)
-          solve root 0 combinedSubst refinedArgs
+    root <- lift (newSTRef e0)
+    solve root 0 combinedSubst refinedArgs
   where
     -- | Backpressure (`.claude/plans/backpressure.md`): a divergent
     --   narrowing spine self-extinguishes by draining a Mexican-hat
