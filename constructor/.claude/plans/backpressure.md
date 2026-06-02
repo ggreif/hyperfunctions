@@ -72,7 +72,11 @@ The runaway `S`-spine self-extinguishes: its old beads pile on the rim
 faster than new ones fund it, so it stalls at *finite* depth.  The
 shallow `Z` sits in the trough and is reached while energy is cheap.
 
-### The telescoping payoff — one number per source
+### The linear special case — a telescope
+
+*Arity-1 chain only.*  The instant a production bifurcates (next
+section) there is no single line to collapse and **the telescope is
+gone** — keep this picture scoped to the `S`-spine.
 
 Each production, every existing bead slides `r → r+1`, releasing
 `V(r) − V(r+1)`.  Summed over a source's contiguous bead-front
@@ -92,16 +96,66 @@ radius `k` (`V(k)`).  Since `V(0)` is a constant baseline, per
 production you evaluate the hat **exactly once, at the frontier radius**
 (= the current depth).  No sum, no bead-cloud — one `V(·)` call.
 
-So a source is just **one scalar `E`** plus its depth `k`; producing
-the next constructor does
+### Bifurcation — the front is a tree, not a chain
+
+The telescope assumed every production is arity-1 (the `S`-spine: one
+frontier, one continuation).  A **multi-arity** constructor split forks
+the front: resolving a meta to `C ?m₁ … ?mₐ` spawns `a` frontier beads
+(the sub-metas), so the front is a bead-**tree**, not a chain — **and a
+tree does not telescope.**  There is no contiguous line whose interior
+cancels, so the `V(0) − V(k)` collapse simply doesn't exist here.
+
+What survives is not the telescope but its *locality*.  Energy is
+accounted **per resolution event** — one local delta, evaluated where
+the event happens, summed over the resolution tree.  It is cheap
+because each delta touches only the resolved bead and its `a` children,
+**not** because anything cancels along a chain.  Resolving a frontier
+bead at radius `r` to a ctor of arity `a`:
 
 ```
-E += V(0) − V(depth)        -- sombrero V(r) = r⁴ − c·r²  ⇒  ΔE = c·k² − k⁴
+E += V(r) − a·V(r+1)
 ```
 
-`ΔE > 0` while `depth < √c` (trough: gain); `ΔE < 0` past it (rim:
-drain).  `E` climbs, peaks, falls; **stall when `E < 0`**.  No bead-cloud
-bookkeeping, no fuel integer — just the hat's physical knob(s).
+- `a = 1` (unary `S`):  `V(r) − V(r+1)` — the linear slide; the *only*
+  arity whose per-event deltas chain up into the telescope above.
+- `a = 0` (nullary `Z`): `+V(r)` — the track **closes** (a sub-solution);
+  the bead's full height refunds.
+- `a ≥ 2` (`Cons`/`Pair`/`Node`): `V(r) − a·V(r+1)` — the **fork**: `a`
+  beads to push.  The `a` multiplies the *child* term `V(r+1)`, so its
+  effect flips sign across the trough.  This is "beads carry weight"
+  made precise: **weight = arity**.
+
+**Betting bushy is good on the slope, bad on the steep.**  The arity
+`a` scales `−V(r+1)`, the height the children land at — and `V`'s sign
+turns over at the trough:
+
+- **On the inner slope** (`r+1` still inside the well, `V(r+1) < 0`):
+  `−a·V(r+1) > 0` and grows with `a`.  Forking lands `a` children deep
+  in the trough → **`a×` the refund**.  Wide-and-shallow *funds* the
+  search: bet bushy here.
+- **On the rim / steep** (`r+1` up the wall, `V(r+1) > 0`):
+  `−a·V(r+1) < 0` and grows with `a`.  Forking drains `a×` faster →
+  wide-and-deep is ruinous.  A bushy split on the steep is the fastest
+  way to stall.  Bet narrow (`a ≤ 1`) here.
+
+So arity isn't uniformly self-limiting — it's a **bet whose payoff
+depends on radius**.  The energy-weighted scheduler should therefore
+*prefer* high-arity resolutions while the frontier is cheap (downhill)
+and *defer* them once it has climbed the rim — exactly the order that
+keeps wide structures shallow and deep structures thin.
+
+**Locality**, not telescoping, is what's cheap: each resolution touches
+one frontier bead and spawns its `a` children — `O(arity)`, two hat
+evaluations (`V(r)`, `V(r+1)`), no cloud.  The radius is the
+ctor-nesting depth, already encoded in the sub-meta's path (the
+`PsCtorAppArg` nesting).  The frontier is now a **multiset** of live
+sub-metas; the reduction works one at a time (its current stuck
+scrutinee), the others **freeze** (no production ⇒ no march ⇒ no flux).
+
+`ΔE > 0` while a resolution lands in the trough (gain); `ΔE < 0` on the
+rim (drain).  `E` climbs, peaks, falls; **stall when `E < 0`**.  No
+bead-cloud bookkeeping, no fuel integer — just the hat's physical
+knob(s).  (`V(r) = r⁴ − c·r²`; the bound emerges from `c`.)
 
 ### Why it composes with fair search
 
@@ -155,6 +209,14 @@ Replace round-robin with a weighted frontier of suspended sources;
 each step picks a source with turn-share ∝ its `E`; reinsert or drop on
 stall.  Needs the resumption substrate (custom, or Hyper-LogicT).
 Deterministic weighted-RR realisation.
+
+**Radius-dependent arity bet** (from "bushy good on the slope, bad on
+the steep").  When several resolutions compete, order them by the
+*sign of `r+1` relative to the trough*: downhill (`V(r+1) < 0`) prefer
+high-arity splits — they refund `a×`; uphill (`V(r+1) > 0`) prefer
+`a ≤ 1` — high arity drains `a×` and stalls fastest.  This is just
+reading `E += V(r) − a·V(r+1)` as a per-candidate score and picking the
+max; no extra knob, it falls straight out of the hat.
 
 ## Knobs / open questions
 
